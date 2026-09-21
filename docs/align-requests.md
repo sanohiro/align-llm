@@ -522,6 +522,9 @@ invariance. Linux x86_64, Linux ARM64, and macOS Apple Silicon CI passed.
 Consumer adoption in `runtime_sampler.align` and the named sampler/runtime smoke
 checks remain align-llm-owned; no consumer code or managed pin was changed here.
 
+2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
+the merge commit is an ancestor of `dfcfd11f`.
+
 ### Request 93: safe typed slice reinterpretations (as_f32_slice) for SIMD vectorization (2026-09-17)
 
 Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
@@ -574,6 +577,9 @@ separate vectorization contract and `--explain-opt`. Align PR #1156 merged as
 `dfcfd11f0b076320f3f9bfbf1f837a4130092964`. `ALIGN_LLM_VERIFIED` remains
 pending the named align-llm benchmarks and consumer migration.
 
+2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
+the merge commit is an ancestor of `dfcfd11f`.
+
 ### Request 94: fixed-size inline arrays in structs ([T; N]) to eliminate decode-step heap allocations (2026-09-17)
 
 Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
@@ -617,6 +623,9 @@ with no fixed-array allocation path. Align PR #1138 merged as
 `2907d5e56b3bdbc4652787376ec268db5507bdc4`. `ALIGN_LLM_VERIFIED` remains
 pending `scripts/run-decode-step`, `scripts/run-gpu-session-reuse-smoke`, and
 confirmation that the migrated tables allocate zero dynamic arrays.
+
+2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
+the merge commit is an ancestor of `dfcfd11f`.
 
 ### Request 95: default ThinLTO on --profile release or cross-module function inlining (2026-09-17)
 
@@ -679,6 +688,9 @@ the `runtime_attention.cached_f16`, `runtime_attention.fused`, and
 `ggml_ffi.handle_absent` call sites. Keep issue #1066 open and this request at
 ALIGN_MERGED until that call-site census advances it to ALIGN_LLM_VERIFIED.
 
+2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
+the merge commit is an ancestor of `dfcfd11f`.
+
 ### Request 96: fix invalid empty !dbg metadata attachment in align_codegen_llvm dropdeep loop (2026-09-17)
 
 Status: ALIGN_MERGED
@@ -704,6 +716,11 @@ Discovered during Optimization explain pass on decode_step (alignc explain-opt s
    Omit debuginfo attachment or attach a valid `DILocation` when emitting synthetic runtime drop thunk calls.
 5. Acceptance criteria:
    `alignc explain-opt src/decode_step.align` completes successfully without LLVM module verification failure.
+
+2026-09-21: at `dfcfd11f` `alignc explain-opt` reports on `decode_step`,
+`moe_decode_step`, `gguf`, `tokenizer_qwen2`, `alignpack`, `model_ir`, `main`
+and `kv_plane`, and `emit-llvm --stage optimized` works on `layer_qwen2`;
+ALIGN_LLM_VERIFIED is deferred to the adopted pin because of Request 118.
 
 ### Request 97: make `--rt-lto` inline at the default `--target-cpu baseline` on aarch64 (2026-09-18)
 
@@ -797,13 +814,13 @@ partition is formed.
 
 ### Request 99: derive a complete memory-effects model for every runtime ABI symbol (2026-09-18)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: application-side removal of per-element runtime calls, bulk-write adoption, all decode and tokenizer work
 Resume condition: upstream design closure and implementation on issue #1071
-Align commit or pull request: [sanohiro/align#1071](https://github.com/sanohiro/align/issues/1071)
+Align commit or pull request: implementation [sanohiro/align#1126](https://github.com/sanohiro/align/pull/1126), merge `5dc3caa7`; tracking issue [sanohiro/align#1071](https://github.com/sanohiro/align/issues/1071)
 align-llm verification: `alignc explain-opt` LICM remark counts on the hot modules (12,185 `"loop may invalidate its value"` at the baseline), `kv_plane$read_header` `llvm.memset` count in emitted IR, plus scripts/bench-runtime-greedy and scripts/bench-runtime-sampler
 
 Discovered during the Mac-native binary optimization audit of runtime-backed container mutation (`src/kv_plane.align`, `src/moe_model_forward.align:391-415`, `src/layer_qwen2.align:1851`):
@@ -831,6 +848,9 @@ classified `IndirectStorage` with effects withheld. An `argmem` semantics
 experiment is PR 1's precondition, and PR 1 does not deliver this issue's
 acceptance criteria 3-4 as written. Also folds #1073 part 2. Status is
 unchanged.
+
+2026-09-21: merged upstream as Align PR #1126 (`5dc3caa7`); align-llm adoption
+is paused by Request 118.
 
 ### Request 100: give per-element runtime primitives an inline fast path and a visible slow path (2026-09-18)
 
@@ -942,7 +962,7 @@ Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: splitting `*_execute_mode_traced` diagnostic arms into separate functions, gating unconditional diagnostic work behind its flag
 Resume condition: upstream design closure and implementation on issue #1074
-Align commit or pull request: [sanohiro/align#1074](https://github.com/sanohiro/align/issues/1074)
+Align commit or pull request: implementation [sanohiro/align#1128](https://github.com/sanohiro/align/pull/1128), merge `bdf29a48`; tracking issue [sanohiro/align#1074](https://github.com/sanohiro/align/issues/1074)
 align-llm verification: disassembly position and byte-span measurement of `$fail` call blocks in `moe_decode_step$run_moe_layer` (20.4% of the function at a mean 49.5% position today), plus scripts/run-moe-decode-step and scripts/run-decode-step
 
 Discovered during the Mac-native binary optimization audit of error-path layout (`src/moe_decode_step.align`, `src/decode_step.align`):
@@ -978,9 +998,12 @@ language surface are unchanged. align-llm's disassembly/byte-span and runtime
 verification remain consumer-owned, so `ALIGN_LLM_VERIFIED` and `CLOSED` are
 pending.
 
+2026-09-21: merged upstream as Align PR #1128 (`bdf29a48`); align-llm adoption
+is paused by Request 118.
+
 ### Request 103: state Align's scalar ABI facts at call boundaries (`zeroext`/`signext`/`range`) (2026-09-18)
 
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
@@ -1033,6 +1056,9 @@ drop from 13 to 10 instructions, and run `scripts/run-moe-decode-step`. Until
 those measurements pass, this request remains ALIGN_MERGED rather than
 ALIGN_LLM_VERIFIED.
 
+2026-09-21: merged upstream as Align PR #1143 (`1a446e5e`); align-llm adoption
+is paused by Request 118.
+
 ### Request 104: lay out every sum type as a tagged union, including `Option` and `Result` (2026-09-18)
 
 Status: ALIGN_LLM_VERIFIED
@@ -1070,7 +1096,7 @@ fixture, build machinery, or managed pin changed for this verification.
 
 ### Request 105: complete the aggregate transport contract for parameters, returns, cleanup bit and destinations (2026-09-18)
 
-Status: ALIGN_MERGED as a design ledger only; implementation remains PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
@@ -1123,6 +1149,9 @@ scratch-slot, warning and smoke measurements remain consumer-owned and
 unverified; no align-llm code, fixture, build machinery, branch or managed pin
 was changed for this provider delivery.
 
+2026-09-21: merged upstream as Align PRs #1133 (`5f71179e`) and #1134
+(`8863ecc2`); align-llm adoption is paused by Request 118.
+
 ### Request 106: one drop-state model — flag ownership, sweep folding, and move-out zeroing (2026-09-18)
 
 Status: ALIGN_MERGED in implementation PR 1132; ALIGN_LLM_VERIFIED pending
@@ -1167,6 +1196,9 @@ bounded gate, Clippy, and Linux x86-64/Linux ARM64/macOS CI passed. The listed
 align-llm metrics and smoke digests remain consumer-owned and unverified; PR 3
 aggregate transport and PR 4 fresh construction are separate capabilities, not
 limits of this shipped drop-state surface.
+
+2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
+the merge commit is an ancestor of `dfcfd11f`.
 
 ### Request 107: materialize a borrowed slice/array view header once and state its alias facts (2026-09-18)
 
@@ -1248,13 +1280,13 @@ owner (11 tests, aarch64) plus one `vectorize_shapes` aarch64 arm. Limit:
 
 ### Request 109: fuse the bounds check into one unsigned compare and eliminate monotone-induction in-loop checks (2026-09-18)
 
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: pre-slicing rows before two-index inner loops (which moves one guard to the preheader today), all other decode and tokenizer work
 Resume condition: upstream design closure and implementation on issue #1081
-Align commit or pull request: [sanohiro/align#1081](https://github.com/sanohiro/align/issues/1081)
+Align commit or pull request: implementation [sanohiro/align#1116](https://github.com/sanohiro/align/pull/1116), merge `1eeec89f`; tracking issue [sanohiro/align#1081](https://github.com/sanohiro/align/issues/1081)
 align-llm verification: surviving `align_rt_bounds_fail` and `align_rt_range_fail` call sites in whole-program optimized IR (2,311 and 790 today), unfolded `tbnz/tbz xN, #0x3f` sign tests in Align code (1,358 across 409 functions today), `vector.body` count (73 in 2,108 defined functions today), plus scripts/bench-runtime-greedy and scripts/run-decode-step
 
 Discovered during the Mac-native binary optimization audit of check shape (`src/decode_step.align:636-660`, `src/layer_olmoe.align:1339`, `src/tokenizer_qwen2.align`):
@@ -1281,6 +1313,9 @@ this issue was revised after its independent review in
 [Align PR #1110](https://github.com/sanohiro/align/pull/1110) (merge commit
 `aa8e519e79e831724efff7fcd9788221a908e578`), and implementation of PR 2 is
 starting. Status is unchanged.
+
+2026-09-21: merged upstream as Align PR #1116 (`1eeec89f`); align-llm adoption
+is paused by Request 118.
 
 ### Request 110: one floating-point reduction semantics — uniform min/max lowering plus scoped reassociation (2026-09-18)
 
@@ -1337,6 +1372,9 @@ align-llm build. The original speed targets and ordered bit-identity controls
 remain consumer-owned adoption measurements, so Request 110 is not yet
 `ALIGN_LLM_VERIFIED`.
 
+2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
+the merge commit is an ancestor of `dfcfd11f`.
+
 ### Request 111: make a vector mask structural — blend vectors of matching lane count and element width (2026-09-18)
 
 Status: ALIGN_MERGED
@@ -1379,13 +1417,13 @@ not unconditionally exact, since the index lanes are `i32`.
 
 ### Request 112: lower a counted loop with its trip-count exit at the latch, not the header (2026-09-18)
 
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all scan, digest and tokenizer work; the lowering cannot be influenced from source, so no application workaround competes with it
 Resume condition: upstream design closure and implementation on issue #1084
-Align commit or pull request: [sanohiro/align#1084](https://github.com/sanohiro/align/issues/1084)
+Align commit or pull request: implementation [sanohiro/align#1127](https://github.com/sanohiro/align/pull/1127), merge `5868ed8d`; tracking issue [sanohiro/align#1084](https://github.com/sanohiro/align/issues/1084)
 align-llm verification: `alignc explain-opt` `Cannot vectorize early exit loop` remark counts on the hot modules (191 remarks at 140 sites across 18 source files today), `kv_plane$all_zero` throughput on a 1 MiB buffer (3.12 GB/s today), plus scripts/run-tokenizer-smoke and scripts/run-alignpack-smoke
 
 Discovered during the Mac-native binary optimization audit of loop control shape (`src/kv_plane.align`, `src/layer_forward.align`, `src/moe_layer_forward.align`, `src/model_forward.align`):
@@ -1411,6 +1449,9 @@ this issue was revised after its independent review in
 [Align PR #1110](https://github.com/sanohiro/align/pull/1110) (merge commit
 `aa8e519e79e831724efff7fcd9788221a908e578`), and implementation of PR 2 is
 starting. Status is unchanged.
+
+2026-09-21: merged upstream as Align PR #1127 (`5868ed8d`); align-llm adoption
+is paused by Request 118.
 
 ### Request 113: add `str` literal patterns to `match`, completing the value-pattern family (2026-09-18)
 
@@ -1466,6 +1507,9 @@ smoke suites, and confirm byte-identical output and pack digests. No align-llm
 code, tests, fixtures, build machinery, branch, PR or managed pin was changed by
 this provider delivery.
 
+2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
+the merge commit is an ancestor of `dfcfd11f`.
+
 ### Request 114: make `emit-llvm --stage optimized` and `explain-opt` report a unit that has no `main` (2026-09-18)
 
 Status: ALIGN_MERGED
@@ -1501,6 +1545,11 @@ is now accepted by `explain-opt` too. Builds and `emit-obj` keep `{main}`
 plus `--export`, unchanged. A `pub fn` named like a runtime symbol no longer
 breaks inspection. Shipped together with Request 115 / issue #1087 in the
 same PR, since both share the one target/root resolution seam.
+
+2026-09-21: at `dfcfd11f` `alignc explain-opt` reports on `decode_step`,
+`moe_decode_step`, `gguf`, `tokenizer_qwen2`, `alignpack`, `model_ir`, `main`
+and `kv_plane`, and `emit-llvm --stage optimized` works on `layer_qwen2`;
+ALIGN_LLM_VERIFIED is deferred to the adopted pin because of Request 118.
 
 ### Request 115: normalize the Darwin triple to `macosx<deployment>` and single-source the deployment target (2026-09-18)
 
@@ -1547,6 +1596,9 @@ filesystem or subprocess fallback. Align verified exact LLVM metadata, native
 Mach-O load commands, omission, cache separation, validation before side
 effects, and concurrent direct-call freezing. Consumer-owned adoption and the
 release-link/`otool` measurements above remain pending.
+
+2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
+the merge commit is an ancestor of `dfcfd11f`.
 
 ### Request 116: one vectorization contract for ordinary Align code, with an owner per guarantee (2026-09-18)
 
@@ -1644,6 +1696,81 @@ The item "replace `ggml_ffi.null_handle()` with a `pub` const" could not be appl
    pair (+0.8%, noise) says this item would not have been a performance claim either way. It is
    recorded because it is a language-owned restriction, not an application choice; per `CLAUDE.md`,
    a workaround is not a reason to leave a language gap unrecorded.
+
+### Request 118: [Compiler Bug] Since Align #1132, a drop-tracked field store after a `?` Ok continuation lowers to `unreachable` and truncates the function (SIGSEGV) (2026-09-21)
+
+Status: PROPOSED
+Priority: high
+Blocking: yes
+Blocked gate or slice: adoption of any `.align-revision` at or after `2c39850b` (Align #1132), and
+  therefore the adoption of Requests 92, 93, 94, 95, 103, 105, 106, 110, 113 and 115
+Independent work that may continue: everything at pin `8c8bfbc7`, including the application-side
+  items that do not need the newer surfaces
+Resume condition: the fix is merged on Align `main` and the 25-line reproducer prints `repro: PASS`
+  at the fixed commit, then re-run the adoption
+Align commit or pull request: issue sanohiro/align#1157 (filed 2026-09-21)
+align-llm verification: `scripts/run-gpu-session-reuse-smoke` PASS and `scripts/run-layer-forward-smoke`
+  PASS at the adopted pin, plus `make check` 155 units, and an `objdump` census showing zero Align
+  functions ending in a non-noreturn `call`
+
+1. Evidence. Bisected over the merge commits between `8c8bfbc7` and `dfcfd11f`: last good
+   `647eb24d` (#1131), first bad `2c39850b` (#1132); still bad at `2907d5e5`, `854815ac`,
+   `dfcfd11f`. `make check` passes at every commit (type checking is unaffected); the defect is in
+   drop-state/MIR to LLVM lowering. At `dfcfd11f`, `runtime_generation$execute_session` ends at
+   `call align_rt_str_clone` followed by padding, with no `ret`; 85 Align functions in the
+   `ggml-spike` image end in a non-noreturn `call` (0 at `8c8bfbc7`), 84 of them in
+   `align_rt_str_clone`. Runtime: `scripts/run-gpu-session-reuse-smoke` exits 139 after "session:
+   first"; `scripts/run-layer-forward-smoke` fails because the `--layer-forward` child emits no
+   JSON. The 25-line reproducer:
+
+   ```align
+   module single
+   import std.io
+   Fault { code: string, detail: string }
+   Session { decode_key: string, count: i64 }
+   fn act(kind: i64) -> Result<(), Fault> {
+     if kind < 0 { return Err(Fault { code: "CONFIG".clone(), detail: "kind".clone() }) }
+     return Ok(())
+   }
+   fn prepare(kind: i64) -> Result<(), Error> {
+     act(kind) else { return Err(Error.Invalid) }
+     return Ok(())
+   }
+   fn drive(borrow mut session: Session, n: i64) -> Result<i64, Error> {
+     key := "graph-key".clone()
+     prepare(n)?
+     session.decode_key = key.clone()
+     return Ok(1)
+   }
+   pub fn main(args: array<str>) -> Result<(), Error> {
+     mut session := Session { decode_key: "".clone(), count: 0 }
+     total := drive(session, 3)?
+     if total != 1 || session.decode_key.len() != 9 { return Err(Error.Invalid) }
+     io.stdout.write("repro: PASS\n")?
+     return Ok(())
+   }
+   ```
+
+   Variant results: scalar field write PASSes; `match` instead of `?` or no inner `else` gives a
+   garbage `Err` instead of a crash; `borrow mut` not required (`layer_qwen2$parse_geometry` with a
+   local `mut` record is also truncated); cross-unit split and enclosing loop not required. Also
+   record the second defect: at `8863ecc2` (#1134) and `2907d5e5` (#1138) align-llm does not compile
+   ("cannot import interface 'runtime_diagnostic': interface drop-state metadata disagrees with its
+   parameter type or mode"), repaired by a later commit before `dfcfd11f`.
+2. Consumer. Every align-llm function that assigns a `string`/owned field of a mutable record after
+   a `?`; the resident session (`src/runtime_generation.align:1453-1454`,
+   `session.decode_key = key.clone()`) and the legacy forward path.
+3. Proposed surface. None new; a fix in the drop-state lowering plus a compiler regression test for
+   `?` Ok-continuation followed by a drop-tracked field store on a `borrow mut` record and on a
+   local `mut` record, and an emit-time assertion that no lowered function body ends without a
+   terminator.
+4. Acceptance. The reproducer and its two variants return correct values at the fixed commit; the
+   align-llm verification commands above pass at the adopted pin.
+5. Blocking rationale. Adoption paused at `8c8bfbc7`; the 2026-09-21 adoption attempt at `dfcfd11f`
+   (managed compiler materialised in 1 m 18 s, `make check` 155 units PASS, `bench-runtime-greedy`
+   128 µs/call, `bench-runtime-sampler` 174 µs/call, `explain-opt` now reports on all seven
+   previously crashing modules and on `kv_plane`, `emit-llvm --stage optimized` works on
+   `layer_qwen2`) is retained as evidence only.
 
 ### Latest Align toolchain and language feature adoption (2026-09-17)
 

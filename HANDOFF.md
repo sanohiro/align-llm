@@ -4,8 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/parity-minor-batch`, based on `origin/main` `58f5176`.
-Active capability: minor parity bundle (executable consumer capability, hosted row): P3 `cuda-current` llama-server comparison (driver nomination, §6.3 ledger and result), C1 opt-in ggml CPU thread count, C2 byte-identical legacy CPU items, C0 owner NameError fix with an unresolved-name self-test guard, P6 kernel attribution and P7 deferral recorded. Not in this bundle: P4/P5 (need the M1), P8 (design merged in #281), P9/P10 (new leftovers).
+Branch: `agent/align-request-118`, based on `origin/main` `50e8936`.
+Active capability: none active; this branch registers Align Request 118 (issue sanohiro/align#1157: drop-state codegen regression since Align #1132) and records the ALIGN_MERGED statuses of Requests 99, 102, 103, 105, 109 and 112. The Align pin stays at `8c8bfbc7`: adopting `dfcfd11f` is blocked (SIGSEGV in `run-gpu-session-reuse-smoke`, failure of `run-layer-forward-smoke`), see Request 118.
 PR #282 merged at `58f5176`: recorded Align responses and merges for requests 92–95, 99, 100, 103, 104, 105, 106, 110, 113, and 115.
 PR #281 merged at `4eb0f60e`: settled designs for CPU resident session, ready frame schema 2, GPU-side greedy selection, and prompt-lookup speculation.
 PR #280 merged at `2cfbae00`: platform-profiled OLMoE sampled runtime baseline owner and Linux CPU baseline results.
@@ -59,6 +59,7 @@ Completed work:
 - Registered Align Request 117 in `docs/align-requests.md` for the C2 `null_handle` constant gap (PROPOSED, non-blocking, not yet filed upstream).
 
 Next actions in priority order (backend parity items lead; register: `docs/backend-parity.md` sections 5 and 6):
+0. When Align fixes #1157: adopt the fixed pin, run the standing owner set plus `run-gpu-session-reuse-smoke` and `run-layer-forward-smoke`, refresh the C0 platform profile (`--print-identity`; it mismatches on `align_revision` and `compiler_sha256` at any new pin) and `docs/python-boundary-inventory.json` `align_revision`, then move the merged requests to ALIGN_LLM_VERIFIED.
 1. Publish this bundle after review repair; `pre-pr` stamped at the final head (see verification).
 2. Metal items P4, P5 and the P3 Metal leg: the `llama-server` paired rerun at current main (M1).
 3. C3 CPU resident session per `docs/specs/cpu-resident-session.md` (scheduled before R9).
@@ -98,9 +99,10 @@ Latest durable verification:
 Blockers, constraints, decisions:
 - Zero regressions against all smoke and benchmark suites.
 - Python boundary launch sources strictly preserved without unverified digest modifications.
-- No Align capability request is blocking: Requests 92–95 and 97–117 are all `Blocking: no`, so every application-side item above may proceed. Do not consume any proposed Align surface while those requests are PROPOSED.
+- Request 118 is the only blocking Align request (pin adoption); Requests 92–95 and 97–117 are `Blocking: no`, so every application-side item at pin `8c8bfbc7` may proceed. Do not consume any proposed Align surface while those requests are PROPOSED.
 - Align #1070 (Request 98) means `--thin-lto` cannot be used on align-llm at all today, and Align #1069 (Request 97) means the default `--target-cpu` loses the `--rt-lto` inline on aarch64; choosing `--target-cpu native` for align-llm's own builds is the only available mitigation.
 - The audit's own artifacts are in the session scratchpad (disposable). Re-derive them rather than citing a local path.
+- Request 118 (Blocking: yes) pauses every `.align-revision` adoption at or after `2c39850b`; resume when sanohiro/align#1157 is fixed and the reproducer passes; then adopt in one pin update and verify Requests 92–95, 99–100, 102–103, 105–106, 109–110, 112–116.
 
 ## Completed capability: latest merged Align adoption
 
