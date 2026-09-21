@@ -237,3 +237,46 @@ exports the variable.
 hardcoded 4. Neither is runnable on this profile at current `main` — both are Darwin-bound, and the
 item 69 owner already fails its source-chain self-test — so this is recorded rather than repaired.
 Do not export the variable globally; set it on the one command that is being measured.
+
+### Result (2026-09-20)
+
+C0-protocol pair against `eval/benchmarks/cpu-baseline-linux-2026-09-20.json` (4 threads, runtime
+median 17.543 s), with `ALIGN_LLM_GGML_CPU_THREADS=16`: runtime median 16.459 s (−6.2%), local
+median 11.037 s, 4/4 in both arms, seeds unchanged (local 5, runtime 1). Runtime candidate walls
+16.72/16.25/16.09/15.74 s, mean 16.20 s versus the 17.30 s baseline mean (−6.4%); elapsed 138.3 s.
+Receipt: `gpu-cuda-parity-20260920/c1-run1/result.json` (outside Git).
+
+Evidence 1 (G1 unchanged with the variable unset) passed: the 19-case CPU-vs-GPU acceptance PASS on
+the bundle build with the variable unset, using the candidate build together with the same-source
+CPU reference built from bundle head `6817c7b` (pre-rebase; the same product tree as source
+`6790407`). Evidence: `gpu-cuda-parity-20260920/bundle-acceptance/`.
+
+Interpretation: the measured gain is below the 15% performance floor. The legacy CPU path is
+dominated by Align-side staging rather than ggml compute, consistent with the r8 diagnosis. The
+opt-in stays default-off; evidence 3 (bit identity of the legacy path at 4 versus N threads) remains
+unrecorded and unblocking, per "Until evidence 3 is recorded" above.
+
+## 9. C2 legacy CPU items (2026-09-20)
+
+Register owner: `docs/backend-parity.md` section 6, item C2. Commit `6704913` applies the
+CPU-weighted application items already listed in `HANDOFF.md`.
+
+| Item | Disposition | Owner |
+| --- | --- | --- |
+| (a) `prime_window` chunk via `buffer.filled` | Done | `src/layer_forward.align` / `src/moe_layer_forward.align` (prime_window) |
+| (b) Qwen legacy path `stage_kv` | Done | Qwen legacy per-layer path |
+| (f) `digest_region` single load | Done | `digest_region` (shared with the `Greedy argmax single load` register row) |
+| (c) member columns built once | Skipped | Not structural: 11 of 13 columns vary per layer |
+| (d) `digest_region` behind the oracle flag | Skipped (SHA kept) | Persisted documents consume `steps[].sha256` |
+| (e) `null_handle` as a `pub` const | Skipped (refused by Align) | Align at pin `8c8bfbc7` refuses a `raw`-typed or function-initialised constant ("a constant's type must be a scalar, `str`, or `slice<T>`, got raw"; "a constant initializer must be a literal…"); recorded as an Align gap candidate, not filed |
+| (g) `Outcome` hot/cold split | Deferred | Not attempted in this batch |
+
+Byte identity: `scripts/run-layer-forward-smoke` PASS against checked-in goldens (1426 sha256, 626
+bit_sum); `make check` 155 units; provider/tokenizer smokes PASS.
+
+C0-protocol pair result at default thread count: runtime median 17.677 s versus the
+`cpu-baseline-linux-2026-09-20.json` baseline of 17.543 s (+0.8%, noise), local median 10.995 s.
+Receipt: `c2-run1/result.json`.
+
+Interpretation: no measurable effect on the C0 protocol; the changes are retained as byte-identical
+cleanup, not a performance claim.

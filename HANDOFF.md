@@ -4,8 +4,9 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/record-align-merges-20260921`, based on `origin/main` `4eb0f60e`.
-Active capability: none active; this branch is a classifier-eligible Markdown update recording upstream Align responses, design ledgers, and merges for requests 92–95, 99, 100, 103, 104, 105, 106, 110, 113, and 115.
+Branch: `agent/parity-minor-batch`, based on `origin/main` `58f5176`.
+Active capability: minor parity bundle (executable consumer capability, hosted row): P3 `cuda-current` llama-server comparison (driver nomination, §6.3 ledger and result), C1 opt-in ggml CPU thread count, C2 byte-identical legacy CPU items, C0 owner NameError fix with an unresolved-name self-test guard, P6 kernel attribution and P7 deferral recorded. Not in this bundle: P4/P5 (need the M1), P8 (design merged in #281), P9/P10 (new leftovers).
+PR #282 merged at `58f5176`: recorded Align responses and merges for requests 92–95, 99, 100, 103, 104, 105, 106, 110, 113, and 115.
 PR #281 merged at `4eb0f60e`: settled designs for CPU resident session, ready frame schema 2, GPU-side greedy selection, and prompt-lookup speculation.
 PR #280 merged at `2cfbae00`: platform-profiled OLMoE sampled runtime baseline owner and Linux CPU baseline results.
 PR #279 merged at `e535d7d0`: recorded capped-read loader startup result on CUDA.
@@ -57,62 +58,37 @@ Completed work:
 - Registered Align Requests 97–116 in `docs/align-requests.md` (one per issue #1069–#1087 in issue-number order, plus Request 116 for umbrella #1088), all PROPOSED and non-blocking, and recorded the design-review conclusions for #1063 and #1064 under Requests 92 and 93.
 
 Next actions in priority order (backend parity items lead; register: `docs/backend-parity.md` sections 5 and 6):
-1. P1: done. F16 KV policy 2 selected for Qwen sessions on CUDA (`ba9ea4f`); dedicated CUDA qualification PASS; paired local campaign result NOT_MET (+6.7% on the primary, below the 15% floor). Receipts are observer-invalid (Claude Code CLI CPU); no rerun scheduled, see the register's P1 deferral.
-2. P2: done. Capped-read loader startup measured on CUDA against synthetic control `5fbecf17`: OLMoE 17.125 s → 1.669 s (−90.25%), Qwen −30.66%, 5/5; receipt observer-invalid (Claude Code CLI CPU), same deferral as P1.
-3. C0: done. Linux CPU baseline established with the platform-profiled owner (runtime 17.54 s vs llama-server 11.29 s median time to passing patch, 1.55x; about 8x per candidate, 8.3x on this receipt, and about 5.6x per completion token, the arms emitting 52–55 versus 81 tokens). C1 and C2 pair against it with the same owner.
-4. P3: re-run the `llama-server` paired campaigns at current main, CUDA first, then Metal, with a fresh precommitted ledger; both existing results predate O1, PR #243, capped-read and `5efd7a0`.
-5. C1: set the ggml CPU thread count (default versus option decision; keep the CPU reference arm deterministic).
-6. C2: apply the CPU-weighted application items from continued item 2 below; its argmax item covers the six legacy `value > best_value` loops as well as the session `greedy`.
-7. P5: verify pin `8c8bfbc7` on the Mac session build (16 independent requests).
-8. P4, P6, P7: indexed SET_ROWS prefill on Metal, CUDA per-kernel profile, record the `5efd7a0` measurement host.
-9. C3: design ledger for the resident session on the ggml CPU device (backend allowlist, shim registry, calibration contract), then implementation.
-10. Prerequisites recorded in the register: control `4bf8011` pins Align `f502fe3d` itself, so CUDA paired timing needs CONTROL re-settled in the enablement spec (proposed `0457a7d` at the current pin); no pre-fix CUDA control or CUDA startup owner exists for P2; the item-69 CPU owner is Darwin-only, so C0 needs a Linux-pinned owner or the M1.
+1. Publish this bundle after its review (three disjoint scopes: legacy CPU numerics + shim + C0 owner; measurement driver + specs; register/HANDOFF).
+2. Metal items P4, P5 and the Metal `llama-server` rerun (M1).
+3. C3 CPU resident session per `docs/specs/cpu-resident-session.md` (scheduled before R9).
+4. P9 pinned logits staging (cheap; request protocol).
+5. P10 OLMoE host-side per-token attribution.
+6. §3.13 GPU-side greedy selection: census step 0 only, delete on any tie.
+7. R9 speculation after C3.
 
 Continued next actions from the previous checkpoint, after the list above:
 1. Adopt the Align pin containing PR #1068: update `.align-revision`, materialize and verify the managed toolchain, and confirm `alignc explain-opt` now reports on the 7 modules that crashed at `8c8bfbc7` (Request 96 moves toward ALIGN_LLM_VERIFIED).
 2. Application-side improvements available today at the current compiler, ranked by measured effect:
-   - Replace the `prime_window` per-byte zero fill with `buffer.filled` (`src/moe_decode_step.align:3238`, `src/moe_model_forward.align:394-415`); 1,048,576 opaque runtime calls per generated token on the 16-layer OLMoE path.
-   - Use `ggml_ffi.stage_kv` on the Qwen2 path instead of `stage_past_k`/`stage_past_v` (`src/decode_step.align:2214-2219`).
    - Build the 13 member columns once for all layers instead of per layer per token (`src/model_forward.align:1610`, `src/moe_model_forward.align:1940`).
-   - Gate `digest_region`'s SHA-256 behind the oracle flag (`src/decode_step.align:2298`).
-   - Replace `ggml_ffi.null_handle()` calls with a `pub` const (512 calls per token at 16 layers).
    - Add length pre-checks before string-literal `==` chains (`src/tokenizer_qwen2.align:1754-1767`, `build_eog_set`).
    - Give hot `array_builder()` calls their known capacity.
    - Split `model_forward$Outcome` into a hot per-step record and a cold per-run diagnostics record.
-   - Use `best.max(x)` instead of `if x > best` in the greedy, top-k and sampler selection loops (16x measured on the max reduction: 190.7 to 12.0 us/call on 152,064 f32).
    - Recommend `--target-cpu native` for align-llm's own release builds in `docs/align-development.md` (removes 1,275 call sites and 41 duplicate bodies; the portable compiler default stays settled upstream).
 3. Monitor upstream Align responses to issues #1069–#1088 and to the comments on #1063, #1064, #1066 and #1067.
 
 Latest durable verification:
-- C0 (2026-09-20, `465957d`): `scripts/run-olmoe-platform-sampled-runtime-baseline --self-test`: PASS; `--print-identity --platform-profile linux-x86_64-v1`: MATCH; baseline run: COMPLETE in 145.24 s, local median 11.291 s, runtime median 17.543 s, 4/4 both arms; `python3 scripts/check-python-boundary --strict`: PASS (274 files). Portable receipt `eval/benchmarks/cpu-baseline-linux-2026-09-20.json`; the raw receipt is retained outside Git.
-- `git diff --check`: PASS.
-- `python3 scripts/pre-pr --plan` (parity register segment `02e1fc7`): selects the `docs` classifier row (diff-check, markdown-fences).
-- `python3 scripts/pre-pr` (parity register segment `02e1fc7`): PASS at the exact branch head after the review repair (rerun after the final commit).
-- `python3 scripts/pre-pr --base 02e1fc7 --owner-test cpu-baseline -- scripts/run-olmoe-platform-sampled-runtime-baseline --self-test`: PASS at the repaired branch head (hosted; owner cpu-baseline), rerun after the review repair.
-- P1 Qwen F16 KV CUDA qualification (2026-09-20, candidate `f874c10`/`ba9ea4f`, `source_dirty` false):
-- `scripts/run-cuda-kv-prefill-smoke`: PASS.
-- `scripts/run-gpu-session-reuse-smoke` (deterministic GPU stub, no hardware): PASS.
-- `scripts/run-gpu-attention-policy-smoke` (CUDA0): PASS.
-- `scripts/run-gpu-session-independent`: PASS, 7/7 Qwen and 9/9 OLMoE exact outputs and token counts.
-- `scripts/run-gpu-session-host-capacity`: PASS both models.
 - `make check`: PASS, 155 units.
-- `python3 scripts/check-python-boundary --strict`: PASS.
+- `scripts/run-layer-forward-smoke`: PASS.
+- `scripts/run-ggml-spike-smoke`: PASS.
+- `scripts/run-runtime-provider-smoke`: PASS.
+- `scripts/run-gpu-session-measurement-smoke`: PASS.
 - `scripts/measure-cuda-optimization --self-test`: PASS.
-- `python3 scripts/pre-pr --base 02e1fc7 --owner-test cuda-measurement -- scripts/measure-cuda-optimization --self-test`: PASS at the repaired branch head (hosted; owner cuda-measurement), rerun after the review repair.
-- `python3 scripts/pre-pr --base 0d77097 --owner-test cuda-measurement -- scripts/measure-cuda-optimization --self-test`: PASS at the repaired branch head (hosted; owner cuda-measurement), rerun after the review repair.
-- `scripts/measure-cuda-optimization` paired campaign (control `0457a7d`, candidate `f874c10`, run 1): primary `qwen2 warm-long-cached` +6.71%, 5/5 faster; NOT_MET (below 15% floor); all guardrails pass.
-- `scripts/measure-cuda-optimization` paired campaign (run 2, repeat): primary `qwen2 warm-long-cached` +6.69%, 5/5 faster; NOT_MET; all guardrails pass.
-- P2 (2026-09-20, candidate `aad5553`): `scripts/measure-cuda-optimization --self-test`: PASS; `python3 scripts/check-python-boundary --strict`: PASS; `scripts/measure-cuda-optimization --protocol startup` (control `5fbecf17`, candidate `aad5553`): PASS, OLMoE startup −90.25% 5/5, Qwen −30.66% 5/5, all guardrails pass.
-
-Retained from the PR #274 checkpoint (source unchanged on this branch):
-- `alignc check-per-unit src/main.align`: PASS (checked 155 unit(s) per-unit).
-- `./scripts/check-format`: PASS.
+- `scripts/run-olmoe-platform-sampled-runtime-baseline --self-test`: PASS (with the new unresolved-name guard).
 - `python3 scripts/check-python-boundary --strict`: PASS.
-- `scripts/run-tokenizer-smoke`: PASS.
-- `scripts/bench-runtime-greedy`: PASS (129 us/call).
-- `scripts/bench-runtime-sampler`: PASS (183 us/call).
-- `scripts/run-runtime-provider-smoke`: PASS (sampler vectors plus 61 CLI assertions).
-- `scripts/run-gpu-session-reuse-smoke`: PASS (0 exit code).
+- G1 `run-gpu-independent-acceptance`: PASS (19 cases twice) on the bundle build.
+- `run-gpu-session-measurement --campaign cuda-current`: PASS (348.7 s).
+- C0-protocol pairs C2 and C1: COMPLETE.
+- `pre-pr`: to be stamped at the final head.
 
 Blockers, constraints, decisions:
 - Zero regressions against all smoke and benchmark suites.
