@@ -17,6 +17,15 @@ BASELINE = Path("eval/baselines/coding-v1-reference.json")
 ORACLE = Path("eval/expected/coding-v1-reference-oracle.json")
 DIGEST = Path("eval/expected/coding-v1-reference.sha256")
 PENDING = Path("eval/baselines/.coding-v1-reference.pending.json")
+FROZEN_REPLAY_PATHS = (
+    "eval/baselines/patches/python-inclusive-range.patch",
+    "eval/fixtures/python-inclusive-range-v1/repository/src/inclusive_range.py",
+    "eval/fixtures/python-inclusive-range-v1/repository/tests/test_inclusive_range.py",
+    "eval/runners/run-coding-task.py",
+    "eval/tasks/coding-v1.json",
+    "eval/tasks/coding-v1/python-inclusive-range.json",
+    "eval/tasks/coding-v1/python-inclusive-range/task.json",
+)
 FINALIZATION_PATHS = frozenset(
     {
         BASELINE.as_posix(),
@@ -185,23 +194,6 @@ def canonical_projection(baseline: dict[str, Any]) -> bytes:
     return (json.dumps(projection, indent=2) + "\n").encode("utf-8")
 
 
-def artifact_paths(baseline: dict[str, Any]) -> tuple[str, ...]:
-    artifacts = baseline.get("artifacts")
-    if not isinstance(artifacts, dict) or not isinstance(artifacts.get("files"), list):
-        raise BaselineChainError("baseline artifact manifest is malformed")
-    paths: list[str] = []
-    for artifact in artifacts["files"]:
-        if not isinstance(artifact, dict) or not isinstance(artifact.get("path"), str):
-            raise BaselineChainError("baseline artifact path is malformed")
-        path = artifact["path"]
-        if not path or "\n" in path or "\r" in path or path.startswith("/"):
-            raise BaselineChainError("baseline artifact path is not line-safe")
-        paths.append(path)
-    if not paths or len(set(paths)) != len(paths):
-        raise BaselineChainError("baseline artifact manifest is empty or duplicated")
-    return tuple(paths)
-
-
 def post_owner_changes(owner: str, head: str, paths: Sequence[str], label: str) -> None:
     status, output, _ = git_status(
         ["log", "--full-history", "--ancestry-path", "--format=%H", f"{owner}..{head}", "--", *paths]
@@ -277,10 +269,7 @@ def verify() -> None:
         raise BaselineChainError("working-tree baseline differs from its finalization commit")
     if show(finalization, DIGEST.as_posix()) != (PROJECT_ROOT / DIGEST).read_bytes():
         raise BaselineChainError("working-tree digest differs from its finalization commit")
-    if show(source, "Makefile") != (PROJECT_ROOT / "Makefile").read_bytes():
-        raise BaselineChainError("working-tree Makefile differs from the baseline source commit")
-
-    post_owner_changes(source, head, artifact_paths(baseline), "source")
+    post_owner_changes(source, head, FROZEN_REPLAY_PATHS, "frozen replay")
     post_owner_changes(oracle, head, (ORACLE_PATH,), "oracle")
     post_owner_changes(finalization, head, tuple(sorted(FINALIZATION_PATHS)), "finalization")
     if (PROJECT_ROOT / PENDING).exists():

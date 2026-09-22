@@ -56,8 +56,10 @@ Validation executables must resolve inside the read-only system runtime (`/usr` 
 Python installation); fixture-local executables are intentionally rejected until they have an
 explicit sandbox mount policy.
 
-Record a pending baseline only from a clean commit. The pending file is intentionally outside the
-canonical path until its immutable oracle has been committed:
+The following recording flow is historical. Since the Align product cutover, normal
+`main --eval coding-v1` execution is intentionally refused and the coding-v1 inputs and canonical
+baseline remain frozen for external replay. Do not rerun this command for later toolchain,
+Makefile, or product-source changes:
 
 ```text
 python3 eval/runners/record-baseline.py \
@@ -81,8 +83,9 @@ python3 scripts/finalize-canonical-baseline.py \
 The finalizer writes `eval/baselines/coding-v1-reference.json` and its digest. Remove the pending
 file after the canonical result is committed.
 
-The recorder verifies and uses the managed pinned Align compiler, rebuilds `main`, and rechecks
-source cleanliness before measurement. It accepts complete non-passing suite results so
+For a historical checkout predating that retirement, the recorder verifies and uses the managed
+pinned Align compiler, rebuilds `main`, and rechecks source cleanliness before measurement. It
+accepts complete non-passing suite results so
 provider failures remain measurable; the CI smoke suite exercises that path with a complete failing
 JSON Lines result and nonzero evaluator exit. Environment metadata records both the requested and
 resolved absolute Python executable, plus the version used by the measured corpus task.

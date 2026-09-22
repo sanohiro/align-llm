@@ -68,6 +68,12 @@ Completed work:
   prebuilt cache. The repair persists an explicit runner-temporary `ALIGNC_CACHE` through an Actions
   cache keyed by OS, architecture, and pin; Align's internal source/profile keys still own misses,
   and GitHub branch scope keeps pull-request entries out of trusted `main` state.
+- The attempted canonical-baseline refresh exposed a pre-existing cutover contradiction: normal
+  `main --eval coding-v1` intentionally refuses the retired corpus, while the old checker still
+  required every later Makefile and compiler-pin change to regenerate it. The repair keeps the
+  canonical measurement immutable, binds its full artifact manifest and Align revision to its
+  recorded source commit, and continues to reject any later change to the seven external replay
+  inputs. `verify-baseline.py` and `check-baseline-chain` both pass at the current pin and Makefile.
 - Reduced two newly discovered Align gaps and registered them as Requests 118 and 119.
   The previously local Request 117 is filed as Align #1159. Request 118 is filed as Align #1158.
   Request 119 reuses the independently reduced Align #1157;
@@ -83,10 +89,9 @@ Next actions in priority order:
    movement including callee saves) and 787 remaining whole-program result scratch allocas. #1065's
    static/allocation and GPU owners pass, but its final real-ggml decode owner needs
    a host with the llama instruments. Exact residual comments are on each issue.
-2. Commit the bounded topology repair as the baseline source, refresh its identity-bound canonical
-   baseline through the required oracle/finalization commits, review and push PR #286, then require
-   the hosted job to finish within the 20-minute hard ceiling and inspect its measured duration
-   before merge.
+2. Commit the bounded topology and frozen-baseline repair, complete one fresh review, push PR #286,
+   then require the hosted job to finish within the 20-minute hard ceiling and inspect its measured
+   duration before merge.
 
 Latest durable verification:
 - `gmake check`: PASS, 155 units, managed Align `df14e8bd`.
@@ -100,6 +105,8 @@ Latest durable verification:
 - `scripts/run-model-ir-smoke`: PASS after the publication repair (49 qwen, 31 gpt-oss, 29 OLMoE,
   and 62 R0 fixtures). The remaining hosted tail owners (`expert-trace`, `residency-sim`,
   `alignpack`, `ggml-spike`, `layer-forward`, `tokenizer`, and `prompt`) also PASS.
+- `python3 eval/runners/verify-baseline.py` and `python3 scripts/check-baseline-chain`: PASS with the
+  retired measurement frozen at its recorded source identity.
 - Repair verification after the stable review: `check-per-unit src/runtime_generation_smoke.align`,
   `scripts/run-runtime-provider-smoke`, and `gmake check` all PASS. The new regression exercises
   the maximum 72-row OLMoE prefill table and reads row 71.

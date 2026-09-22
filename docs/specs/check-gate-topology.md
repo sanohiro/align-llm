@@ -269,9 +269,9 @@ The closure matrix for this repair is:
 
 - The checked compiler identity remains `.align-revision`; no new schema version or cache identity
   applies.
-- The coding-v1 baseline artifact manifest already includes `Makefile`. Therefore any implementation
-  commit that changes the check graph is a new baseline source identity even when task verdicts and
-  scoring semantics remain unchanged.
+- The coding-v1 artifact manifest records `Makefile` and product sources at the historical source
+  commit. After product cutover these entries remain provenance; current check-graph,
+  product-source, and compiler-pin changes do not create a new historical baseline identity.
 - The `Makefile` is the authoritative check graph.
 - Its named `HOSTED_CHECK_TARGETS`, `CAPABLE_ONLY_CHECK_TARGETS`, and
   `SERIAL_CHECK_AGGREGATES` variables feed both the aggregate child-Make goal lists or parse-time
@@ -291,7 +291,11 @@ The closure matrix for this repair is:
   finalization, and verification. Section 2.4 fixes the exact oracle projection and commit topology
   for this identity-coupled implementation.
 
-### 2.4 Baseline commit and merge topology
+### 2.4 Historical baseline commit and merge topology
+
+This subsection records the pre-cutover construction protocol. It is not runnable at current
+`HEAD`; the product deliberately refuses this corpus. The frozen-baseline rule below is
+authoritative for later changes.
 
 The implementation pull request uses this ordered history:
 
@@ -639,11 +643,20 @@ worker controller:
    exact bytes, strict ancestry, complete post-owner history, and pending-record absence using the
    isolated Git environment. It has no caller-controlled ambient commit or repository input.
 
-The implementation sequence is therefore: closure-plan update, shared runner and descriptor
+The implementation sequence was therefore: closure-plan update, shared runner and descriptor
 ownership repair, baseline-chain gate and its focused regressions, a fresh identity-bound baseline
 refresh for every recorded input change, then the final exact-head review and hosted checks. A
 repair may not claim the affected gate until each owner and regression row below points to the
 implemented path and passing command.
+
+The later Align product cutover supersedes that refresh rule. Normal `main --eval coding-v1` now
+refuses the retired Python-backed corpus before task execution, so the canonical baseline is
+immutable historical evidence rather than a measurement regenerated for a new Makefile, product
+source, or `.align-revision`. Verification binds the recorded toolchain and complete artifact
+manifest to the recorded source commit, while the seven external replay inputs (corpus, task
+descriptors, fixture, patch, and independent runner) must remain byte-for-byte unchanged in current
+history. Current check-graph and compiler-pin changes do not rewrite old measurements or relax
+their source/oracle/finalization ancestry.
 
 ### 2.4.2 Conditional final-review repair closure
 
@@ -912,12 +925,12 @@ On success it prints `check gate topology self-test: PASS` plus LF and nothing e
 | Complete graph membership | `Makefile` | named child-Make goal lists | `make gate-topology-check` proves the exact hosted list, capable-only additions, and serialized aggregates. |
 | Existing focused cleanup | focused scripts | unchanged | Existing ordinary, timeout, and abnormal cleanup regressions continue to own these paths. |
 | Parallel and option-bearing parent invocation | recursive GNU Make | reject any aggregate that is not the invocation's sole goal; each permitted aggregate clears `MAKEFLAGS` and `GNUMAKEFLAGS`, then passes its full ordered goal list to one child Make with explicit `-j1`; no target-scoped `.NOTPARALLEL` dependency | The coexistence self-test rejects aggregate-plus-aggregate and aggregate-plus-focused invocations before side effects. The Ubuntu 24.04 required check runs the instrumented `-j8` parent self-test and `make -j8 hosted-checks` under GNU Make 4.3. The former proves child flags, exact order, non-overlap, absence of a jobserver warning, and distinct sentinel `ALIGNC`/`ALIGN_REPO` values retained with `origin=environment`; the latter preserves log evidence of the real option-cleared child command and exact hosted goal list. Separately, `make -j8 ci` passes on the capable host. On GNU Make 4.4 or later, an author-side synthetic invocation with parent `--shuffle=reverse -j8` proves the child order and child `MAKEFLAGS` contain neither shuffle nor inherited parallel flags. The topology oracle proves all three public aggregates remain in the serialized set. |
-| Baseline source identity | implementation source commit | final identity-bound `Makefile` is clean and committed before recording | Pending record `align_llm_commit` equals the source commit and its Makefile digest equals the isolated section-2.4 `clean_git show <source>:Makefile` result. |
+| Baseline source identity | historical implementation source commit | recorded artifact manifest remains bound to that clean source commit | The finalized record's `align_llm_commit`, Align revision, and every artifact digest equal the recorded source commit; current Makefile and compiler-pin changes do not rewrite historical measurements. |
 | Immutable oracle | oracle commit | exact canonical projection of the pending record | Independently regenerate the ordered, indented UTF-8 projection with its final LF from the finalized baseline and compare exact bytes; the oracle commit contains only that projection; the existing direct timing-mutation regression proves whole-projection equality is enforced; final-tree bytes equal the oracle commit. |
 | Canonical finalization | finalization commit and final reviewed/merged worktree | finalizer binds full oracle commit and writes digest; the pending record is removed before the finalization commit and remains absent | `make baseline-check` passes; an explicit path check rejects a pending file at the reviewed head and refreshed `main`; canonical digest matches. |
 | Baseline commit chain | finalized baseline, source, oracle, finalization, final reviewed head, and merge result | one fail-fast Bash process validates persisted source/oracle fields, full lowercase 40-hex raw commit objects for all three identities, and strict source → oracle → finalization → head/main ancestry in an isolated Git environment; merge method is `merge` | Exact identity, width, raw-object type, ancestry, and Git-command status checks pass without replacement objects or ambient Git configuration; the three annotated-tag regressions reach the type guard and require their exact diagnostics; oracle commit changes only the oracle, and finalization commit changes only canonical baseline plus digest. |
 | Executable baseline chain gate | `scripts/check-baseline-chain` plus `Makefile` | `baseline-check` invokes the complete isolated chain checker after schema validation; source/oracle come from the canonical record and finalization is the unique direct oracle child with exact output paths | The target passes on the recorded tuple and fails on source/oracle/finalization identity, raw-object, ancestry, exact-byte, post-owner, pending-file, and Git-command failure injections. |
-| Post-record input change | author/reviewer | re-record from a new clean source commit | The fail-fast block derives the complete path list from the finalized baseline artifact manifest and uses full ancestry-path history to reject any post-source change, including both linear modify-then-restore and TREESAME merge-hidden regressions for a recorded artifact other than `Makefile`; pre-owner side history does not create a false rejection. |
+| Post-record replay-input change | author/reviewer | preserve the retired external replay inputs byte-for-byte | Full ancestry-path history rejects any change to the corpus, task descriptors, fixture, patch, or independent runner. Product source, Makefile, recorder/verifier, and compiler pin remain source-commit provenance but may evolve without regenerating the retired measurement. |
 | Post-record output change | author/reviewer | regenerate through the owning projection/finalizer before finalization; restart the full sequence afterward | Final-tree oracle, baseline, and digest bytes equal their named owner commits; full ancestry-path history shows no later change. Separate TREESAME merge-hidden regressions cover the oracle, canonical baseline, and digest. |
 | Measurement interpretation | pull request evidence | fixed deterministic-reference provider identity and exactly two samples on the recorded environment; each contains the single fixed task and passing summary | An explicit structural assertion requires the provider/model/prompt and both `python-inclusive-range` results and summaries to match and PASS; prior and refreshed timings are reported without a performance claim. |
 | Baseline structural negative paths | isolated temporary-clone harness | execute the same complete fail-fast block against identity, raw-object type, outcome, count, oracle-byte, linear and merge-hidden full-history changes, finalization-width/case, and Git-log-failure injections | Every named negative case returns nonzero overall; the tag cases require their exact type-guard diagnostics, all other cases emit their bounded rejection line, and temporary state is removed. |
