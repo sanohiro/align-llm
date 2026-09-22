@@ -2359,8 +2359,8 @@ def test_workflow_topology() -> None:
         and workflow.count(
             "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0"
         )
-        == 1,
-        "CI does not use the reviewed Node 24 cache action at all seven owners",
+        == 2,
+        "CI does not use the reviewed Node 24 cache action at all eight owners",
     )
     require(
         "llvm-22-dev clang-22 libclang-rt-22-dev lld-22\n"
@@ -2498,12 +2498,22 @@ def test_workflow_topology() -> None:
         "CI does not use the required installed-only mode",
     )
     require(
-        workflow.count("timeout-minutes: 45") == 1
+        workflow.count("timeout-minutes: 20") == 1
         and workflow.count("timeout-minutes: 15") == 1
-        and "timeout-minutes: 45" in workflow[:workflow.index("  fresh-image-profile:")]
+        and "timeout-minutes: 20" in workflow[:workflow.index("  fresh-image-profile:")]
         and "timeout-minutes: 15" in workflow[workflow.index("  fresh-image-profile:") :]
+        and "timeout-minutes: 30" not in workflow
+        and "timeout-minutes: 45" not in workflow
         and "timeout-minutes: 60" not in workflow,
         "required CI jobs do not enforce their hosted and installed ceilings",
+    )
+    require(
+        workflow.count("- name: Restore hosted Align unit cache") == 1
+        and workflow.count("ALIGNC_CACHE: ${{ runner.temp }}/alignc-unit-cache") == 1
+        and "path: ${{ runner.temp }}/alignc-unit-cache" in workflow
+        and "key: alignc-unit-v1-${{ runner.os }}-${{ runner.arch }}-"
+        "${{ hashFiles('.align-revision') }}" in workflow,
+        "hosted Align unit cache routing changed",
     )
     require(
         "--complete-aggregate" not in workflow,

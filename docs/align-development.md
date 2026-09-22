@@ -138,13 +138,21 @@ complete aggregate; each native profile still runs the worker's compiler-only `b
 The hosted and capable aggregates use their shared `build` prerequisite as the complete parser,
 per-unit interface/import, semantic, lowering, code-generation, and link boundary; they do not also
 rerun the uncached `make check`. That public target remains the narrow local implementation check.
-The hosted compiler/check job has a 45-minute timeout; installed-profile jobs retain
-their 15-minute timeout. The hosted allowance includes compiler materialization and
-the complete serial functional graph. Repeated 15-minute cancellations on unchanged
-main and client PRs justified this bounded capacity correction without removing checks.
-PR #286 then reached `prompt_verifier_smoke` but was cancelled at 30m24s after 28m17s in
-supported checks with the merged-request compiler, which justified the 45-minute ceiling without
-adding an owner.
+The hosted compiler/check job has a 20-minute hard timeout; installed-profile jobs retain
+their 15-minute timeout. The operating target for the hosted job remains roughly 15 minutes,
+including compiler materialization and the serial functional graph. PR #286 reached
+`prompt_verifier_smoke` but was cancelled first at 30m24s after 28m17s in supported checks and
+again at 45m16s after 42m36s in supported checks with the merged-request compiler. The fixture had
+grown from the 1,573-line Request 19 admission case to 3,424 lines, and repeating its complete
+code-generation owner on every unrelated pull request no longer fit the lane. The target remains
+the direct focused owner for verifier-boundary changes but is no longer a routine hosted member.
+Issue #287 owns any remaining test or compiler cost diagnosis; another timeout increase is not an
+accepted remedy.
+The hosted job binds Align's writable unit cache to an explicit runner-temporary directory and
+persists it with an Actions cache keyed by native OS, architecture, and `.align-revision`. Align's
+own content-addressed keys decide which unchanged frontend/codegen entries may hit; changed source
+still misses. GitHub's branch cache scope prevents pull-request entries from being promoted into
+`main`, while reruns and later pull requests may consume the trusted default-branch cache.
 Roughly 15 minutes remains the operating target and a reason to inspect ownership
 and cost, not a universal correctness constant. A focused
 target is diagnostic evidence for that surface, not evidence that either aggregate completed.

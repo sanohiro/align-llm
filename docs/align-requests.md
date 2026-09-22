@@ -8427,7 +8427,7 @@ retains verifier-first acceptance, immutable rollback, tamper, lineage, and CLI 
 Status: CLOSED
 Priority: medium
 Blocking: no
-Blocked gate or slice: none — the optimized owner is restored to the hosted lane
+Blocked gate or slice: none — the provider optimization shipped; later fixture growth is tracked by align-llm #287
 Independent work that may continue: all of it; every other align-llm capability compiles and runs inside its existing budget at the current pin
 Resume condition: none — closed
 Align commit or pull request: PR #891, merged as `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`
@@ -8537,6 +8537,15 @@ sites. Nested records, tagged values, owned arrays, handles, and resources remai
 compiler-generated iterative CFG; generated helpers never call one another, so nominal type depth
 does not become runtime call-stack depth. Allocation, ownership, cleanup order, exactly-once Drop,
 diagnostics, MIR, interfaces, and cache formats remain unchanged.
+
+Post-closure scheduling note (2026-09-22): Request 19's consumer acceptance used the then-current
+1,573-line fixture and remains valid evidence for the shipped compiler change. The fixture later
+grew to 3,424 lines and exceeded 42 minutes at the Request 92–119 adoption pin. That is not an
+acceptable routine-test duration and does not reopen the shipped surface. The complete fixture is
+again a focused verifier-boundary owner, now executed with Align's `dev` generated-program profile;
+the smaller scorer, prefix, state, and gate owners remain routine, while align-llm #287 owns further
+test/compiler cost diagnosis and requires the focused owner itself to return below roughly 15
+minutes before another verifier-boundary publication.
 
 On the submitted Request 19 fixture, raw LLVM IR fell from 1,517,324 lines / 113.6 MB to 109,992
 lines / 5.96 MB. A cold three-unit release build fell from 471.074 seconds with observed RSS above

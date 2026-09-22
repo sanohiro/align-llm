@@ -10,9 +10,12 @@ Active capability: adopt the merged Align Requests 92–119 consumer surfaces th
 #1157–#1159 and PRs #1160–#1162 are merged. Requests 117 and 118 are consumer-verified, but Request
 119 is also consumer-verified after rebuilding the stale `main` artifact at the final pin. All four
 named consumer smokes pass. The issue audit, stable-candidate review, rebase, request-register
-reconciliation, and PR publication are complete. PR #286 is open. Its first pinned hosted job reached
-`prompt_verifier_smoke` but was cancelled by the 30-minute job ceiling; the active repair raises that
-measured ceiling to 45 minutes and must receive exact-head preflight and a green hosted rerun.
+reconciliation, and PR publication are complete. PR #286 is open. Its pinned hosted job reached
+`prompt_verifier_smoke` but was cancelled first by the 30-minute ceiling and again by the 45-minute
+ceiling after 42m36s in supported checks. The active repair removes that 3,424-line focused owner
+from routine CI, switches its semantic execution to Align's `dev` generated-program profile, and
+sets a 20-minute hosted hard ceiling with a roughly 15-minute operating target. Issue #287 owns any
+remaining test or compiler cost diagnosis; another timeout increase is not accepted.
 
 Completed work:
 - Materialized and verified the managed compiler/runtime at exact revision `df14e8bd` using the
@@ -51,10 +54,20 @@ Completed work:
 - Publication preflight found that `run-model-ir-smoke`'s role mirror still parsed the historical
   `role_id` if-chain after the consumer adopted a string `match`. The extractor now accepts both
   shipped forms; the focused owner passes all qwen, gpt-oss, OLMoE, and R0 fixtures.
-- PR #286's first hosted job was cancelled at 30m24s after 28m17s in supported checks, while running
-  `prompt_verifier_smoke`; both native fresh-image jobs passed. The retained log contains no failed
-  assertion. The hosted timeout contract, specifications, and workflow self-test now use 45 minutes
-  without adding or duplicating an owner.
+- PR #286's hosted job was cancelled first at 30m24s after 28m17s in supported checks and again at
+  45m16s after 42m36s in supported checks, while running `prompt_verifier_smoke`. A cached rerun
+  completed the x86_64 and aarch64 native fresh-image jobs in 13m40s and 14m09s. The retained hosted
+  logs contain no failed assertion. The fixture has grown from Request 19's 1,573-line admission
+  case to 3,424 lines and is not a valid routine-lane member at that cost. It remains a focused
+  verifier-boundary owner using Align's `dev` generated-program profile; routine CI keeps the
+  smaller scorer, prefix, state, and gate owners. The hosted hard ceiling is 20 minutes and the
+  operating target remains roughly 15 minutes.
+- Audit of Align's build-performance path found that the compiler has default-on content-addressed
+  frontend/codegen reuse and pipelined codegen, but align-llm's hosted workflow discarded its
+  writable unit cache with every fresh runner and its exact compiler bundle contains no adjacent
+  prebuilt cache. The repair persists an explicit runner-temporary `ALIGNC_CACHE` through an Actions
+  cache keyed by OS, architecture, and pin; Align's internal source/profile keys still own misses,
+  and GitHub branch scope keeps pull-request entries out of trusted `main` state.
 - Reduced two newly discovered Align gaps and registered them as Requests 118 and 119.
   The previously local Request 117 is filed as Align #1159. Request 118 is filed as Align #1158.
   Request 119 reuses the independently reduced Align #1157;
@@ -70,8 +83,10 @@ Next actions in priority order:
    movement including callee saves) and 787 remaining whole-program result scratch allocas. #1065's
    static/allocation and GPU owners pass, but its final real-ggml decode owner needs
    a host with the llama instruments. Exact residual comments are on each issue.
-2. Commit the 45-minute hosted-ceiling repair, run classifier-selected `scripts/pre-pr` on that exact
-   head, push PR #286, and require the pinned hosted rerun to pass before merge.
+2. Commit the bounded topology repair as the baseline source, refresh its identity-bound canonical
+   baseline through the required oracle/finalization commits, review and push PR #286, then require
+   the hosted job to finish within the 20-minute hard ceiling and inspect its measured duration
+   before merge.
 
 Latest durable verification:
 - `gmake check`: PASS, 155 units, managed Align `df14e8bd`.
@@ -110,7 +125,7 @@ Latest durable verification:
   approach; their owner checks pass. The later rebase onto `1e9ea492` brought only the request-note
   publication checkpoint into the base; its provider metadata was reconciled without changing the
   reviewed executable surfaces.
-- The final governance-expanding review of the 45-minute CI repair found one P2: `HANDOFF.md` still
+- The governance-expanding review of the 45-minute CI repair found one P2: `HANDOFF.md` still
   named already-completed preflight and publication instead of the active CI rerun. This checkpoint
   is the accepted repair; workflow, assertions, and specifications were otherwise internally
   consistent.
