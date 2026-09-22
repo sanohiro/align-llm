@@ -738,8 +738,9 @@ def test_adopter_topology() -> None:
     )
     require(
         "python3 scripts/run-output-summary --phase hosted-checks --" in workflow
-        and 'make -j8 ALIGNC="$ALIGNC" hosted-checks' in workflow,
-        "CI does not wrap the unchanged hosted aggregate argv",
+        and 'make -j8 ALIGNC="$GITHUB_WORKSPACE/scripts/alignc-hosted-test" hosted-checks'
+        in workflow,
+        "CI does not wrap the hosted aggregate argv",
     )
     require(
         "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1"
