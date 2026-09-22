@@ -646,8 +646,9 @@ Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: provider runtime, benchmarks
-Resume condition: consumer pin, benchmark runs, and call-site disassembly inspection
-Align commit or pull request: design [sanohiro/align#1139](https://github.com/sanohiro/align/pull/1139); implementation [sanohiro/align#1140](https://github.com/sanohiro/align/pull/1140), merge `854815acef2d7e2403532b40d7226aeb4fcbb66a`; tracking issue [sanohiro/align#1066](https://github.com/sanohiro/align/issues/1066)
+Resume condition: provider admits the real block/unsafe/explicit-return `handle_absent` shape and
+  the same-source consumer census is repeated
+Align commit or pull request: design [sanohiro/align#1139](https://github.com/sanohiro/align/pull/1139); implementation [sanohiro/align#1140](https://github.com/sanohiro/align/pull/1140), merge `854815acef2d7e2403532b40d7226aeb4fcbb66a`; provider follow-up [sanohiro/align#1163](https://github.com/sanohiro/align/pull/1163), merge `bc784654`; tracking issue [sanohiro/align#1066](https://github.com/sanohiro/align/issues/1066)
 align-llm verification: scripts/bench-runtime-sampler, scripts/bench-runtime-greedy, disassembly inspection
 
 Discovered during Cross-module function call disassembly (runtime_attention.cached_f16, runtime_attention.fused, ggml_ffi.handle_absent):
@@ -711,6 +712,40 @@ surviving definition or call, while the two other explicitly named controls fail
 owners and runtime-provider correctness pass, but do not substitute for the failed inlining
 contract. Request 95 remains `ALIGN_MERGED`; corrected evidence is posted to Align issue #1066 in
 comments `5768600567` and `5768920430`.
+
+### Align follow-up (2026-09-23)
+
+PR #1163 is merged. Interface policy version 2 admits the named immutable
+primitive-scalar/raw local and short-circuit shapes, and authenticated
+release/fast consumer definitions now carry mandatory `alwaysinline` rather
+than relying on LLVM profitability. Dev, small and tiny retain their existing
+optimization/size policies. Consumer-owned work remains: repin merge
+`bc784654`, rebuild without ThinLTO, repeat the 545-site census, and inspect the
+three named controls. Keep the request at ALIGN_MERGED until that evidence is
+recorded.
+
+### align-llm policy-v2 verification (2026-09-23)
+
+Managed Align `d9b0df32` includes PR #1163. A same-source, macOS arm64,
+release/no-ThinLTO rebuild produces image SHA-256
+`87da7e83c997d3d25a54878e2c1ed39fe258967214fb11ffe7b3156aed5338ec`.
+The decoded census changes only from 545 to 544 direct Align-to-Align calls
+targeting definitions of at most eight instructions, still above `<100`.
+`runtime_attention$cached_f16` remains absent and `runtime_attention$fused`
+drops from 11 calls to zero, but its exposed `ggml_ffi$gpu_attention_policy`
+calls rise from 6 to 16. `ggml_ffi$handle_absent` remains 118 calls to its
+three-instruction body; `context_open` remains 12 and `graph_new` 14.
+
+The residual has a two-unit provider reproduction. The real block containing
+an `unsafe` block and one explicit `return` retains the optimized release call,
+while changing only the spelling to the provider test's expression-bodied
+`= unsafe { handle.is_null() }` form removes it. Plan 74 explicitly admits
+nested blocks, unsafe blocks, and one explicit return, so align-llm does not
+adopt that source-style workaround. Evidence is posted in Align issue #1066
+comment `5781323584`. Request 95 remains `ALIGN_MERGED` pending the provider
+correction and a new census. The greedy owner passed at 139 and 132 us/call;
+the sampler owner passed at 579 and 361 us/call. The spread and changed pin do
+not support a performance claim.
 
 ### Request 96: fix invalid empty !dbg metadata attachment in align_codegen_llvm dropdeep loop (2026-09-17)
 
@@ -974,13 +1009,13 @@ unchanged (ALIGN_MERGED for part 1 only).
 
 ### Request 102: adopt one cold-path model for `Result`/`?` — branch weights, `cold` inference, fail-family effects (2026-09-18)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED not met
+Status: ALIGN_MERGED; reported client helper is outside the shipped cold contract
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: splitting `*_execute_mode_traced` diagnostic arms into separate functions, gating unconditional diagnostic work behind its flag
-Resume condition: provider follow-up that moves the real-client `$fail` call sites and shrinks the
-  hot span, followed by consumer remeasurement
+Resume condition: a new request identifying a structurally exceptional path
+  covered by Plan 70, or recorded friction supporting a language-contract widening
 Align commit or pull request: implementation [sanohiro/align#1128](https://github.com/sanohiro/align/pull/1128), merge `bdf29a48`; tracking issue [sanohiro/align#1074](https://github.com/sanohiro/align/issues/1074)
 align-llm verification: disassembly position and byte-span measurement of `$fail` call blocks in `moe_decode_step$run_moe_layer` (20.4% of the function at a mean 49.5% position today), plus scripts/run-moe-decode-step and scripts/run-decode-step
 
@@ -1025,17 +1060,27 @@ The exact rebuilt final-pin arm64 image does not meet the client layout criterio
 53.4% of function length (first 14.4%, last 99.0%), below the required 90%; including 17 bounds and
 7 range fail-family calls gives 61 sites at a 62.1% mean. Total function size grew by 1,820 bytes;
 that is not by itself the requested hot-span metric, but the independently required 90% mean-position
-criterion already fails. Exact evidence is posted to Align issue #1074 in comment `5771868147`;
-provider follow-up is required.
+criterion already fails. Exact evidence is posted to Align issue #1074 in comment `5771868147`.
+
+### Align disposition (2026-09-23)
+
+The measured `fail(borrow mut Outcome, str, str) -> Unit` helper mutates an
+ordinary application record and is reached from ordinary source `if` arms. It
+neither returns `Result`/diverges on every path nor is dominated by a
+compiler-synthesized exceptional edge, so Plan 70 deliberately does not infer
+it cold. The positional measure is external evidence, not a correctness gate;
+adding name- or application-pattern likelihood would violate the settled
+source-free inference rule. Align issue #1074 is closed with no further
+provider work.
 
 ### Request 103: state Align's scalar ABI facts at call boundaries (`zeroext`/`signext`/`range`) (2026-09-18)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED not met
+Status: ALIGN_MERGED; bounded static consumer qualification complete
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: node-table and graph-construction work, all decode paths
-Resume condition: consumer pin and release-image/disassembly verification
+Resume condition: capable-host real-ggml qualification owned outside this macOS session
 Align commit or pull request: implementation [sanohiro/align#1143](https://github.com/sanohiro/align/pull/1143), merge `1a446e5e`; tracking issue [sanohiro/align#1075](https://github.com/sanohiro/align/issues/1075)
 align-llm verification: `and wN, wM, #0x1` count in Align-generated code of the release image (763 across 343 functions today), instruction count of `olmoe_nodes$build_range`'s inner loop (13 per node row today), plus scripts/run-moe-decode-step
 
@@ -1091,7 +1136,34 @@ client result therefore regresses by 142 masks and does not meet acceptance. The
 loop counts still need a separately bounded extraction, and `scripts/run-moe-decode-step` remains
 explicit N/A because the required llama instruments are absent, but neither can reverse the failed
 whole-image criterion. Corrected client evidence is posted to Align issue #1075 in comment
-`5768920753`; provider follow-up or an explicit contract revision is required.
+`5768920753`. The 905/763 whole-image comparison used different client source
+and counts stored and intra-function masks outside Plan 76's call-boundary
+contract; the two named loop extractions are still missing. Fresh provider-side
+IR confirms `i1 zeroext` on the relevant definitions and calls. A controlled
+same-source, same-target bounded extraction remains consumer-owned before a
+provider defect can be established.
+
+### align-llm bounded qualification (2026-09-23)
+
+A controlled macOS arm64 release comparison fixes align-llm source at
+`1e9ea492` and changes only Align from the PR #1143 parent `0aab8796` to merge
+`1a446e5e`. The exact image SHA-256 values are respectively
+`15cfaf480c57ae6e7a4038ba1c0993c32fa11e233588c731e05299be3c0c14d7`
+and `1ed37284d789cc469351bd4d4d1db73ae9427f07696a7a5b0bbae4f957a9f329`.
+At each of the two `layer_olmoe$mm_row_issued_at` calls in
+`olmoe_nodes$build_range`, the three call-boundary `and wN, wM, #0x1`
+instructions become three ordinary register moves, and the boolean-result
+branch changes from `tbz` to `cbz`. The bounded call-boundary mask count is
+therefore 3 -> 0 at both sites. The loop slice retains the same instruction
+count because AArch64 still must place the three live values in argument
+registers; that is not a residual scalar-ABI normalization defect.
+
+At the adopted `d9b0df32` pin, `gmake check` passes all 155 whole/per-unit
+units and `scripts/run-runtime-provider-smoke` passes its self-test, shim
+matrix, sampler vectors and 61 CLI assertions. The originally named real-ggml
+`scripts/run-moe-decode-step` remains assigned to the separate capable Linux
+measurement and was not run in this macOS session. No further Align-side ABI
+defect is established by the bounded comparison.
 
 ### Request 104: lay out every sum type as a tagged union, including `Option` and `Result` (2026-09-18)
 
@@ -1130,13 +1202,13 @@ fixture, build machinery, or managed pin changed for this verification.
 
 ### Request 105: complete the aggregate transport contract for parameters, returns, cleanup bit and destinations (2026-09-18)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED not met
+Status: ALIGN_MERGED; named fresh-whole-local result criterion met
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: splitting `model_forward$Outcome` into hot and cold records, reducing by-value aggregate signatures in application code
-Resume condition: provider follow-up for the residual aggregate/byval frame and result scratch,
-  followed by consumer remeasurement
+Resume condition: a classified residual tied to one admitted Plan 71 destination
+  shape, with a minimal provider reproduction
 Align commit or pull request: design [sanohiro/align#1130](https://github.com/sanohiro/align/pull/1130), merge `91fe3ed1`; transport [sanohiro/align#1133](https://github.com/sanohiro/align/pull/1133), merge `5f71179e`; fresh construction [sanohiro/align#1134](https://github.com/sanohiro/align/pull/1134), merge `8863ecc2`
 align-llm verification: `decode_step$decode_pass` frame size (2,080 B today) and its `call.result.storage` slot count (5 of 835 program-wide), whole-program `huge struct copy` warning count (333), plus scripts/run-decode-step and scripts/run-runtime-provider-smoke output unchanged
 
@@ -1193,7 +1265,17 @@ arm64 image retains a `0x820` (2,080-byte) local frame allocation against the 1,
 plus a 96-byte callee-save push, while whole-program IR retains 787 `call.result.storage` allocas
 versus 835. The runtime-provider owner passes all 61 CLI assertions; the real decode owner is N/A
 on this host because its llama instruments are absent. Exact evidence is posted to Align issue
-#1077 in comment `5771868332`; provider follow-up is required.
+#1077 in comment `5771868332`.
+
+### Align disposition (2026-09-23)
+
+`decode_step$decode_pass` now has zero named `call.result.storage` allocas, so
+the shipped fresh-whole-local capability passes. Its remaining 2,080-byte frame
+contains other storage classes, and the whole-program 787 count mixes field,
+element, replacement, join, alias and other deliberately retained fallback
+shapes. Plan 71 explicitly makes neither a client frame-size number nor a
+blanket whole-image count a correctness gate. Align issue #1077 is closed; any
+remaining defect needs classification against one admitted destination shape.
 
 ### Request 106: one drop-state model — flag ownership, sweep folding, and move-out zeroing (2026-09-18)
 

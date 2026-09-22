@@ -4,6 +4,71 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
+Branch: `agent/align-inline-abi-followup`, based on `origin/main` `29e5cda1`.
+Active capability: adopt Align PR #1163 through managed pin
+`d9b0df32a831c165b9b070242e168b3f10c721c7`, reconcile the provider issue
+dispositions, and complete the remaining macOS consumer measurements. Linux and
+real-ggml qualification are explicitly assigned to another environment and are
+not part of this session.
+
+Completed work:
+- PR #286 is merged at `29e5cda1`; its three required jobs pass. The old
+  request-batch/CI repair below is a completed checkpoint.
+- Materialized and verified the exact `d9b0df32` compiler/runtime with explicit
+  Homebrew LLVM 22/OpenSSL/zstd paths. `gmake check` passes all 155 whole/per-unit
+  units, and `scripts/run-runtime-provider-smoke` passes the self-test, shim
+  matrix, sampler vectors, and 61 CLI assertions.
+- Rebuilt the same current source under old `df14e8bd` and new `d9b0df32`
+  release/no-ThinLTO compilers. The decoded <=8-instruction Align-to-Align call
+  census changes only 545 -> 544. `runtime_attention$fused` falls 11 -> 0, but
+  `ggml_ffi$handle_absent` remains 118 calls. Exact new image SHA-256 is
+  `87da7e83c997d3d25a54878e2c1ed39fe258967214fb11ffe7b3156aed5338ec`.
+- Reduced the residual to a two-unit provider case: the real
+  block/unsafe/explicit-return `handle_absent` shape retains a release call,
+  while the provider test's expression-bodied spelling removes it. Plan 74
+  admits both; align-llm does not adopt the source-style workaround. Evidence is
+  posted to Align #1066 in comment `5781323584`.
+- Completed Request 103's corrected same-source/same-target comparison using
+  align-llm `1e9ea492` and Align `0aab8796` -> `1a446e5e`. Both
+  `mm_row_issued_at` sites change three boundary masks to zero; required argument
+  register moves remain, so instruction count is unchanged. Exact images are
+  `15cfaf48...` and `1ed37284...`. Evidence is posted to Align #1075 in comment
+  `5782094218`; no residual scalar-ABI defect is established.
+- Request 102 is reconciled with Plan 70's source-free cold-path boundary and
+  closed Align #1074. Request 105's named fresh-whole-local criterion is met;
+  the remaining storage classes are outside that capability and Align #1077 is
+  closed.
+- Current-pin benchmark owners pass but vary: greedy 139/132 us per call and
+  sampler 579/361 us per call. Do not make a performance claim from these runs.
+
+Next actions in priority order:
+1. Await the provider correction for #1066, then repeat its same-source census.
+2. Continue with the next eligible roadmap capability that does not depend on
+   #1066 or the separately owned Linux/real-ggml qualifications.
+   The real-ggml owners for #1065/#1075 remain with the separate Linux-capable
+   environment and are not a local blocker.
+
+Latest durable verification:
+- `scripts/align-toolchain ensure compiler` and `scripts/align-toolchain verify`:
+  PASS at exact `d9b0df32`.
+- `gmake check`: PASS, 155 whole/per-unit units.
+- `scripts/run-runtime-provider-smoke`: PASS, including 61 CLI assertions.
+- `scripts/bench-runtime-greedy`: PASS, 139 and 132 us/call;
+  `scripts/bench-runtime-sampler`: PASS, 579 and 361 us/call.
+- `git diff --check`: PASS after the final documentation checkpoint.
+
+Blockers, constraints, decisions:
+- Request 95 remains `ALIGN_MERGED`: policy v2 fixes `fused` but misses the
+  contract-admitted real `handle_absent` block shape, and the aggregate target
+  remains 544 versus `<100`.
+- Request 103's macOS static qualification is complete. Do not rerun or claim
+  the Linux/real-ggml owner in this environment.
+- Local release builds require `LLVM_CONFIG=/opt/homebrew/opt/llvm@22/bin/llvm-config`,
+  `LLVM_SYS_221_PREFIX=/opt/homebrew/opt/llvm@22`, and Homebrew LLVM/OpenSSL/zstd
+  library paths. Cold full-product release builds took roughly 20 minutes.
+
+## Completed capability: merged Align request batch and CI repair
+
 Branch: `agent/align-request-batch-adoption`, rebased on `origin/main` `1e9ea492`.
 Active capability: adopt the merged Align Requests 92–119 consumer surfaces through managed pin
 `df14e8bdee748e1f4e2d684a24b36c7b8984b270`. This is an executable consumer capability. Align
