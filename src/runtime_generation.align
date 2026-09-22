@@ -678,9 +678,7 @@ pub fn prompt_lookup_candidate(borrow prompt_ids: array<i64>, current_token: i64
   return -1
 }
 
-pub fn greedy(borrow logits: slice<u8>, _candidate: i64) -> Result<i64, Error> {
-  if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
-  values: slice<f32> := logits.view_le() else { return Err(Error.Invalid) }
+fn greedy_values(borrow values: slice<f32>) -> Result<i64, Error> {
   n_vocab := values.len()
   if n_vocab > 2147483647 { return Err(Error.Invalid) }
   if n_vocab < 4 {
@@ -750,6 +748,24 @@ pub fn greedy(borrow logits: slice<u8>, _candidate: i64) -> Result<i64, Error> {
     i = i + 1
   }
   return Ok(best)
+}
+
+pub fn greedy(borrow logits: slice<u8>, _candidate: i64) -> Result<i64, Error> {
+  if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
+  typed: Option<slice<f32>> := logits.view_le()
+  match typed {
+    Some(values) => { return greedy_values(values) },
+    None => {
+      // GGML outputs are naturally aligned, so the hot path above remains zero-copy. Public
+      // callers may still supply packed slices; preserve the scalar accessor's old acceptance by
+      // copying that uncommon input into naturally aligned storage before using the same scan.
+      mut aligned := buffer(logits.len())
+      aligned.append(logits)
+      bytes := aligned.bytes()
+      values: slice<f32> := bytes.view_le() else { return Err(Error.Invalid) }
+      return greedy_values(values)
+    },
+  }
 }
 
 fn choose_token(

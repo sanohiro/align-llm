@@ -225,6 +225,19 @@ fn test_candidate_selection() -> Result<(), Error> {
   if runtime_generation.greedy(view6, -1)? != 2 {
     return Err(Error.Invalid)
   }
+
+  // Packed callers remain valid even when the first f32 starts at an unaligned byte offset.
+  mut packed := buffer(17)
+  packed.put_u8(255 as u8)
+  packed.put_f32_le(2.0)
+  packed.put_f32_le(5.0)
+  packed.put_f32_le(15.0)
+  packed.put_f32_le(8.0)
+  packed_bytes := packed.bytes()
+  packed_logits := packed_bytes[1..17]
+  if runtime_generation.greedy(packed_logits, -1)? != 2 {
+    return Err(Error.Invalid)
+  }
   return Ok(())
 }
 

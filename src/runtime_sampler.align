@@ -20,9 +20,9 @@ pub Selection {
 // Stable descending insertion keeps candidate identity paired with its F32 logit. Equal logits are
 // ordered by ascending token id so neither the target nor the categorical intervals depend on an
 // implementation-specific sort.
-pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Selection, Error> {
-  if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
-  values_view: slice<f32> := logits.view_le() else { return Err(Error.Invalid) }
+fn select_values(
+  borrow values_view: slice<f32>, borrow mut random: rng,
+) -> Result<Selection, Error> {
   token_count := values_view.len()
   mut ids_builder: array_builder<i64> := array_builder(TOP_K)
   mut values_builder: array_builder<f32> := array_builder(TOP_K)
@@ -152,4 +152,21 @@ pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Select
       min_p_count: min_p_count,
       top_token_id: ids[0],
     })
+}
+
+pub fn select(borrow logits: slice<u8>, borrow mut random: rng) -> Result<Selection, Error> {
+  if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
+  typed: Option<slice<f32>> := logits.view_le()
+  match typed {
+    Some(values) => { return select_values(values, random) },
+    None => {
+      // Model buffers take the zero-copy arm. Retain the public packed-slice behavior by aligning
+      // only the uncommon input before running the identical selection policy.
+      mut aligned := buffer(logits.len())
+      aligned.append(logits)
+      bytes := aligned.bytes()
+      values: slice<f32> := bytes.view_le() else { return Err(Error.Invalid) }
+      return select_values(values, random)
+    },
+  }
 }
