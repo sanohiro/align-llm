@@ -1365,14 +1365,14 @@ reload. Acceptance is IR shape, closed by a new arch-neutral owner
 
 ### Request 108: attach `!range` to slice/array length loads so a length is known non-negative (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED not met by the named client witness
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all other loop and kernel work; nothing in align-llm can express this fact from source
-Resume condition: consumer adoption — re-measure the `bic xD, xN, xN, asr #63` and `llvm.smax.i64` counts in the release image at the merged pin
+Resume condition: provider correction for the borrowed-slice parameter residual in reopened issue #1080, followed by the named client remeasurement
 Align commit or pull request: [sanohiro/align#1111](https://github.com/sanohiro/align/pull/1111) (merge commit `e26a0f48f3b8eade2e5dd14c27f4c21a0e47985b`), closing [sanohiro/align#1080](https://github.com/sanohiro/align/issues/1080)
-align-llm verification: `bic xD, xN, xN, asr #63` count in the release image (351 today) and whole-program `llvm.smax.i64` call sites (536 today), plus scripts/bench-runtime-greedy and scripts/run-tokenizer-smoke (verified in Align tree; consumer adoption pending)
+align-llm verification: release-image `bic xD, xN, xN, asr #63` count 351 original baseline -> 13 at `d9b0df32`; original whole-program `llvm.smax.i64` baseline 536 not recounted because the current source/module population differs, with the named `kv_plane$all_zero` residual confirmed directly; current-pin greedy/sampler owners pass without a performance claim; scripts/run-tokenizer-smoke passes
 
 Discovered during the Mac-native binary optimization audit of length clamps (`src/kv_plane.align`, `src/tokenizer_qwen2.align`, `src/moe_decode_step.align`):
 1. A slice or array `len` field is non-negative by construction, but the load that materializes it carries no metadata, so LLVM must assume it can be negative. Every loop bounded by `len` pays an `llvm.smax(len, 0)` clamp, every two-length loop additionally pays `llvm.umin`, and the vectorizer picks a narrower width because the trip count is not provably positive.
@@ -1399,6 +1399,18 @@ looks like a length. Combined with Request 107's header caching, issue
 `llvm.smax` clamp. Acceptance is IR shape, closed by the same `loop_facts.rs`
 owner (11 tests, aarch64) plus one `vectorize_shapes` aarch64 arm. Limit:
 `!range` is applied only where the header field is provably a length.
+
+### align-llm residual verification (2026-09-23)
+
+At managed Align `d9b0df32`, the exact macOS arm64 release/no-rt-LTO
+`kv_plane$all_zero` core loads the length from its ordinary borrowed
+`slice<u8>` header without `!range` and immediately calls
+`llvm.smax.i64(len, 0)`. The shipped image retains the corresponding
+`bic x10, x8, x8, asr #63`; the whole-image clamp count is 13 versus the
+original 351 baseline. Changing only `view.u8(at)` to direct `view[at]` does
+not alter the missing metadata or clamp, so no application spelling consumes
+the promised fact. Evidence is posted in reopened Align issue #1080 comment
+`5782592151`. The source experiment was reverted.
 
 ### Request 109: fuse the bounds check into one unsigned compare and eliminate monotone-induction in-loop checks (2026-09-18)
 
@@ -1542,12 +1554,12 @@ not unconditionally exact, since the index lanes are `i32`.
 
 ### Request 112: lower a counted loop with its trip-count exit at the latch, not the header (2026-09-18)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED not met by the named client witness
 Priority: high
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all scan, digest and tokenizer work; the lowering cannot be influenced from source, so no application workaround competes with it
-Resume condition: upstream design closure and implementation on issue #1084
+Resume condition: provider correction in reopened issue #1084, followed by the named client remeasurement
 Align commit or pull request: implementation [sanohiro/align#1127](https://github.com/sanohiro/align/pull/1127), merge `5868ed8d`; tracking issue [sanohiro/align#1084](https://github.com/sanohiro/align/issues/1084)
 align-llm verification: `alignc explain-opt` `Cannot vectorize early exit loop` remark counts on the hot modules (191 remarks at 140 sites across 18 source files today), `kv_plane$all_zero` throughput on a 1 MiB buffer (3.12 GB/s today), plus scripts/run-tokenizer-smoke and scripts/run-alignpack-smoke
 
@@ -1574,6 +1586,18 @@ this issue was revised after its independent review in
 [Align PR #1110](https://github.com/sanohiro/align/pull/1110) (merge commit
 `aa8e519e79e831724efff7fcd9788221a908e578`), and implementation of PR 2 is
 starting. Status is unchanged.
+
+### align-llm residual verification (2026-09-23)
+
+At managed Align `d9b0df32`, the exact macOS arm64 release/no-rt-LTO
+`kv_plane$all_zero` body remains a 12-instruction scalar loop. Its trip-count
+test remains in the header and the loop contains the `bic` length clamp, byte
+load, increment and conditional back-edge; there is no vector body. Replacing
+only `view.u8(at)` with direct `view[at]` still emits scalar optimized IR with
+`llvm.smax.i64`, so the result is not a source-style fallback. The adjacent
+Request 108 residual may be causal. Evidence is posted in reopened Align issue
+#1084 comment `5782592441`. `scripts/run-tokenizer-smoke` and
+`scripts/run-alignpack-smoke` pass; no Linux or real-ggml measurement was run.
 
 ### Request 113: add `str` literal patterns to `match`, completing the value-pattern family (2026-09-18)
 

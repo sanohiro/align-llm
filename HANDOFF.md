@@ -4,6 +4,46 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
+Branch: `agent/align-loop-drop-consumer-verification`, based on merged PR #288
+at `b31bec4c`. Active capability: finish the remaining macOS-only Align
+consumer qualifications without taking the separately owned Linux/real-ggml
+measurements.
+
+Completed work:
+- PR #288 merged the managed `d9b0df32` pin and request reconciliation; all
+  three hosted checks passed.
+- `scripts/run-tokenizer-smoke` passes its full matrix and
+  `scripts/run-alignpack-smoke` passes 20,541 assertions at the adopted pin.
+- The current release image reduces the old length-clamp census from 351 to
+  13, but the named `kv_plane$all_zero` witness still loads its borrowed-slice
+  length without `!range`, calls `llvm.smax.i64`, and remains a 12-instruction
+  scalar loop with no vector body.
+- Replacing only `view.u8(at)` with direct `view[at]` leaves the same residual,
+  so the experiment was reverted. Exact evidence is posted to reopened Align
+  #1080 (comment `5782592151`) and #1084 (comment `5782592441`).
+
+Next actions in priority order:
+1. Await provider corrections for #1080 and #1084, then repeat the function-
+   scoped IR and release-image checks.
+2. Await the provider correction for #1066, then repeat its same-source census.
+3. Leave Linux/real-ggml owners, including #1065/#1075 and the decode owners of
+   Requests 106/109, to the separately assigned capable environment.
+
+Latest durable verification:
+- `scripts/run-tokenizer-smoke`: PASS.
+- `scripts/run-alignpack-smoke`: PASS, 20,541 assertions.
+- `alignc emit-llvm src/kv_plane.align --stage optimized --profile release
+  --no-rt-lto --export all_zero`: residual reproduced at exact `d9b0df32`.
+
+Blockers and decisions:
+- Requests 108 and 112 remain `ALIGN_MERGED`; their named client acceptance is
+  not met. Do not adopt a source-style workaround.
+- Whole-program verbose remark counts use a different source/module population
+  from the original eight-module baseline and are not a valid performance
+  comparison. No performance claim is made.
+
+## Completed capability: Align inline/ABI follow-up adoption
+
 Branch: `agent/align-inline-abi-followup`, based on `origin/main` `29e5cda1`.
 Active capability: adopt Align PR #1163 through managed pin
 `d9b0df32a831c165b9b070242e168b3f10c721c7`, reconcile the provider issue
