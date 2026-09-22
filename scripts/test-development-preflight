@@ -2681,6 +2681,29 @@ def test_hosted_alignc_profile() -> None:
             "hosted Align launcher accepted an unresolved compiler",
         )
 
+        persisted = load_script(
+            "run-persisted-result-smoke", "align_llm_persisted_result_hosted_profile_test"
+        )
+        previous = {
+            name: os.environ.get(name) for name in ("ALIGN_LLM_HOSTED_ALIGNC", "LIBRARY_PATH")
+        }
+        os.environ.update(
+            ALIGN_LLM_HOSTED_ALIGNC=str(compiler),
+            LIBRARY_PATH=str(root),
+        )
+        try:
+            child = persisted.child_environment(str(compiler))
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    del os.environ[name]
+                else:
+                    os.environ[name] = value
+        require(
+            child.get("ALIGN_LLM_HOSTED_ALIGNC") == str(compiler),
+            "bounded persisted-result owner dropped the hosted compiler handoff",
+        )
+
 
 def test_cli() -> None:
     output_summary = subprocess.run(
