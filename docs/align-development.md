@@ -135,13 +135,32 @@ every focused qualification script in the repository, and is not routine pull-re
 Select it only when an aggregate-only owner changes or an explicit audit requests it. Routine
 publication runs `make hosted-checks` once and the two native installed profiles without the
 complete aggregate; each native profile still runs the worker's compiler-only `build` boundary.
-The hosted and capable aggregates use their shared `build` prerequisite as the complete parser,
-per-unit interface/import, semantic, lowering, code-generation, and link boundary; they do not also
+The hosted aggregate routes otherwise unprofiled `build` and `run` calls through
+`scripts/alignc-hosted-test`, which adds Align's test-default `--profile dev`. Explicit profiles
+remain explicit, every non-build command is unchanged, and ordinary local `make build` remains the
+release/O2 product build. The aggregate's shared `build` prerequisite remains the complete parser,
+per-unit interface/import, semantic, lowering, code-generation, and link boundary; it does not also
 rerun the uncached `make check`. That public target remains the narrow local implementation check.
-The hosted compiler/check job has a 30-minute timeout; installed-profile jobs retain
-their 15-minute timeout. The hosted allowance includes compiler materialization and
-the complete serial functional graph. Repeated 15-minute cancellations on unchanged
-main and client PRs justified this bounded capacity correction without removing checks.
+The hosted compiler/check job has a 20-minute hard timeout; installed-profile jobs retain
+their 15-minute timeout. The operating target for the hosted job remains roughly 15 minutes,
+including compiler materialization and the serial functional graph. PR #286 reached
+`prompt_verifier_smoke` but was cancelled first at 30m24s after 28m17s in supported checks and
+again at 45m16s after 42m36s in supported checks with the merged-request compiler. The fixture had
+grown from the 1,573-line Request 19 admission case to 3,424 lines, and repeating its complete
+code-generation owner on every unrelated pull request no longer fit the lane. The target remains
+the direct focused owner for verifier-boundary changes but is no longer a routine hosted member.
+Issue #287 owns any remaining test or compiler cost diagnosis; another timeout increase is not an
+accepted remedy.
+The next cold run proved that removing the oversized verifier was insufficient: it spent more than
+17 minutes in the routine release/O2 `src/main.align` build and hit the 20-minute job ceiling before
+any assertion. Functional correctness does not require repeating production optimization on every
+smoke fixture. Hosted unprofiled builds therefore use dev/O0, matching `alignc test`; explicit
+release and performance owners retain release code-generation coverage.
+The hosted job binds Align's writable unit cache to an explicit runner-temporary directory and
+persists it with an Actions cache keyed by native OS, architecture, and `.align-revision`. Align's
+own content-addressed keys decide which unchanged frontend/codegen entries may hit; changed source
+still misses. GitHub's branch cache scope prevents pull-request entries from being promoted into
+`main`, while reruns and later pull requests may consume the trusted default-branch cache.
 Roughly 15 minutes remains the operating target and a reason to inspect ownership
 and cost, not a universal correctness constant. A focused
 target is diagnostic evidence for that surface, not evidence that either aggregate completed.

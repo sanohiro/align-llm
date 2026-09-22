@@ -1486,12 +1486,7 @@ fn take_pack(borrow mut o: Outcome, outcome: Result<(), alignpack_read.Fault>) {
 }
 
 fn fill_zero(borrow mut b: buffer, n: i64) {
-  mut index := 0
-  loop {
-    if index >= n { break }
-    b.put_u8(0 as u8)
-    index = index + 1
-  }
+  b.append_filled(n, 0 as u8)
 }
 
 // `buffer(cap)` reserves capacity but publishes no length, and `bytes()` is `data[..len]`, so a
@@ -3550,26 +3545,26 @@ pub fn execute(
   slot_view := slots_all[slot_pad..slot_pad + slot_bytes]
   reference_slot_view := reference_slots_all[reference_pad..reference_pad + slot_bytes]
 
-  mut backend := ggml_ffi.null_handle()
-  mut weight_ctx := ggml_ffi.null_handle()
-  mut input_ctx := ggml_ffi.null_handle()
-  mut graph_a_ctx := ggml_ffi.null_handle()
-  mut graph_b_ctx := ggml_ffi.null_handle()
-  mut reference_ctx := ggml_ffi.null_handle()
-  mut reference_graph_a_ctx := ggml_ffi.null_handle()
-  mut reference_graph_b_ctx := ggml_ffi.null_handle()
-  mut weight_buffer := ggml_ffi.null_handle()
-  mut claim_buffer := ggml_ffi.null_handle()
-  mut input_buffer := ggml_ffi.null_handle()
-  mut reference_buffer := ggml_ffi.null_handle()
-  mut graph_a := ggml_ffi.null_handle()
-  mut graph_b := ggml_ffi.null_handle()
-  mut reference_graph_a := ggml_ffi.null_handle()
-  mut reference_graph_b := ggml_ffi.null_handle()
-  mut galloc_a := ggml_ffi.null_handle()
-  mut galloc_b := ggml_ffi.null_handle()
-  mut reference_galloc_a := ggml_ffi.null_handle()
-  mut reference_galloc_b := ggml_ffi.null_handle()
+  mut backend := ggml_ffi.NULL
+  mut weight_ctx := ggml_ffi.NULL
+  mut input_ctx := ggml_ffi.NULL
+  mut graph_a_ctx := ggml_ffi.NULL
+  mut graph_b_ctx := ggml_ffi.NULL
+  mut reference_ctx := ggml_ffi.NULL
+  mut reference_graph_a_ctx := ggml_ffi.NULL
+  mut reference_graph_b_ctx := ggml_ffi.NULL
+  mut weight_buffer := ggml_ffi.NULL
+  mut claim_buffer := ggml_ffi.NULL
+  mut input_buffer := ggml_ffi.NULL
+  mut reference_buffer := ggml_ffi.NULL
+  mut graph_a := ggml_ffi.NULL
+  mut graph_b := ggml_ffi.NULL
+  mut reference_graph_a := ggml_ffi.NULL
+  mut reference_graph_b := ggml_ffi.NULL
+  mut galloc_a := ggml_ffi.NULL
+  mut galloc_b := ggml_ffi.NULL
+  mut reference_galloc_a := ggml_ffi.NULL
+  mut reference_galloc_b := ggml_ffi.NULL
 
   context_bytes := ggml_ffi.graph_context_bytes(layer_olmoe.MAX_NODE_SLOTS)
   o.graph_context_bytes = context_bytes

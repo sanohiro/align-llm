@@ -426,7 +426,7 @@ Discovered during tokenizer candidate matching and joined token optimizations:
 
 ### Request 92: elementary exponential and logarithmic math intrinsics in core.math (exp, exp2, log, log2, log10) (2026-09-17)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: no
 Blocked gate or slice: none
@@ -522,12 +522,9 @@ invariance. Linux x86_64, Linux ARM64, and macOS Apple Silicon CI passed.
 Consumer adoption in `runtime_sampler.align` and the named sampler/runtime smoke
 checks remain align-llm-owned; no consumer code or managed pin was changed here.
 
-2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
-the merge commit is an ancestor of `dfcfd11f`.
-
 ### Request 93: safe typed slice reinterpretations (as_f32_slice) for SIMD vectorization (2026-09-17)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: no
 Blocked gate or slice: none
@@ -577,8 +574,21 @@ separate vectorization contract and `--explain-opt`. Align PR #1156 merged as
 `dfcfd11f0b076320f3f9bfbf1f837a4130092964`. `ALIGN_LLM_VERIFIED` remains
 pending the named align-llm benchmarks and consumer migration.
 
-2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
-the merge commit is an ancestor of `dfcfd11f`.
+### align-llm consumer verification (2026-09-21)
+
+Managed revision `dfcfd11f0b076320f3f9bfbf1f837a4130092964` is materialized and verified.
+`runtime_generation.greedy` and `runtime_sampler.select` now obtain checked zero-copy
+`slice<f32>` views from their byte inputs. The greedy implementation also uses structural
+`vec4<f32>` comparisons and selects matching `vec4<i32>` indices while retaining finite-value
+rejection and the earliest-index tie rule.
+
+Both named benchmark owners pass. Against unmodified align-llm source compiled with the same pin
+on the same Apple M1 host, greedy changes from 468 to 104 us/call and sampler from 435 to 480
+us/call over about 152k logits. The sampler result is a measured 10.3% regression, so this
+checkpoint makes no sampler performance claim. Request 93's corrected provider contract promises
+the checked allocation-free view, not vectorization or a latency ceiling; its consumer migration
+and both originally named owners are complete. Cross-host measurement remains explicitly
+unmeasured in `docs/backend-parity.md`.
 
 ### Request 94: fixed-size inline arrays in structs ([T; N]) to eliminate decode-step heap allocations (2026-09-17)
 
@@ -590,6 +600,11 @@ Independent work that may continue: model IR, prompt evaluation
 Resume condition: satisfied by the merged Align design and implementation; align-llm adoption remains
 Align commit or pull request: design [sanohiro/align#1137](https://github.com/sanohiro/align/pull/1137); implementation [sanohiro/align#1138](https://github.com/sanohiro/align/pull/1138) (merge commit `2907d5e56b3bdbc4652787376ec268db5507bdc4`), tracking [sanohiro/align#1065](https://github.com/sanohiro/align/issues/1065)
 align-llm verification: scripts/run-decode-step, scripts/run-gpu-session-reuse-smoke
+
+Consumer checkpoint: the inline-table migration and zero-allocation IR evidence are published in
+[issue #1065 comment 5759271198](https://github.com/sanohiro/align/issues/1065#issuecomment-5759271198).
+The direct borrowed-record boundary waits on #1158; the originally named GPU-session owner waits on
+#1157.
 
 Discovered during Autoregressive decode step allocation profiling (src/decode_step.align:2457, src/layer_qwen2.align:1851, src/layer_olmoe.align:2250):
 1. On every single generated token, `mf_decode_layer_node_table` constructs 13 `array_builder<i64>`s, issues 416 `align_rt_array_builder_push` calls, and builds 13 heap-allocated `array<i64>`s for a 32-row table.
@@ -623,9 +638,6 @@ with no fixed-array allocation path. Align PR #1138 merged as
 `2907d5e56b3bdbc4652787376ec268db5507bdc4`. `ALIGN_LLM_VERIFIED` remains
 pending `scripts/run-decode-step`, `scripts/run-gpu-session-reuse-smoke`, and
 confirmation that the migrated tables allocate zero dynamic arrays.
-
-2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
-the merge commit is an ancestor of `dfcfd11f`.
 
 ### Request 95: default ThinLTO on --profile release or cross-module function inlining (2026-09-17)
 
@@ -688,19 +700,30 @@ the `runtime_attention.cached_f16`, `runtime_attention.fused`, and
 `ggml_ffi.handle_absent` call sites. Keep issue #1066 open and this request at
 ALIGN_MERGED until that call-site census advances it to ALIGN_LLM_VERIFIED.
 
-2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
-the merge commit is an ancestor of `dfcfd11f`.
+### align-llm residual verification (2026-09-22)
+
+The exact rebuilt final-pin image contains 1,432 Align function definitions, 91 of at most eight
+instructions, and 545 Align-to-Align direct call sites targeting those small definitions, down from
+the 686-site baseline but above the requested `<100` target. `runtime_attention$cached_f16` has no
+surviving definition or call, while the two other explicitly named controls fail:
+`runtime_attention$fused` is seven instructions with 11 direct calls and
+`ggml_ffi$handle_absent` is three instructions with 118 direct calls. Greedy and sampler benchmark
+owners and runtime-provider correctness pass, but do not substitute for the failed inlining
+contract. Request 95 remains `ALIGN_MERGED`; corrected evidence is posted to Align issue #1066 in
+comments `5768600567` and `5768920430`.
 
 ### Request 96: fix invalid empty !dbg metadata attachment in align_codegen_llvm dropdeep loop (2026-09-17)
 
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: application code inspection
 Resume condition: upstream bugfix on issue #1067
 Align commit or pull request: [sanohiro/align#1068](https://github.com/sanohiro/align/pull/1068) (merge commit `25391cde`), fixing [sanohiro/align#1067](https://github.com/sanohiro/align/issues/1067)
-align-llm verification: alignc explain-opt src/decode_step.align (verified in Align tree, consumer adoption pending)
+align-llm verification: at managed `dfcfd11f0b076320f3f9bfbf1f837a4130092964`,
+  `alignc explain-opt src/decode_step.align` completes and reports 22 public inspection roots;
+  the complete seven-module consumer matrix is recorded under Request 114
 
 Shipped surface:
 - In `crates/align_codegen_llvm`, replaced Inkwell 0.9's deprecated `LLVMGetCurrentDebugLocation` with direct `LLVMGetCurrentDebugLocation2` and `LLVMSetCurrentDebugLocation2`. Unset debug location returns null instead of wrapping an empty `MDTuple` (`!{}`).
@@ -716,11 +739,6 @@ Discovered during Optimization explain pass on decode_step (alignc explain-opt s
    Omit debuginfo attachment or attach a valid `DILocation` when emitting synthetic runtime drop thunk calls.
 5. Acceptance criteria:
    `alignc explain-opt src/decode_step.align` completes successfully without LLVM module verification failure.
-
-2026-09-21: at `dfcfd11f` `alignc explain-opt` reports on `decode_step`,
-`moe_decode_step`, `gguf`, `tokenizer_qwen2`, `alignpack`, `model_ir`, `main`
-and `kv_plane`, and `emit-llvm --stage optimized` works on `layer_qwen2`;
-ALIGN_LLM_VERIFIED is deferred to the adopted pin because of Request 118.
 
 ### Request 97: make `--rt-lto` inline at the default `--target-cpu baseline` on aarch64 (2026-09-18)
 
@@ -774,14 +792,17 @@ clause. Status is unchanged.
 
 ### Request 98: repair the ThinLTO prelink rejection of depth-2 same-unit call chains carrying `str`/`string` (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all ordinary builds and checks at the default per-unit compilation; Request 95 proposal 2 (interface-carried small bodies), now unblocked
-Resume condition: consumer adoption — run `alignc build src/main.align --thin-lto` at the merged pin and confirm it completes
+Resume condition: none
 Align commit or pull request: [sanohiro/align#1092](https://github.com/sanohiro/align/pull/1092) (merge commit `dd0937df186d42d7a047725fa1e19866601f48ae`), fixing [sanohiro/align#1070](https://github.com/sanohiro/align/issues/1070)
-align-llm verification: `alignc build src/main.align --thin-lto` completes, plus scripts/run-runtime-provider-smoke at the resulting binary (verified in Align tree with the closure-matrix owner tests; consumer adoption pending)
+align-llm verification: at managed `df14e8bdee748e1f4e2d684a24b36c7b8984b270`,
+  `alignc build src/main.align --thin-lto` completes (155 frontend units and 3,586 backend
+  functions), and `scripts/run-runtime-provider-smoke` passes its self-test, shim matrix, sampler
+  vectors, and 61 CLI assertions after rebuilding the final-pin executable
 
 Discovered during the Mac-native binary optimization audit while evaluating `--thin-lto` as the alternative to Request 97 (`alignc build src/main.align --thin-lto`):
 1. The build fails during prelink after roughly 5-6 minutes of wall time with `alignc: ThinLTO prelink failed for partition 'eval_retirement::eval_retirement$admit': lowering failed: resource MIR in function 'eval_retirement$inspect' is malformed: XML-capable call argument provenance mismatch`. Nothing XML is involved. It reproduces identically with `--profile fast --target-cpu native --thin-lto`, so it is independent of profile and CPU.
@@ -814,7 +835,7 @@ partition is formed.
 
 ### Request 99: derive a complete memory-effects model for every runtime ABI symbol (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: high
 Blocking: no
 Blocked gate or slice: none
@@ -848,9 +869,6 @@ classified `IndirectStorage` with effects withheld. An `argmem` semantics
 experiment is PR 1's precondition, and PR 1 does not deliver this issue's
 acceptance criteria 3-4 as written. Also folds #1073 part 2. Status is
 unchanged.
-
-2026-09-21: merged upstream as Align PR #1126 (`5dc3caa7`); align-llm adoption
-is paused by Request 118.
 
 ### Request 100: give per-element runtime primitives an inline fast path and a visible slow path (2026-09-18)
 
@@ -956,12 +974,13 @@ unchanged (ALIGN_MERGED for part 1 only).
 
 ### Request 102: adopt one cold-path model for `Result`/`?` — branch weights, `cold` inference, fail-family effects (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED not met
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: splitting `*_execute_mode_traced` diagnostic arms into separate functions, gating unconditional diagnostic work behind its flag
-Resume condition: upstream design closure and implementation on issue #1074
+Resume condition: provider follow-up that moves the real-client `$fail` call sites and shrinks the
+  hot span, followed by consumer remeasurement
 Align commit or pull request: implementation [sanohiro/align#1128](https://github.com/sanohiro/align/pull/1128), merge `bdf29a48`; tracking issue [sanohiro/align#1074](https://github.com/sanohiro/align/issues/1074)
 align-llm verification: disassembly position and byte-span measurement of `$fail` call blocks in `moe_decode_step$run_moe_layer` (20.4% of the function at a mean 49.5% position today), plus scripts/run-moe-decode-step and scripts/run-decode-step
 
@@ -998,12 +1017,20 @@ language surface are unchanged. align-llm's disassembly/byte-span and runtime
 verification remain consumer-owned, so `ALIGN_LLM_VERIFIED` and `CLOSED` are
 pending.
 
-2026-09-21: merged upstream as Align PR #1128 (`bdf29a48`); align-llm adoption
-is paused by Request 118.
+### align-llm residual verification (2026-09-22)
+
+The exact rebuilt final-pin arm64 image does not meet the client layout criterion.
+`moe_decode_step$run_moe_layer` is 6,949 instructions / 27,796 bytes versus the recorded
+6,494 / 25,976-byte baseline. Its 37 direct calls to `moe_decode_step$fail` have a mean position of
+53.4% of function length (first 14.4%, last 99.0%), below the required 90%; including 17 bounds and
+7 range fail-family calls gives 61 sites at a 62.1% mean. Total function size grew by 1,820 bytes;
+that is not by itself the requested hot-span metric, but the independently required 90% mean-position
+criterion already fails. Exact evidence is posted to Align issue #1074 in comment `5771868147`;
+provider follow-up is required.
 
 ### Request 103: state Align's scalar ABI facts at call boundaries (`zeroext`/`signext`/`range`) (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED not met
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
@@ -1056,8 +1083,15 @@ drop from 13 to 10 instructions, and run `scripts/run-moe-decode-step`. Until
 those measurements pass, this request remains ALIGN_MERGED rather than
 ALIGN_LLM_VERIFIED.
 
-2026-09-21: merged upstream as Align PR #1143 (`1a446e5e`); align-llm adoption
-is paused by Request 118.
+### align-llm residual verification (2026-09-22)
+
+The exact rebuilt final-pin image contains 905 `and wN, wM, #0x1` masks across 344 decoded Align
+function bodies, versus the 763-mask/343-function baseline and the requested under-100 target. The
+client result therefore regresses by 142 masks and does not meet acceptance. The two node-builder
+loop counts still need a separately bounded extraction, and `scripts/run-moe-decode-step` remains
+explicit N/A because the required llama instruments are absent, but neither can reverse the failed
+whole-image criterion. Corrected client evidence is posted to Align issue #1075 in comment
+`5768920753`; provider follow-up or an explicit contract revision is required.
 
 ### Request 104: lay out every sum type as a tagged union, including `Option` and `Result` (2026-09-18)
 
@@ -1096,12 +1130,13 @@ fixture, build machinery, or managed pin changed for this verification.
 
 ### Request 105: complete the aggregate transport contract for parameters, returns, cleanup bit and destinations (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED not met
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: splitting `model_forward$Outcome` into hot and cold records, reducing by-value aggregate signatures in application code
-Resume condition: consumer verification against Align merge `8863ecc2`
+Resume condition: provider follow-up for the residual aggregate/byval frame and result scratch,
+  followed by consumer remeasurement
 Align commit or pull request: design [sanohiro/align#1130](https://github.com/sanohiro/align/pull/1130), merge `91fe3ed1`; transport [sanohiro/align#1133](https://github.com/sanohiro/align/pull/1133), merge `5f71179e`; fresh construction [sanohiro/align#1134](https://github.com/sanohiro/align/pull/1134), merge `8863ecc2`
 align-llm verification: `decode_step$decode_pass` frame size (2,080 B today) and its `call.result.storage` slot count (5 of 835 program-wide), whole-program `huge struct copy` warning count (333), plus scripts/run-decode-step and scripts/run-runtime-provider-smoke output unchanged
 
@@ -1149,8 +1184,16 @@ scratch-slot, warning and smoke measurements remain consumer-owned and
 unverified; no align-llm code, fixture, build machinery, branch or managed pin
 was changed for this provider delivery.
 
-2026-09-21: merged upstream as Align PRs #1133 (`5f71179e`) and #1134
-(`8863ecc2`); align-llm adoption is paused by Request 118.
+### align-llm residual verification (2026-09-22)
+
+Fresh optimized whole-program IR shows that `decode_step$decode_pass` now has zero
+`call.result.storage` allocas, improving its five-slot baseline, and `alignc check src/main.align`
+emits 332 `huge struct copy` warnings versus 333. The complete criterion still fails: the exact
+arm64 image retains a `0x820` (2,080-byte) local frame allocation against the 1,340-byte ceiling,
+plus a 96-byte callee-save push, while whole-program IR retains 787 `call.result.storage` allocas
+versus 835. The runtime-provider owner passes all 61 CLI assertions; the real decode owner is N/A
+on this host because its llama instruments are absent. Exact evidence is posted to Align issue
+#1077 in comment `5771868332`; provider follow-up is required.
 
 ### Request 106: one drop-state model — flag ownership, sweep folding, and move-out zeroing (2026-09-18)
 
@@ -1196,9 +1239,6 @@ bounded gate, Clippy, and Linux x86-64/Linux ARM64/macOS CI passed. The listed
 align-llm metrics and smoke digests remain consumer-owned and unverified; PR 3
 aggregate transport and PR 4 fresh construction are separate capabilities, not
 limits of this shipped drop-state surface.
-
-2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
-the merge commit is an ancestor of `dfcfd11f`.
 
 ### Request 107: materialize a borrowed slice/array view header once and state its alias facts (2026-09-18)
 
@@ -1280,7 +1320,7 @@ owner (11 tests, aarch64) plus one `vectorize_shapes` aarch64 arm. Limit:
 
 ### Request 109: fuse the bounds check into one unsigned compare and eliminate monotone-induction in-loop checks (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: high
 Blocking: no
 Blocked gate or slice: none
@@ -1313,9 +1353,6 @@ this issue was revised after its independent review in
 [Align PR #1110](https://github.com/sanohiro/align/pull/1110) (merge commit
 `aa8e519e79e831724efff7fcd9788221a908e578`), and implementation of PR 2 is
 starting. Status is unchanged.
-
-2026-09-21: merged upstream as Align PR #1116 (`1eeec89f`); align-llm adoption
-is paused by Request 118.
 
 ### Request 110: one floating-point reduction semantics — uniform min/max lowering plus scoped reassociation (2026-09-18)
 
@@ -1372,12 +1409,9 @@ align-llm build. The original speed targets and ordered bit-identity controls
 remain consumer-owned adoption measurements, so Request 110 is not yet
 `ALIGN_LLM_VERIFIED`.
 
-2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
-the merge commit is an ancestor of `dfcfd11f`.
-
 ### Request 111: make a vector mask structural — blend vectors of matching lane count and element width (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
@@ -1385,6 +1419,15 @@ Independent work that may continue: replacing the `vec4<f32>`-index masked argma
 Resume condition: consumer adoption — rewrite the masked argmax with an integer index vector and re-measure scripts/bench-runtime-greedy at the merged pin
 Align commit or pull request: [sanohiro/align#1096](https://github.com/sanohiro/align/pull/1096) (merge commit `cfe0f3bebdb85c24fc0f3c2f834743bea6a97da2`), fixing [sanohiro/align#1083](https://github.com/sanohiro/align/issues/1083)
 align-llm verification: scripts/bench-runtime-greedy (242 us/call over 151,936 logits today) against a masked argmax with an integer index vector, plus scripts/run-runtime-provider-smoke for unchanged selection results (verified in Align tree; consumer adoption pending)
+
+### align-llm consumer verification (2026-09-22)
+
+`src/runtime_generation.align` now carries `vec4<i32>` candidate and winner indices selected by the
+`vec4<f32>` comparison mask, with no floating-point index workaround. At the adopted compiler the
+named greedy benchmark passes at 104 us/call over about 152k logits, and
+`scripts/run-runtime-provider-smoke` passes its sampler vectors plus 61 CLI assertions after the
+final consumer executable rebuild. This verifies the structural same-lane/same-width mask surface
+without extending it to mismatched widths or lane counts.
 
 Discovered during the Mac-native binary optimization audit while writing an explicit-SIMD argmax for logits selection (`src/runtime_generation.align`, `src/runtime_sampler.align`):
 1. `Ty::Mask` carries the element type of the vector that produced it (`Mask(Scalar, u32)`, `crates/align_sema/src/lib.rs:491`), and `select` requires the mask's element type to be identical to the blended vectors'. But a mask has no element type at the machine level: every `maskN<T>` is `<N x i1>`, and a lane-wise blend depends only on the lane count and the lane width.
@@ -1417,7 +1460,7 @@ not unconditionally exact, since the index lanes are `i32`.
 
 ### Request 112: lower a counted loop with its trip-count exit at the latch, not the header (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: high
 Blocking: no
 Blocked gate or slice: none
@@ -1450,19 +1493,38 @@ this issue was revised after its independent review in
 `aa8e519e79e831724efff7fcd9788221a908e578`), and implementation of PR 2 is
 starting. Status is unchanged.
 
-2026-09-21: merged upstream as Align PR #1127 (`5868ed8d`); align-llm adoption
-is paused by Request 118.
-
 ### Request 113: add `str` literal patterns to `match`, completing the value-pattern family (2026-09-18)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
+Status: CLOSED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: adding a length pre-check before string-literal `==` chains, which short-circuits most arms with a two-instruction test today
-Resume condition: consumer adoption and verification against Align merge `e4395337`
+Resume condition: none
 Align commit or pull request: design [sanohiro/align#1135](https://github.com/sanohiro/align/pull/1135), merge `d433da02`; implementation [sanohiro/align#1136](https://github.com/sanohiro/align/pull/1136), merge `e4395337`, for [sanohiro/align#1085](https://github.com/sanohiro/align/issues/1085)
 align-llm verification: surviving `bl align_rt_str_eq` sites in `tokenizer_qwen2$build_eog_set` (29 today) and whole-image `bl align_rt_str_eq` count (1,523 today), plus scripts/run-tokenizer-smoke and scripts/run-alignpack-smoke with byte-identical output and pack digests
+
+### align-llm consumer checkpoint (2026-09-22)
+
+The adopted string-pattern migrations leave zero `str_eq` calls and ten switches in optimized
+`tokenizer_qwen2$build_eog_set`; the rebuilt whole image contains 325 `str_eq` calls, down from the
+1,523-call baseline. `scripts/run-tokenizer-smoke` passes its complete text/special/model-failure/
+generation-EOG matrix, and `scripts/run-alignpack-smoke` passes 20,541 assertions including byte
+identity, independent-reader and lowered-limit checks. The required client outputs and pack digests
+remain unchanged. The issue's required tokenizer reprofile against the recorded 4.5% `str_eq`
+sample-share baseline is still pending, so this request does not yet advance to
+`ALIGN_LLM_VERIFIED`.
+
+### align-llm consumer verification (2026-09-22)
+
+The final real-model tokenizer profile completes the remaining acceptance item. A Qwen2.5-Coder-7B
+snapshot was loaded once, then a deterministic 56,320-byte mixed repository input was processed
+through `prepare_retained` 120 times in the same session. The run produced 1,428,720 token ids in
+1.72 seconds wall / 1.31 seconds user. A 1-ms `sample` profile captured 725 leaf samples and contains
+zero `align_rt_str_eq` samples (0.0%), down from the recorded 378 / 8,341 (4.5%) baseline. Together
+with zero `str_eq` calls in `build_eog_set`, 325 in the whole image versus 1,523, passing tokenizer
+and AlignPack owners, and unchanged outputs/digests, this completes consumer qualification. Evidence
+is posted in issue comment `5771980776`, and Align issue #1085 is closed.
 
 Discovered during the Mac-native binary optimization audit of string dispatch (`src/alignpack.align:386-417`, `src/tokenizer_qwen2.align:1711-1719`, `:1754-1767`):
 1. `match` accepts variant patterns, or-patterns, wildcards and — since Request 90 / issue #1055, shipped as PR #1060 — integer and `char` literals, inclusive ranges and value or-patterns. It does not accept `str` literals, so dispatching on a string is written as an `if`/`==` ladder and the language provides no way to express that the arms are alternatives over one scrutinee. An N-arm string dispatch performs up to N full string comparisons where an N-arm integer `match` folds to arithmetic, and the author gets no exhaustiveness checking, no duplicate-arm detection and no single evaluation of the scrutinee — the three things #1055 delivered for integers.
@@ -1507,12 +1569,9 @@ smoke suites, and confirm byte-identical output and pack digests. No align-llm
 code, tests, fixtures, build machinery, branch, PR or managed pin was changed by
 this provider delivery.
 
-2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
-the merge commit is an ancestor of `dfcfd11f`.
-
 ### Request 114: make `emit-llvm --stage optimized` and `explain-opt` report a unit that has no `main` (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_LLM_VERIFIED
 Priority: low
 Blocking: no
 Blocked gate or slice: none
@@ -1520,6 +1579,16 @@ Independent work that may continue: reading remarks out of `src/main.align`'s wh
 Resume condition: consumer adoption — run `alignc explain-opt src/kv_plane.align` and `alignc emit-llvm src/layer_qwen2.align --stage optimized` at the merged pin and confirm the requested unit's own `pub fn` bodies are reported
 Align commit or pull request: [sanohiro/align#1090](https://github.com/sanohiro/align/pull/1090) (merge commit `674ba70e9aa769d189766041d0ac090e222b4994`), closing [sanohiro/align#1086](https://github.com/sanohiro/align/issues/1086)
 align-llm verification: `alignc explain-opt src/kv_plane.align` and `alignc emit-llvm src/layer_qwen2.align --stage optimized` reporting the requested unit's own `pub fn` bodies rather than an empty module, plus the seven modules unblocked by Request 96 / PR #1068 (verified in Align tree; consumer adoption pending)
+
+### align-llm consumer verification (2026-09-21)
+
+At managed revision `dfcfd11f0b076320f3f9bfbf1f837a4130092964`, `explain-opt` reports
+`kv_plane.align` through its 24 public inspection roots and `emit-llvm --stage optimized` reports
+`layer_qwen2.align` through its 31 public inspection roots. The seven formerly crashing or empty
+modules — `decode_step`, `moe_decode_step`, `gguf`, `tokenizer_qwen2`, `alignpack`, `model_ir`, and
+`main` — all complete `explain-opt` and produce nonempty reports. This satisfies every originally
+named consumer target for Requests 96 and 114; the report files are disposable evidence and are
+not committed.
 
 Discovered during the Mac-native binary optimization audit while pointing the compiler's own optimization lens at align-llm's hot modules:
 1. `alignc emit-llvm --stage optimized` and `alignc explain-opt` run on a library unit — a `.align` file with `pub fn`s and no `main` — report only code reachable from the `{main} union --export` roots. With no `main` and no `--export`, the requested unit's own functions are all internal and dead, so DCE empties its module, while its imported units keep external linkage on their `pub fn`s and are emitted in full. The result is actively misleading rather than merely empty: a large IR file or a long list of remarks, all about a different unit, with the requested unit reported as having no vectorization or inlining opportunities.
@@ -1546,14 +1615,9 @@ plus `--export`, unchanged. A `pub fn` named like a runtime symbol no longer
 breaks inspection. Shipped together with Request 115 / issue #1087 in the
 same PR, since both share the one target/root resolution seam.
 
-2026-09-21: at `dfcfd11f` `alignc explain-opt` reports on `decode_step`,
-`moe_decode_step`, `gguf`, `tokenizer_qwen2`, `alignpack`, `model_ir`, `main`
-and `kv_plane`, and `emit-llvm --stage optimized` works on `layer_qwen2`;
-ALIGN_LLM_VERIFIED is deferred to the adopted pin because of Request 118.
-
 ### Request 115: normalize the Darwin triple to `macosx<deployment>` and single-source the deployment target (2026-09-18)
 
-Status: ALIGN_MERGED; deployment target and explicit SDK provenance shipped, consumer verification pending
+Status: ALIGN_LLM_VERIFIED
 Priority: low
 Blocking: no
 Blocked gate or slice: none
@@ -1561,6 +1625,15 @@ Independent work that may continue: everything; the linked executable is correct
 Resume condition: consumer adoption — re-measure the `was built for newer 'macOS' version` warning count on a release link, then run `alignc emit-obj --sdk-version <selected-version>` and inspect `minos`/`sdk` with `otool -l` at the merged pin
 Align commit or pull request: deployment target [sanohiro/align#1090](https://github.com/sanohiro/align/pull/1090) (merge `674ba70e9aa769d189766041d0ac090e222b4994`), closing [sanohiro/align#1087](https://github.com/sanohiro/align/issues/1087); SDK provenance [sanohiro/align#1147](https://github.com/sanohiro/align/pull/1147) (merge `4ff968c7e31b4a0f9d682ad41c4ca12733980701`), closing [sanohiro/align#1093](https://github.com/sanohiro/align/issues/1093)
 align-llm verification: `was built for newer 'macOS' version` warning count on a release link of `src/main.align` (155 today), plus `otool -l` on an `alignc emit-obj --sdk-version <selected-version>` product reporting `minos` equal to the resolved deployment target and `sdk` equal to the explicit canonical version. Omission intentionally remains `sdk n/a`; Align-tree verification passed, consumer adoption is pending.
+
+### align-llm consumer verification (2026-09-21)
+
+At managed revision `dfcfd11f0b076320f3f9bfbf1f837a4130092964`, a cached release link of
+`src/main.align` completes with zero `was built for newer 'macOS' version` warnings. An
+`emit-obj` consumer using explicit deployment target 27.0 and SDK 27.0 produces
+`LC_BUILD_VERSION` with `minos 27.0` and `sdk 27.0`, as reported by `otool -l`. The omission case
+continues to be provider-owned and intentionally records `sdk n/a`; every originally named
+align-llm consumer measurement is complete.
 
 Discovered during the Mac-native binary optimization audit while collecting release-link output for `alignc build src/main.align --profile release` on Apple M1 / macOS 27.0 (Darwin 27.0.0):
 1. On macOS, `alignc` builds its `TargetMachine` and every module triple from `TargetMachine::get_default_triple()` verbatim, which yields `arm64-apple-darwin<kernel>.0.0`. LLVM then rewrites that triple's OS component through its Darwin N to macOS N+1 renumbering table, so on a host where the Darwin kernel major and the macOS major coincide every `alignc`-produced object is stamped one macOS major too high and with no SDK version: `minos 28.0, sdk n/a` where clang produces `minos 27.0, sdk 27.0`.
@@ -1596,9 +1669,6 @@ filesystem or subprocess fallback. Align verified exact LLVM metadata, native
 Mach-O load commands, omission, cache separation, validation before side
 effects, and concurrent direct-call freezing. Consumer-owned adoption and the
 release-link/`otool` measurements above remain pending.
-
-2026-09-21: adoption paused by Request 118 (Align #1132 codegen regression);
-the merge commit is an ancestor of `dfcfd11f`.
 
 ### Request 116: one vectorization contract for ordinary Align code, with an owner per guarantee (2026-09-18)
 
@@ -1647,14 +1717,35 @@ were previously measured false and unfixable by their original proposals.
 
 ### Request 117: [Language] Module constants for opaque `raw` values and pure-function initializers (FFI null sentinel) (2026-09-21)
 
-Status: PROPOSED
+Status: ALIGN_LLM_VERIFIED
 Priority: low
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all
-Resume condition: Align ships constant support for opaque/`raw` values or function-call initializers
-Align commit or pull request: tracking issue [sanohiro/align#1159](https://github.com/sanohiro/align/issues/1159); no implementation yet
+Resume condition: adopt Align merge `df14e8bdee748e1f4e2d684a24b36c7b8984b270`, declare
+  `pub NULL: raw := raw.null()`, replace the legacy call sites, and run the named consumer owners
+Align commit or pull request: [PR #1162](https://github.com/sanohiro/align/pull/1162),
+  merge `df14e8bdee748e1f4e2d684a24b36c7b8984b270`; issue
+  [sanohiro/align#1159](https://github.com/sanohiro/align/issues/1159) closed
 align-llm verification: `make check` (155 units) with the constant declared in `src/ggml_ffi.align` and the legacy call sites replaced, plus the `ggml_ffi.null_handle()` call-site count in the six legacy modules falling from 136 to 0
+
+Consumer verification at managed revision `df14e8bdee748e1f4e2d684a24b36c7b8984b270`
+passes whole/per-unit `gmake check` for 155 units and `scripts/run-layer-forward-smoke` with the
+checked-in 1,426 `sha256` and 626 `bit_sum` goldens. `src/ggml_ffi.align` now exports
+`pub NULL: raw := raw.null()`, and the six named legacy modules contain zero
+`ggml_ffi.null_handle()` call sites. This verifies the shipped constant surface without making a
+performance claim.
+
+Align shipped the narrower requested surface: the exact zero-argument `raw.null()` expression may
+initialize an immutable module constant, with or without an explicit `raw` annotation, and a
+same-module constant may alias that value. `align_sema` owns recognition, folding and substitution
+to the existing typed HIR `RawNull` leaf; existing MIR/LLVM lowering emits the target null pointer
+with no runtime constructor, global initializer, allocation, storage owner or Drop action. Public
+interfaces retain the written annotation option plus exact initializer source and importers reparse
+and refold it, with whole-program and per-unit parity. The surface does not admit general pure-call
+constant evaluation, arguments, `raw.alloc`/load/store/free/offset, unsafe blocks, non-null raw
+values or raw aggregate-constant elements. Ordinary expression-level `raw.null()` remains
+unsafe-only. Consumer adoption and the listed align-llm verification remain consumer-owned.
 
 Discovered during C2, the CPU-weighted legacy-path application items recorded in
 `docs/specs/cpu-baseline-linux.md` section 9 and as item C2 in `docs/backend-parity.md` section 6.
@@ -1697,108 +1788,30 @@ The item "replace `ggml_ffi.null_handle()` with a `pub` const" could not be appl
    recorded because it is a language-owned restriction, not an application choice; per `CLAUDE.md`,
    a workaround is not a reason to leave a language gap unrecorded.
 
-### Request 118: [Compiler Bug] Since Align #1132, a drop-tracked field store after a `?` Ok continuation lowers to `unreachable` and truncates the function (SIGSEGV) (2026-09-21)
+### Request 118: certify borrowed fixed-array record fields across fallible imported calls (2026-09-21)
 
-Status: PROPOSED
-Priority: high
-Blocking: yes
-Blocked gate or slice: adoption of any `.align-revision` at or after `2c39850b` (Align #1132),
-  including tokenizer, alignpack, runtime-provider, and GPU-session consumer verification for
-  Requests 92, 93, 94, 95, 103, 105, 106, 110, 113 and 115
-Independent work that may continue: everything at pin `8c8bfbc7`, including the application-side
-  items that do not need the newer surfaces
-Resume condition: the fix is merged on Align `main` and the 25-line reproducer prints `repro: PASS`
-  at the fixed commit, then re-run the adoption
-Align commit or pull request: tracking issue [sanohiro/align#1157](https://github.com/sanohiro/align/issues/1157), with the expanded align-llm consumer matrix in [comment 5759259675](https://github.com/sanohiro/align/issues/1157#issuecomment-5759259675); no fix yet
-align-llm verification: `scripts/run-tokenizer-smoke`, `scripts/run-alignpack-smoke`,
-  `scripts/run-runtime-provider-smoke`, `scripts/run-gpu-session-reuse-smoke`, and
-  `scripts/run-layer-forward-smoke` PASS at the adopted pin, plus `make check` 155 units and an
-  `objdump` census showing zero Align functions ending in a non-noreturn `call`
-
-1. Evidence. Bisected over the merge commits between `8c8bfbc7` and `dfcfd11f`: last good
-   `647eb24d` (#1131), first bad `2c39850b` (#1132); still bad at `2907d5e5`, `854815ac`,
-   `dfcfd11f`. `make check` passes at every commit (type checking is unaffected); the defect is in
-   drop-state/MIR to LLVM lowering. At `dfcfd11f`, `runtime_generation$execute_session` ends at
-   `call align_rt_str_clone` followed by padding, with no `ret`; 85 Align functions in the
-   `ggml-spike` image end in a non-noreturn `call` (0 at `8c8bfbc7`), 84 of them in
-   `align_rt_str_clone`. Runtime: `scripts/run-gpu-session-reuse-smoke` exits 139 after "session:
-   first"; `scripts/run-layer-forward-smoke` fails because the `--layer-forward` child emits no
-   JSON. The 25-line reproducer:
-
-   ```align
-   module single
-   import std.io
-   Fault { code: string, detail: string }
-   Session { decode_key: string, count: i64 }
-   fn act(kind: i64) -> Result<(), Fault> {
-     if kind < 0 { return Err(Fault { code: "CONFIG".clone(), detail: "kind".clone() }) }
-     return Ok(())
-   }
-   fn prepare(kind: i64) -> Result<(), Error> {
-     act(kind) else { return Err(Error.Invalid) }
-     return Ok(())
-   }
-   fn drive(borrow mut session: Session, n: i64) -> Result<i64, Error> {
-     key := "graph-key".clone()
-     prepare(n)?
-     session.decode_key = key.clone()
-     return Ok(1)
-   }
-   pub fn main(args: array<str>) -> Result<(), Error> {
-     mut session := Session { decode_key: "".clone(), count: 0 }
-     total := drive(session, 3)?
-     if total != 1 || session.decode_key.len() != 9 { return Err(Error.Invalid) }
-     io.stdout.write("repro: PASS\n")?
-     return Ok(())
-   }
-   ```
-
-   Variant results: scalar field write PASSes; `match` instead of `?` or no inner `else` gives a
-   garbage `Err` instead of a crash; `borrow mut` not required (`layer_qwen2$parse_geometry` with a
-   local `mut` record is also truncated); cross-unit split and enclosing loop not required. Also
-   record the second defect: at `8863ecc2` (#1134) and `2907d5e5` (#1138) align-llm does not compile
-   ("cannot import interface 'runtime_diagnostic': interface drop-state metadata disagrees with its
-   parameter type or mode"), repaired by a later commit before `dfcfd11f`.
-   The pin-only consumer matrix at `dfcfd11f` is broader than the original reduction:
-   `scripts/run-tokenizer-smoke` and `scripts/run-alignpack-smoke` exit with signal 5, with the
-   tokenizer crash report identifying `gguf$decode_header` and `EXC_BREAKPOINT (SIGTRAP)`;
-   `scripts/run-runtime-provider-smoke` reaches its self-test and shim owners before its API binary
-   exits 133 in `gguf$decode_header`; and `scripts/run-gpu-session-reuse-smoke` reaches
-   `session:first` before exiting 133 in `runtime_generation$execute_session`. The tokenizer passes
-   at `8c8bfbc7`, and all four failures reproduce with unchanged consumer source and only the pin
-   advanced. These symptoms may share the reported lowering defect or expose more than one defect;
-   provider reduction owns that determination.
-2. Consumer. Every align-llm function that assigns a `string`/owned field of a mutable record after
-   a `?`; the resident session (`src/runtime_generation.align:1453-1454`,
-   `session.decode_key = key.clone()`) and the legacy forward path.
-3. Proposed surface. None new; a fix in the drop-state lowering plus a compiler regression test for
-   `?` Ok-continuation followed by a drop-tracked field store on a `borrow mut` record and on a
-   local `mut` record, and an emit-time assertion that no lowered function body ends without a
-   terminator.
-4. Acceptance. The reproducer and its two variants return correct values at the fixed commit; the
-   align-llm verification commands above pass at the adopted pin.
-5. Blocking rationale. Adoption paused at `8c8bfbc7`; the 2026-09-21 adoption attempt at `dfcfd11f`
-   (managed compiler materialised in 1 m 18 s, `make check` 155 units PASS, `bench-runtime-greedy`
-   128 µs/call, `bench-runtime-sampler` 174 µs/call, `explain-opt` now reports on all seven
-   previously crashing modules and on `kv_plane`, `emit-llvm --stage optimized` works on
-   `layer_qwen2`) is retained as evidence only.
-
-### Request 119: certify borrowed fixed-array record fields across fallible imported calls (2026-09-21)
-
-Status: PROPOSED
+Status: ALIGN_LLM_VERIFIED
 Priority: high
 Blocking: no
-Blocked gate or slice: none; the consumer uses an explicit slice-view record
-Independent work that may continue: all work at the current pin and the merged-request adoption
-  after Request 118 is fixed
-Resume condition: Align accepts the reduced imported fixed-array record witness in whole-program
-  and per-unit checks without weakening owned-leaf provenance
-Align commit or pull request: tracking issue [sanohiro/align#1158](https://github.com/sanohiro/align/issues/1158); no implementation yet
-align-llm verification: adopt Request 94's fixed-array tables in `qwen_nodes.build_range` and
-  `olmoe_nodes.build_range` without a slice-view bridge; `make check`, `scripts/run-decode-step`,
-  and `scripts/run-moe-decode-step` must retain their existing results
+Blocked gate or slice: none; the direct fixed-array consumer is verified
+Independent work that may continue: the complete merged-request adoption batch
+Resume condition: adopt Align merge `dac9715995e579d81b016306c94daf3eacb8d476`, remove the
+  temporary view carriers, and run the named consumer owners
+Align commit or pull request: [PR #1161](https://github.com/sanohiro/align/pull/1161),
+  merge `dac9715995e579d81b016306c94daf3eacb8d476`; issue
+  [sanohiro/align#1158](https://github.com/sanohiro/align/issues/1158) closed
+align-llm verification: replace the temporary `qwen_nodes.NodeView` and `olmoe_nodes.NodeView`
+  carriers with direct borrowed fixed-array table parameters; `gmake check` and both decode owners
+  must retain their existing results
 
-Request 94's fixed-array adoption probe exposed a compiler producer-certification gap at Align
+Consumer verification at managed revision `df14e8bdee748e1f4e2d684a24b36c7b8984b270`
+passes whole/per-unit `gmake check` for 155 units with the direct borrowed Qwen and OLMoE fixed-array
+table records. The temporary `NodeView` types and bridge calls have zero remaining occurrences.
+`scripts/run-decode-step` and `scripts/run-moe-decode-step` retain their existing explicit N/A
+result because `ALIGN_LLM_GGML_INCLUDE` is unset; their owning modules pass direct per-unit checks.
+The final GPU-session integration owner also passes at this pin.
+
+Request 94's fixed-array adoption exposed a compiler producer-certification gap at managed Align
 `dfcfd11f0b076320f3f9bfbf1f837a4130092964`. An imported function that borrows a record containing
 `[i64; N]`, obtains a field slice, and propagates a fallible imported call is rejected during
 per-unit MIR certification with `producer return leaf String at [ResultErr, StructField(1)] is not
@@ -1806,16 +1819,111 @@ certified by its body`. Equivalent direct fixed-array parameters can instead fai
 owned-leaf provenance mismatch. The fixed storage itself, direct indexing, and non-fallible views
 compile.
 
-The unpublished adoption probe constructs a stable `NodeView` of borrowed slices at the owner and
-passes that view through the fallible graph walkers; neither carrier exists on current `main`. The
-probe preserves inline table storage and zero construction allocations; it does not copy table
-elements or erase the existing detailed `Fault` results. This is not evidence that the
-language-owned imported-producer boundary is complete.
+The application workaround constructs a stable `NodeView` of borrowed slices at the owner and
+passes that view through the fallible graph walkers. It preserves inline table storage and zero
+construction allocations; it does not copy table elements or erase the existing detailed `Fault`
+results. This is not evidence that the language-owned imported-producer boundary is complete.
 
 Provider acceptance should cover direct and imported records with fixed scalar arrays, a borrowed
 field slice passed across a fallible imported call, success and error propagation, source lifetime,
 whole/per-unit parity, malformed HIR/MIR rejection, and unchanged ownership of the `Result` error
-payload. The final adoption must not require either probe-only view carrier.
+payload. The application can remove both view carrier types after adoption.
+
+**Align response (2026-09-21): implementation ALIGN_MERGED.** PR #1161 certifies
+plain-scalar fixed-array record-field slices through the exact
+`Slot(field..., Element)` MIR producer edge. Anonymous array-construction temporaries must have one
+exact load and complete, well-typed initialization before it; parameters, whole-value array stores,
+copies, and later scalar element mutations retain their ordinary producer edges. The slice remains
+a Shared borrow of inline record storage, allocates nothing, transfers no array ownership, and does
+not weaken the independently owned `Result` error leaves. Region-bearing and record-element fixed
+arrays are outside this correction and keep their prior behavior. Whole-program and per-unit owners
+cover direct/imported records, success/error propagation, replacement, copies, mutation, nested
+records, and malformed MIR rejection on all required CI platforms. Consumer removal of `NodeView`,
+managed-pin adoption, and `gmake check`/decode verification remain align-llm-owned and pending; no
+consumer code, fixtures, branch, or merge state was changed by Align.
+
+### Request 119: prevent SIGTRAPs in unchanged consumer binaries after the merged-request pin (2026-09-21)
+
+Status: ALIGN_LLM_VERIFIED
+Priority: critical
+Blocking: no
+Blocked gate or slice: none
+Independent work that may continue: all
+Resume condition: none; rebuilt consumer artifacts at the final managed pin pass the complete
+  four-smoke acceptance matrix
+Align commit or pull request: [PR #1160](https://github.com/sanohiro/align/pull/1160), merged as `cd274bd99d5f5ca921d6713f830053c84dfe43bc`; tracking issue [sanohiro/align#1157](https://github.com/sanohiro/align/issues/1157), with the additional align-llm consumer matrix in [comment 5759259675](https://github.com/sanohiro/align/issues/1157#issuecomment-5759259675)
+align-llm verification: `scripts/run-tokenizer-smoke`, `scripts/run-alignpack-smoke`,
+  `scripts/run-runtime-provider-smoke`, and `scripts/run-gpu-session-reuse-smoke`, followed by every
+  originally named acceptance owner blocked by those commands
+
+At the previous managed pin `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`, the unchanged
+`scripts/run-tokenizer-smoke` passes. Changing only `.align-revision` to
+`dfcfd11f0b076320f3f9bfbf1f837a4130092964` makes its generated binary exit with signal 5 before
+publishing the generation-EOG result. The macOS crash report identifies `gguf$decode_header` and
+`EXC_BREAKPOINT (SIGTRAP)`. The same pin-only control makes `scripts/run-alignpack-smoke` exit with
+signal 5 in its limits entry point. Reverting the align-llm string-match and `append_filled`
+migrations does not change either failure, and a standalone dynamic-string match covering all 22
+EOG spellings succeeds. The evidence therefore binds the regression to the merged Align revision,
+not to either consumer migration.
+
+The scope is not limited to GGUF decoding. On the same pin-only control,
+`scripts/run-runtime-provider-smoke` exits 133 in its API binary; its crash frame is
+`gguf$decode_header`. `scripts/run-gpu-session-reuse-smoke` also exits 133 after printing
+`session: first`, with its crash frame inside `runtime_generation$execute_session`. The latter
+reproduces from the unchanged source at the new pin, so neither the fixed-array migration nor the
+vectorized greedy migration causes it. These may share one compiler invariant or be separate
+regressions in the merged wave; provider reduction must decide rather than assuming one cause.
+
+Provider acceptance must reduce both failing paths, identify each exact introduced compiler/runtime
+invariant, and cover whole-program/per-unit compilation plus execution on the tokenizer, alignpack,
+runtime-provider, and GPU-session fixture shapes. Any decoder fix must retain bounds and
+malformed-input refusal and must not turn a trap into unchecked decoding. Consumer closure requires
+all four named smokes and their byte/digest identity checks at the repaired managed pin.
+
+Align PR #1160, merged as `cd274bd9`, identifies one shared cause for the reduced failures. The
+drop-state effect pass removed a mutable-record cleanup proxy whenever the root live bit was not
+written, but owned-field replacement still read that proxy before dropping the old leaf. The
+resulting uninitialized branch could truncate the normal continuation after a fallible call. The
+implementation classifies any cleanup-proxy read as requiring the conservative caller-owned
+`{data pointer, drop-flag pointer}` pair; it adds no allocation or language surface, preserves
+scalar-field mutation as `Invariant`, and retains caller ownership plus exact writeback of the
+cleanup bit. MIR effect owners and the complete owned-field replacement executable owner pass,
+including borrowed/local records after `?`, inner `else`, explicit `match`, success/error values,
+and zero live bytes after Drop. Consumer pin adoption and the four named smokes were verified on
+2026-09-22 as recorded below.
+
+### align-llm residual verification (2026-09-22)
+
+The final batched managed pin `df14e8bdee748e1f4e2d684a24b36c7b8984b270` includes PRs
+#1160–#1162. `scripts/run-gpu-session-reuse-smoke` now passes both normal session phases and the
+forced-failure cases, so the `runtime_generation` trap is repaired. The GGUF consumers are not:
+`scripts/run-tokenizer-smoke` exits with signal 5 in its empty fixture,
+`scripts/run-alignpack-smoke` exits with signal 5 in `qwen2-full`, and
+`scripts/run-runtime-provider-smoke` passes self-test and shim construction before its model-IR
+fixture exits with the same signal. Fresh macOS crash reports identify
+`EXC_BREAKPOINT (SIGTRAP)` at `gguf$decode_header` for all three failures.
+
+That residual verdict was produced by stale consumer executables. The managed compiler was already
+at `df14e8bdee748e1f4e2d684a24b36c7b8984b270`, but the `main` artifact used by the first three
+smokes predated the final pin. Rebuilding `main` from `src/main.align` with that exact managed
+compiler produced SHA-256
+`5b44026c312f29d012428a883ec20152e1a0acb4cc0e15e9c9b8897e0a1e806b`; the compiler artifact was
+`ea2f3ecfb98a7945c823b96381d8fcae6c49d72f9f22612997aa66ee085c90b4`. With Homebrew's keg-only
+OpenSSL/libpq link directories supplied through `LIBRARY_PATH`, the complete required matrix then
+passed unchanged:
+
+- `scripts/run-tokenizer-smoke`: PASS (13 text cases, 4 ordinary specials, 256-special boundary,
+  23 model failures, 6 operation boundaries, 6 generation-EOG cases, 2 one-shot reader passes and
+  the replacement snapshot);
+- `scripts/run-alignpack-smoke`: PASS (27 positive fixtures, 128 negative sources and 20,541
+  assertions, including lowered-limit and byte-identity owners);
+- `scripts/run-runtime-provider-smoke`: PASS (self-test, shim matrix and 61 CLI assertions); and
+- `scripts/run-gpu-session-reuse-smoke`: PASS (normal reuse plus forced decode/readback failures).
+
+Request 119 is therefore `ALIGN_LLM_VERIFIED` and non-blocking. No additional Align compiler change
+or align-llm source workaround is required. Pin adoption workflows must rebuild consumer
+executables before running smoke suites; changing `.align-revision` alone does not invalidate an
+already-linked binary.
 
 ### Latest Align toolchain and language feature adoption (2026-09-17)
 
@@ -8319,7 +8427,7 @@ retains verifier-first acceptance, immutable rollback, tamper, lineage, and CLI 
 Status: CLOSED
 Priority: medium
 Blocking: no
-Blocked gate or slice: none — the optimized owner is restored to the hosted lane
+Blocked gate or slice: none — the provider optimization shipped; later fixture growth is tracked by align-llm #287
 Independent work that may continue: all of it; every other align-llm capability compiles and runs inside its existing budget at the current pin
 Resume condition: none — closed
 Align commit or pull request: PR #891, merged as `4b515f8d37de2e9a9ba06170c5842fd12dc1cba2`
@@ -8429,6 +8537,15 @@ sites. Nested records, tagged values, owned arrays, handles, and resources remai
 compiler-generated iterative CFG; generated helpers never call one another, so nominal type depth
 does not become runtime call-stack depth. Allocation, ownership, cleanup order, exactly-once Drop,
 diagnostics, MIR, interfaces, and cache formats remain unchanged.
+
+Post-closure scheduling note (2026-09-22): Request 19's consumer acceptance used the then-current
+1,573-line fixture and remains valid evidence for the shipped compiler change. The fixture later
+grew to 3,424 lines and exceeded 42 minutes at the Request 92–119 adoption pin. That is not an
+acceptable routine-test duration and does not reopen the shipped surface. The complete fixture is
+again a focused verifier-boundary owner, now executed with Align's `dev` generated-program profile;
+the smaller scorer, prefix, state, and gate owners remain routine, while align-llm #287 owns further
+test/compiler cost diagnosis and requires the focused owner itself to return below roughly 15
+minutes before another verifier-boundary publication.
 
 On the submitted Request 19 fixture, raw LLVM IR fell from 1,517,324 lines / 113.6 MB to 109,992
 lines / 5.96 MB. A cold three-unit release build fell from 471.074 seconds with observed RSS above

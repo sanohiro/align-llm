@@ -43,7 +43,12 @@ FORWARDED_TOOLCHAIN_NAMES = (
     "LLVM_CONFIG",
     "LLVM_SYS_221_PREFIX",
 )
-COMPILER_HANDOFF_NAMES = ("ALIGN_LLM_FRESH_COMPILER", "ALIGNC_CACHE", "ALIGNC_DESCRIPTOR")
+COMPILER_HANDOFF_NAMES = (
+    "ALIGN_LLM_FRESH_COMPILER",
+    "ALIGN_LLM_HOSTED_ALIGNC",
+    "ALIGNC_CACHE",
+    "ALIGNC_DESCRIPTOR",
+)
 # Values the surrounding sandbox owns for the interpreter and the writable temporary root. The
 # member runners are the checked-in `bash`/`python3` runners, not product children, so they must
 # execute in the sandbox the caller declared instead of a partially rebuilt one. Rebuilding the map

@@ -9,6 +9,7 @@ import std.time
 import alignpack_read
 import ggml_ffi
 import layer_olmoe
+import olmoe_nodes
 import model_forward
 import moe_layer_forward
 
@@ -389,12 +390,7 @@ pub fn column_at(borrow column: array<i64>, index: i64) -> i64 {
 }
 
 pub fn fill_zero(borrow mut b: buffer, n: i64) {
-  mut index := 0
-  loop {
-    if index >= n { break }
-    b.put_u8(0 as u8)
-    index = index + 1
-  }
+  b.append_filled(n, 0 as u8)
 }
 
 // `buffer(cap)` reserves capacity but publishes no length, and `bytes()` is `data[..len]`, so a
@@ -3475,18 +3471,18 @@ fn run_end_graph(
   borrow mut result: EndResult,
   borrow mut o: Outcome,
 ) {
-  mut weight_ctx := ggml_ffi.null_handle()
-  mut input_ctx := ggml_ffi.null_handle()
-  mut graph_ctx := ggml_ffi.null_handle()
-  mut reference_ctx := ggml_ffi.null_handle()
-  mut reference_graph_ctx := ggml_ffi.null_handle()
-  mut weight_buffer := ggml_ffi.null_handle()
-  mut input_buffer := ggml_ffi.null_handle()
-  mut reference_buffer := ggml_ffi.null_handle()
-  mut graph := ggml_ffi.null_handle()
-  mut reference_graph := ggml_ffi.null_handle()
-  mut galloc := ggml_ffi.null_handle()
-  mut reference_galloc := ggml_ffi.null_handle()
+  mut weight_ctx := ggml_ffi.NULL
+  mut input_ctx := ggml_ffi.NULL
+  mut graph_ctx := ggml_ffi.NULL
+  mut reference_ctx := ggml_ffi.NULL
+  mut reference_graph_ctx := ggml_ffi.NULL
+  mut weight_buffer := ggml_ffi.NULL
+  mut input_buffer := ggml_ffi.NULL
+  mut reference_buffer := ggml_ffi.NULL
+  mut graph := ggml_ffi.NULL
+  mut reference_graph := ggml_ffi.NULL
+  mut galloc := ggml_ffi.NULL
+  mut reference_galloc := ggml_ffi.NULL
 
   take(o, ggml_ffi.slots_init(slot_view, slot_view.len(), "slots"))
   if reference && o.code.len() == 0 {
@@ -3686,8 +3682,8 @@ fn run_end_graph(
     }
   }
   teardown_layer(
-    ggml_ffi.null_handle(), ggml_ffi.null_handle(), ggml_ffi.null_handle(),
-    ggml_ffi.null_handle(), ggml_ffi.null_handle(), galloc, reference_galloc, graph_ctx,
+    ggml_ffi.NULL, ggml_ffi.NULL, ggml_ffi.NULL,
+    ggml_ffi.NULL, ggml_ffi.NULL, galloc, reference_galloc, graph_ctx,
     reference_graph_ctx, weight_buffer, reference_buffer, reference_ctx, weight_ctx,
     input_buffer, input_ctx, o)
 }
@@ -4067,25 +4063,25 @@ fn run_layer(
   borrow mut result: LayerResult,
   borrow mut o: Outcome,
 ) {
-  mut weight_ctx := ggml_ffi.null_handle()
-  mut input_ctx := ggml_ffi.null_handle()
-  mut graph_a_ctx := ggml_ffi.null_handle()
-  mut graph_b_ctx := ggml_ffi.null_handle()
-  mut reference_ctx := ggml_ffi.null_handle()
-  mut reference_graph_a_ctx := ggml_ffi.null_handle()
-  mut reference_graph_b_ctx := ggml_ffi.null_handle()
-  mut weight_buffer := ggml_ffi.null_handle()
-  mut claim_buffer := ggml_ffi.null_handle()
-  mut input_buffer := ggml_ffi.null_handle()
-  mut reference_buffer := ggml_ffi.null_handle()
-  mut graph_a := ggml_ffi.null_handle()
-  mut graph_b := ggml_ffi.null_handle()
-  mut reference_graph_a := ggml_ffi.null_handle()
-  mut reference_graph_b := ggml_ffi.null_handle()
-  mut galloc_a := ggml_ffi.null_handle()
-  mut galloc_b := ggml_ffi.null_handle()
-  mut reference_galloc_a := ggml_ffi.null_handle()
-  mut reference_galloc_b := ggml_ffi.null_handle()
+  mut weight_ctx := ggml_ffi.NULL
+  mut input_ctx := ggml_ffi.NULL
+  mut graph_a_ctx := ggml_ffi.NULL
+  mut graph_b_ctx := ggml_ffi.NULL
+  mut reference_ctx := ggml_ffi.NULL
+  mut reference_graph_a_ctx := ggml_ffi.NULL
+  mut reference_graph_b_ctx := ggml_ffi.NULL
+  mut weight_buffer := ggml_ffi.NULL
+  mut claim_buffer := ggml_ffi.NULL
+  mut input_buffer := ggml_ffi.NULL
+  mut reference_buffer := ggml_ffi.NULL
+  mut graph_a := ggml_ffi.NULL
+  mut graph_b := ggml_ffi.NULL
+  mut reference_graph_a := ggml_ffi.NULL
+  mut reference_graph_b := ggml_ffi.NULL
+  mut galloc_a := ggml_ffi.NULL
+  mut galloc_b := ggml_ffi.NULL
+  mut reference_galloc_a := ggml_ffi.NULL
+  mut reference_galloc_b := ggml_ffi.NULL
 
   mut plane_builder: array_builder<i64> := array_builder()
   mut type_builder: array_builder<i64> := array_builder()
@@ -4735,7 +4731,7 @@ fn schedule_model(
   // numbers are derived differently (section 6, correction C21).
   mut seen_keys: array<i64> := empty_array()
 
-  mut backend := ggml_ffi.null_handle()
+  mut backend := ggml_ffi.NULL
   if o.code.len() == 0 {
     backend = ggml_ffi.backend_open(device)
     if ggml_ffi.handle_absent(backend) {

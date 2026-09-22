@@ -564,12 +564,7 @@ pub fn gpu_core_required() -> bool {
 
 pub fn gpu_core_identity(core: i32, field: i32) -> string {
   mut window := buffer(4096)
-  mut at := 0
-  loop {
-    if at >= 4096 { break }
-    window.put_u8(0 as u8)
-    at = at + 1
-  }
+  window.append_filled(4096, 0 as u8)
   unsafe {
     written := align_gpu_core_identity(core, field, window.bytes(), 4096) as i64
     if written < 1 || written > 4096 { return "".clone() }
@@ -644,12 +639,7 @@ pub fn gpu_device_staging_path_valid(borrow owner: GpuDevice) -> bool {
 
 pub fn gpu_device_bundle_id(borrow owner: GpuDevice) -> string {
   mut window: buffer := buffer(64)
-  mut i := 0
-  loop {
-    if i >= 64 { break }
-    window.put_u8(0 as u8)
-    i = i + 1
-  }
+  window.append_filled(64, 0 as u8)
   unsafe {
     written := align_gpu_device_bundle_id(
       resource.raw(resource.borrow(owner)), window.bytes(), 64) as i64
@@ -1222,7 +1212,7 @@ pub fn gpu_graph_context_open(
   borrow owner: GpuDevice, kind: i64, metadata_bytes: i64,
 ) -> raw {
   gpu_failure_activity(GPU_STAGE_PLAN)
-  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE { return null_handle() }
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE { return NULL }
   unsafe {
     return align_gpu_graph_context_open(
       resource.raw(resource.borrow(owner)), kind as i32, metadata_bytes,
@@ -1282,7 +1272,7 @@ pub fn gpu_graph_compute(
 }
 
 pub fn gpu_graph_context_lookup(borrow owner: GpuDevice, kind: i64) -> raw {
-  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE { return null_handle() }
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE { return NULL }
   unsafe {
     return align_gpu_graph_context_lookup(resource.raw(resource.borrow(owner)), kind as i32)
   }
@@ -1290,7 +1280,7 @@ pub fn gpu_graph_context_lookup(borrow owner: GpuDevice, kind: i64) -> raw {
 
 pub fn gpu_graph_lookup(borrow owner: GpuDevice, kind: i64, topology_key: str) -> raw {
   if (kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE) || topology_key.len() != 64 {
-    return null_handle()
+    return NULL
   }
   unsafe {
     return align_gpu_graph_lookup(resource.raw(resource.borrow(owner)), kind as i32,
@@ -1323,15 +1313,9 @@ extern "C" link("m") {}
 // The safe API above them
 // ---------------------------------------------------------------------------------------------
 
-// `raw.null()` and `p.is_null()` are the only pointer constructions in the capability, and they
-// live here for the same reason every `extern` does: the smoke's `unsafe {` block scan over `src/`
-// must name exactly one file. `src/ggml_spike.align` holds handles as opaque values and never
-// forms one itself.
-pub fn null_handle() -> raw {
-  unsafe {
-    return raw.null()
-  }
-}
+// The module constant is the only null-pointer construction in the capability. Ordinary callers
+// hold and compare the folded raw value without entering `unsafe` or invoking a runtime helper.
+pub NULL: raw := raw.null()
 
 pub fn handle_absent(handle: raw) -> bool {
   unsafe {
@@ -1442,7 +1426,7 @@ pub fn backend_open(device: raw) -> raw {
 // signal. It returns a bare `raw` for the same reason every constructor here does: a `Result` ok
 // payload must be a scalar at this pin and `raw` is refused.
 pub fn device_by_kind(kind: i64) -> raw {
-  if kind != DEVICE_KIND_CPU && kind != DEVICE_KIND_GPU { return null_handle() }
+  if kind != DEVICE_KIND_CPU && kind != DEVICE_KIND_GPU { return NULL }
   unsafe {
     return align_ggml_device_by_kind(kind as i32)
   }
@@ -1480,12 +1464,7 @@ pub fn device_buft_max_size(device: raw) -> i64 {
 pub fn device_text(device: raw, which: i64) -> string {
   if which != DEVICE_TEXT_NAME && which != DEVICE_TEXT_DESCRIPTION && which != DEVICE_TEXT_ID { return "".clone() }
   mut window: buffer := buffer(MAX_DEVICE_TEXT_BYTES)
-  mut i := 0
-  loop {
-    if i >= MAX_DEVICE_TEXT_BYTES { break }
-    window.put_u8(0 as u8)
-    i = i + 1
-  }
+  window.append_filled(MAX_DEVICE_TEXT_BYTES, 0 as u8)
   unsafe {
     written := align_ggml_device_text(
       device, which as i32, window.bytes(), MAX_DEVICE_TEXT_BYTES as i32) as i64
@@ -1505,12 +1484,7 @@ pub fn device_text(device: raw, which: i64) -> string {
 // the capacity the caller declares.
 pub fn backend_name(backend: raw) -> string {
   mut window: buffer := buffer(MAX_BACKEND_NAME_BYTES)
-  mut i := 0
-  loop {
-    if i >= MAX_BACKEND_NAME_BYTES { break }
-    window.put_u8(0 as u8)
-    i = i + 1
-  }
+  window.append_filled(MAX_BACKEND_NAME_BYTES, 0 as u8)
   unsafe {
     written := align_ggml_backend_name(backend, window.bytes(), MAX_BACKEND_NAME_BYTES as i32) as i64
     if written <= 0 || written > MAX_BACKEND_NAME_BYTES {
@@ -1560,7 +1534,7 @@ pub fn buffer_free(handle: raw) {
 }
 
 pub fn new_tensor_2d(ctx: raw, kind: i64, ne0: i64, ne1: i64) -> raw {
-  if !type_representable(kind) { return null_handle() }
+  if !type_representable(kind) { return NULL }
   unsafe {
     return align_ggml_new_tensor_2d(ctx, kind as i32, ne0, ne1)
   }

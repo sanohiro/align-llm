@@ -2336,7 +2336,7 @@ def test_workflow_topology() -> None:
         in check_step(workflow, "Run supported project checks")
         and "python3 scripts/run-output-summary --phase hosted-checks --"
         in check_step(workflow, "Run supported project checks")
-        and 'make -j8 ALIGNC="$ALIGNC" hosted-checks'
+        and 'make -j8 ALIGNC="$GITHUB_WORKSPACE/scripts/alignc-hosted-test" hosted-checks'
         in check_step(workflow, "Run supported project checks")
         and "if: always() && steps.supported-checks.outcome != 'skipped'"
         in check_step(workflow, "Retain supported-check logs")
@@ -2359,8 +2359,8 @@ def test_workflow_topology() -> None:
         and workflow.count(
             "actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0"
         )
-        == 1,
-        "CI does not use the reviewed Node 24 cache action at all seven owners",
+        == 2,
+        "CI does not use the reviewed Node 24 cache action at all eight owners",
     )
     require(
         "llvm-22-dev clang-22 libclang-rt-22-dev lld-22\n"
@@ -2498,12 +2498,29 @@ def test_workflow_topology() -> None:
         "CI does not use the required installed-only mode",
     )
     require(
-        workflow.count("timeout-minutes: 30") == 1
+        workflow.count("timeout-minutes: 20") == 1
         and workflow.count("timeout-minutes: 15") == 1
-        and "timeout-minutes: 30" in workflow[:workflow.index("  fresh-image-profile:")]
+        and "timeout-minutes: 20" in workflow[:workflow.index("  fresh-image-profile:")]
         and "timeout-minutes: 15" in workflow[workflow.index("  fresh-image-profile:") :]
+        and "timeout-minutes: 30" not in workflow
+        and "timeout-minutes: 45" not in workflow
         and "timeout-minutes: 60" not in workflow,
         "required CI jobs do not enforce their hosted and installed ceilings",
+    )
+    require(
+        workflow.count("- name: Restore hosted Align unit cache") == 1
+        and workflow.count("ALIGNC_CACHE: ${{ runner.temp }}/alignc-unit-cache") == 1
+        and "path: ${{ runner.temp }}/alignc-unit-cache" in workflow
+        and "key: alignc-unit-v1-${{ runner.os }}-${{ runner.arch }}-"
+        "${{ hashFiles('.align-revision') }}" in workflow,
+        "hosted Align unit cache routing changed",
+    )
+    supported = check_step(workflow, "Run supported project checks")
+    require(
+        'export ALIGN_LLM_HOSTED_ALIGNC="$ALIGNC"' in supported
+        and 'make -j8 ALIGNC="$GITHUB_WORKSPACE/scripts/alignc-hosted-test" hosted-checks'
+        in supported,
+        "hosted checks do not use the dev-default generated-program launcher",
     )
     require(
         "--complete-aggregate" not in workflow,
@@ -2602,6 +2619,92 @@ def test_workflow_topology() -> None:
     )
 
 
+def test_hosted_alignc_profile() -> None:
+    with tempfile.TemporaryDirectory(prefix="align-llm-hosted-alignc-") as temporary:
+        root = Path(temporary)
+        arguments = root / "arguments"
+        compiler = root / "alignc"
+        compiler.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "printf '%s\\n' \"$@\" > \"$ALIGN_LLM_ARGUMENTS\"\n",
+            encoding="utf-8",
+        )
+        compiler.chmod(0o700)
+        environment = os.environ.copy()
+        environment.update(
+            ALIGN_LLM_HOSTED_ALIGNC=str(compiler),
+            ALIGN_LLM_ARGUMENTS=str(arguments),
+        )
+
+        cases = (
+            (("build", "app.align"), ("build", "--profile", "dev", "app.align")),
+            (("run", "app.align", "--profile", "release"),
+             ("run", "app.align", "--profile", "release")),
+            (("run", "app.align", "--profile=fast"),
+             ("run", "app.align", "--profile=fast")),
+            (("check-per-unit", "app.align"), ("check-per-unit", "app.align")),
+            (("run", "app.align", "--", "--profile", "program-value"),
+             ("run", "--profile", "dev", "app.align", "--", "--profile", "program-value")),
+        )
+        for supplied, expected in cases:
+            result = subprocess.run(
+                (str(SCRIPTS / "alignc-hosted-test"), *supplied),
+                cwd=REPOSITORY,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            require(result.returncode == 0 and not result.stderr, f"hosted alignc failed: {result!r}")
+            require(
+                tuple(arguments.read_text(encoding="utf-8").splitlines()) == expected,
+                f"hosted Align profile routing changed for {supplied!r}",
+            )
+
+        invalid = environment.copy()
+        invalid["ALIGN_LLM_HOSTED_ALIGNC"] = "relative-alignc"
+        result = subprocess.run(
+            (str(SCRIPTS / "alignc-hosted-test"), "build", "app.align"),
+            cwd=REPOSITORY,
+            env=invalid,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            result.returncode == 2
+            and result.stderr
+            == "alignc-hosted-test: ALIGN_LLM_HOSTED_ALIGNC must be an absolute path\n",
+            "hosted Align launcher accepted an unresolved compiler",
+        )
+
+        persisted = load_script(
+            "run-persisted-result-smoke", "align_llm_persisted_result_hosted_profile_test"
+        )
+        previous = {
+            name: os.environ.get(name) for name in ("ALIGN_LLM_HOSTED_ALIGNC", "LIBRARY_PATH")
+        }
+        os.environ.update(
+            ALIGN_LLM_HOSTED_ALIGNC=str(compiler),
+            LIBRARY_PATH=str(root),
+        )
+        try:
+            child = persisted.child_environment(str(compiler))
+        finally:
+            for name, value in previous.items():
+                if value is None:
+                    del os.environ[name]
+                else:
+                    os.environ[name] = value
+        require(
+            child.get("ALIGN_LLM_HOSTED_ALIGNC") == str(compiler),
+            "bounded persisted-result owner dropped the hosted compiler handoff",
+        )
+
+
 def test_cli() -> None:
     output_summary = subprocess.run(
         (sys.executable, "scripts/test-output-summary"),
@@ -2696,6 +2799,7 @@ def main() -> int:
     test_image_profile_plan()
     test_apt_llvm_cache()
     test_align_bundle()
+    test_hosted_alignc_profile()
     test_workflow_topology()
     test_cli()
     print(

@@ -19,6 +19,17 @@ CANONICAL_BASELINE = Path("eval/baselines/coding-v1-reference.json")
 CANONICAL_DIGEST = Path("eval/expected/coding-v1-reference.sha256")
 CANONICAL_ORACLE = Path("eval/expected/coding-v1-reference-oracle.json")
 MAX_DIAGNOSTIC_BYTES = 64 * 1024
+FROZEN_REPLAY_PATHS = frozenset(
+    {
+        "eval/baselines/patches/python-inclusive-range.patch",
+        "eval/fixtures/python-inclusive-range-v1/repository/src/inclusive_range.py",
+        "eval/fixtures/python-inclusive-range-v1/repository/tests/test_inclusive_range.py",
+        "eval/runners/run-coding-task.py",
+        "eval/tasks/coding-v1.json",
+        "eval/tasks/coding-v1/python-inclusive-range.json",
+        "eval/tasks/coding-v1/python-inclusive-range/task.json",
+    }
+)
 
 
 def git_environment() -> dict[str, str]:
@@ -300,19 +311,15 @@ def verify_artifacts(
     if not isinstance(rows, list) or not rows:
         raise BaselineError("artifact files must be a non-empty list")
 
-    expected_rows = []
-    for path in sorted(
-        artifact_files,
-        key=lambda item: item.relative_to(project_root).as_posix(),
-    ):
-        expected_rows.append(
-            {
-                "path": path.relative_to(project_root).as_posix(),
-                "sha256": hash_file(path),
-            }
+    expected_paths = [
+        path.relative_to(project_root).as_posix()
+        for path in sorted(
+            artifact_files,
+            key=lambda item: item.relative_to(project_root).as_posix(),
         )
-    if rows != expected_rows:
-        raise BaselineError("current evaluation artifacts differ from the recorded baseline")
+    ]
+    if [row.get("path") if isinstance(row, dict) else None for row in rows] != expected_paths:
+        raise BaselineError("current evaluation artifact paths differ from the recorded baseline")
 
     for row in rows:
         if not isinstance(row, dict):
@@ -337,6 +344,12 @@ def verify_artifacts(
             raise BaselineError(
                 f"artifact differs from the baseline source commit: {relative}"
             )
+        if relative in FROZEN_REPLAY_PATHS:
+            current = resolve_inside(project_root, relative, "frozen replay artifact")
+            if hash_file(current) != digest:
+                raise BaselineError(
+                    f"frozen replay artifact differs from the recorded baseline: {relative}"
+                )
 
 
 def verify_provider(provider: Any) -> None:
@@ -555,11 +568,18 @@ def verify_baseline(path: Path, project_root: Path) -> None:
         baseline["canonical_oracle_commit"],
         "canonical_oracle_commit",
     )
-    expected_align_revision = (
-        (project_root / ".align-revision").read_text(encoding="utf-8").strip()
+    source_revision = subprocess.run(
+        ["git", "show", f"{align_llm_commit}:.align-revision"],
+        cwd=project_root,
+        check=False,
+        capture_output=True,
+        text=True,
+        env=git_environment(),
     )
-    if baseline["align_revision"] != expected_align_revision:
-        raise BaselineError("baseline Align revision differs from .align-revision")
+    if source_revision.returncode != 0:
+        raise BaselineError("baseline Align revision is absent from its source commit")
+    if baseline["align_revision"] != source_revision.stdout.strip():
+        raise BaselineError("baseline Align revision differs from its source commit")
 
     verify_provider(baseline["provider"])
     expected_task_ids, expected_codes, artifact_files, task_command = corpus_tasks(

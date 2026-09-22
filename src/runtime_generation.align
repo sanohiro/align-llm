@@ -678,57 +678,94 @@ pub fn prompt_lookup_candidate(borrow prompt_ids: array<i64>, current_token: i64
   return -1
 }
 
-pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> {
-  if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
-  first_value := logits.f32_le(0)
-  first_bits := first_value.to_bits()
-  if (first_bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
-  n_vocab := logits.len() / 4
-  mut best := 0
-  mut best_bits := first_bits
-  mut best_value := first_value
-  if candidate > 0 && candidate < n_vocab {
-    c_offset := candidate * 4
-    c_value := logits.f32_le(c_offset)
-    c_bits := c_value.to_bits()
-    if (c_bits & 2139095040) != 2139095040 {
-      if c_value > best_value {
-        best = candidate
-        best_bits = c_bits
-        best_value = c_value
-      }
-    }
-  }
-  mut i := 1
-  mut offset := 4
-  loop {
-    if i >= n_vocab { break }
-    value := logits.f32_le(offset)
-    bits := value.to_bits()
-    if (bits & 2139095040) == 2139095040 { return Err(Error.Invalid) }
-    if best_value > 0.0 {
-      if (bits & 2147483648) == 0 {
-        if bits > best_bits {
-          best = i
-          best_bits = bits
-          best_value = value
-        } else if bits == best_bits && i < best {
-          best = i
-        }
-      }
-    } else {
+fn greedy_values(borrow values: slice<f32>) -> Result<i64, Error> {
+  n_vocab := values.len()
+  if n_vocab > 2147483647 { return Err(Error.Invalid) }
+  if n_vocab < 4 {
+    first_value := values[0]
+    if !first_value.is_finite() { return Err(Error.Invalid) }
+    mut best := 0
+    mut best_value := first_value
+    mut i := 1
+    loop {
+      if i >= n_vocab { break }
+      value := values[i]
+      if !value.is_finite() { return Err(Error.Invalid) }
       if value > best_value {
         best = i
-        best_bits = bits
         best_value = value
-      } else if i < best && value == best_value {
-        best = i
       }
+      i = i + 1
     }
-    offset = offset + 4
+    return Ok(best)
+  }
+
+  mut best_values: vec4<f32> := values.load(0)
+  if !best_values[0].is_finite() || !best_values[1].is_finite()
+    || !best_values[2].is_finite() || !best_values[3].is_finite() {
+    return Err(Error.Invalid)
+  }
+  mut best_indices: vec4<i32> := [0, 1, 2, 3]
+  mut indices: vec4<i32> := [0, 1, 2, 3]
+  four: vec4<i32> := [4, 4, 4, 4]
+  mut i := 4
+  loop {
+    if i + 4 > n_vocab { break }
+    lanes: vec4<f32> := values.load(i)
+    if !lanes[0].is_finite() || !lanes[1].is_finite()
+      || !lanes[2].is_finite() || !lanes[3].is_finite() {
+      return Err(Error.Invalid)
+    }
+    indices = indices + four
+    winners := lanes > best_values
+    best_values = select(winners, lanes, best_values)
+    best_indices = select(winners, indices, best_indices)
+    i = i + 4
+  }
+
+  mut best_value := best_values[0]
+  mut best := best_indices[0] as i64
+  if best_values[1] > best_value || (best_values[1] == best_value && (best_indices[1] as i64) < best) {
+    best_value = best_values[1]
+    best = best_indices[1] as i64
+  }
+  if best_values[2] > best_value || (best_values[2] == best_value && (best_indices[2] as i64) < best) {
+    best_value = best_values[2]
+    best = best_indices[2] as i64
+  }
+  if best_values[3] > best_value || (best_values[3] == best_value && (best_indices[3] as i64) < best) {
+    best_value = best_values[3]
+    best = best_indices[3] as i64
+  }
+  loop {
+    if i >= n_vocab { break }
+    value := values[i]
+    if !value.is_finite() { return Err(Error.Invalid) }
+    if value > best_value {
+      best = i
+      best_value = value
+    }
     i = i + 1
   }
   return Ok(best)
+}
+
+pub fn greedy(borrow logits: slice<u8>, _candidate: i64) -> Result<i64, Error> {
+  if logits.len() < 4 || logits.len() % 4 != 0 { return Err(Error.Invalid) }
+  typed: Option<slice<f32>> := logits.view_le()
+  match typed {
+    Some(values) => { return greedy_values(values) },
+    None => {
+      // GGML outputs are naturally aligned, so the hot path above remains zero-copy. Public
+      // callers may still supply packed slices; preserve the scalar accessor's old acceptance by
+      // copying that uncommon input into naturally aligned storage before using the same scan.
+      mut aligned := buffer(logits.len())
+      aligned.append(logits)
+      bytes := aligned.bytes()
+      values: slice<f32> := bytes.view_le() else { return Err(Error.Invalid) }
+      return greedy_values(values)
+    },
+  }
 }
 
 fn choose_token(
@@ -933,7 +970,7 @@ fn generate_qwen_mode(
   mut count := 1
   mut n_past := prompt_ids.len()
   mut decode_width := 0
-  mut decode_graph := ggml_ffi.null_handle()
+  mut decode_graph := ggml_ffi.NULL
   mut decode_key := "".clone()
   loop {
     if forced {
@@ -1146,7 +1183,7 @@ fn generate_olmoe_mode(
   mut count := 1
   mut n_past := prompt_ids.len()
   mut decode_width := 0
-  mut decode_graph := ggml_ffi.null_handle()
+  mut decode_graph := ggml_ffi.NULL
   mut decode_key := "".clone()
   loop {
     if forced {
@@ -1424,7 +1461,7 @@ fn execute_session(borrow mut session: Session, borrow prompt_ids: array<i64>,
   mut n_past := prompt_ids.len()
   mut last_decode_width := -1
   mut current_decode_key := "".clone()
-  mut current_decode_graph := ggml_ffi.null_handle()
+  mut current_decode_graph := ggml_ffi.NULL
   mut scalar_storage := buffer(4)
   scalar_storage.put_u32_le(0)
   mut scalar_view := scalar_storage.bytes()

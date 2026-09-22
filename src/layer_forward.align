@@ -9,6 +9,7 @@ import std.time
 import alignpack_read
 import ggml_ffi
 import layer_qwen2
+import qwen_nodes
 
 // R5A-DENSE-LAYER-FORWARD (`docs/specs/r5a-dense-layer-forward.md`). The `--layer-forward` arm: the
 // three-read shape of section 3.4, the node-table walk of section 3.5, both oracles of section 3.6,
@@ -1303,12 +1304,7 @@ fn take_pack(borrow mut o: Outcome, outcome: Result<(), alignpack_read.Fault>) {
 }
 
 fn fill_zero(borrow mut b: buffer, n: i64) {
-  mut index := 0
-  loop {
-    if index >= n { break }
-    b.put_u8(0 as u8)
-    index = index + 1
-  }
+  b.append_filled(n, 0 as u8)
 }
 
 fn column_at(borrow column: array<i64>, index: i64) -> i64 {
@@ -2710,19 +2706,19 @@ pub fn execute(
   reference_slot_view := reference_slots_all[reference_pad..reference_pad + slot_bytes]
 
   // Steps 21 to 30. One block, no early return, one convergent teardown.
-  mut backend := ggml_ffi.null_handle()
-  mut weight_ctx := ggml_ffi.null_handle()
-  mut input_ctx := ggml_ffi.null_handle()
-  mut graph_ctx := ggml_ffi.null_handle()
-  mut reference_ctx := ggml_ffi.null_handle()
-  mut reference_graph_ctx := ggml_ffi.null_handle()
-  mut weight_buffer := ggml_ffi.null_handle()
-  mut input_buffer := ggml_ffi.null_handle()
-  mut reference_buffer := ggml_ffi.null_handle()
-  mut graph := ggml_ffi.null_handle()
-  mut reference_graph := ggml_ffi.null_handle()
-  mut galloc := ggml_ffi.null_handle()
-  mut reference_galloc := ggml_ffi.null_handle()
+  mut backend := ggml_ffi.NULL
+  mut weight_ctx := ggml_ffi.NULL
+  mut input_ctx := ggml_ffi.NULL
+  mut graph_ctx := ggml_ffi.NULL
+  mut reference_ctx := ggml_ffi.NULL
+  mut reference_graph_ctx := ggml_ffi.NULL
+  mut weight_buffer := ggml_ffi.NULL
+  mut input_buffer := ggml_ffi.NULL
+  mut reference_buffer := ggml_ffi.NULL
+  mut graph := ggml_ffi.NULL
+  mut reference_graph := ggml_ffi.NULL
+  mut galloc := ggml_ffi.NULL
+  mut reference_galloc := ggml_ffi.NULL
 
   context_bytes := ggml_ffi.graph_context_bytes(layer_qwen2.MAX_NODE_SLOTS)
   o.graph_context_bytes = context_bytes

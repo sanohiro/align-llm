@@ -34,12 +34,7 @@ pub fn required_bytes(layers: i64, embedding: i64, prompt: i64,
 
 fn zeroes(bytes: i64) -> buffer {
   mut result := buffer(bytes)
-  mut at := 0
-  loop {
-    if at >= bytes / 4 { break }
-    result.put_u32_le(0)
-    at = at + 1
-  }
+  result.append_filled(bytes, 0 as u8)
   return result
 }
 

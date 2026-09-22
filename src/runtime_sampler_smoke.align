@@ -124,6 +124,24 @@ pub fn main() -> Result<(), Error> {
   maximum_only := runtime_sampler.select(one_view, maximum_rng)?
   if maximum_only.token_id != 0 { return Err(Error.Invalid) }
 
+  mut packed := buffer(17)
+  packed.put_u8(255 as u8)
+  packed.put_f32_le(0.0)
+  packed.put_f32_le(0.0)
+  packed.put_f32_le(0.0)
+  packed.put_f32_le(0.0)
+  packed_bytes := packed.bytes()
+  packed_view := packed_bytes[1..17]
+  mut packed_rng := rand.seed_with(42)
+  packed_selection := runtime_sampler.select(packed_view, packed_rng)?
+  if packed_selection.token_id != first.token_id
+    || packed_selection.top_token_id != first.top_token_id
+    || packed_selection.top_k_count != first.top_k_count
+    || packed_selection.top_p_count != first.top_p_count
+    || packed_selection.min_p_count != first.min_p_count {
+    return Err(Error.Invalid)
+  }
+
   empty := buffer(0)
   short := buffer(2)
   empty_view := empty.bytes()

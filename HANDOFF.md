@@ -4,115 +4,162 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/align-request-publication`, based on `origin/main` `4dc80ce2`.
-Active capability: publish the upstream tracking and complete consumer evidence for Align Requests
-117–119. This is documentation-only: the Align pin stays at `8c8bfbc7`; adopting `dfcfd11f` remains
-blocked by Request 118 / sanohiro/align#1157. Request 117 is tracked by #1159 and the new
-non-blocking fixed-array producer-certification Request 119 is tracked by #1158.
-PR #282 merged at `58f5176`: recorded Align responses and merges for requests 92–95, 99, 100, 103, 104, 105, 106, 110, 113, and 115.
-PR #281 merged at `4eb0f60e`: settled designs for CPU resident session, ready frame schema 2, GPU-side greedy selection, and prompt-lookup speculation.
-PR #280 merged at `2cfbae00`: platform-profiled OLMoE sampled runtime baseline owner and Linux CPU baseline results.
-PR #279 merged at `e535d7d0`: recorded capped-read loader startup result on CUDA.
-PR #278 merged at `486d1b2c`: selected retained F16 KV policy 2 for Qwen sessions on CUDA.
-PR #277 merged at `4921f060`: added backend parity register and rule for CPU/Metal/CUDA differences.
-PR #276 merged at `0457a7d4`: recorded Align responses and merges for requests 64, 95, and 97–116.
-PR #275 merged at `251d52b8`: registered binary optimization audit requests 97–116 in `docs/align-requests.md` and recorded Align issues #1069–#1088.
-PR #274 merged at `f8a4095`: optimized hot logits loops in `greedy` and `select` (`f32.to_bits()`), preallocated builder capacity in `tokenizer_qwen2` (`array_builder(count)`), registered Align Requests 92–96 in `docs/align-requests.md`, and filed upstream Align issues #1063–#1067.
-PR #273 merged at `ae2fecd`: adopted latest Align compiler and runtime (`8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`), adopted typed slice writers, buffer.filled, array_builder capacity, in-place array truncate, integer match range/value patterns, is_char_boundary, and verified all suites.
-Align #1062 is merged at `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863` (permit disjoint record field borrows at call sites #1050).
-Align #1061 is merged at `400137f30f5155c1601cdd6e3f1b0aa318fb8d72` (`array.truncate`, typed slice writers, bulk fill, owned field replacement).
-Align #1060 is merged at `5f9c31ac62b54dacf3ef8462adb2ea04768f1211` (match range patterns).
-Align #1059 is merged at `ec091852b95cef49b288e970dc32c92a6e9da6ce` (caller-result copy elimination).
-Align #1058 is merged at `241035ba97b2a679ce6589f2df66630cdcc2c691` (`str.is_char_boundary`).
-Align #1056 is merged at `61b2de79576fde043d5f310c1300370c02250fc3` (plan 65: float inspection, filled buffers, builder capacity).
-Align #1046 is merged at `da20aefe1e4054cd132fbbf852217d5ee2c240ac` (plan 64: composed byte-loop proofs, stable descriptor snapshots).
-The managed pin is updated to `8c8bfbc7a3169e84ecc8415f5149ab8c61afe863`.
+Branch: `agent/align-request-batch-adoption`, rebased on `origin/main` `1e9ea492`.
+Active capability: adopt the merged Align Requests 92–119 consumer surfaces through managed pin
+`df14e8bdee748e1f4e2d684a24b36c7b8984b270`. This is an executable consumer capability. Align
+#1157–#1159 and PRs #1160–#1162 are merged. Requests 117 and 118 are consumer-verified, but Request
+119 is also consumer-verified after rebuilding the stale `main` artifact at the final pin. All four
+named consumer smokes pass. The issue audit, stable-candidate review, rebase, request-register
+reconciliation, and PR publication are complete. PR #286 is open. Its pinned hosted job reached
+`prompt_verifier_smoke` but was cancelled first by the 30-minute ceiling and again by the 45-minute
+ceiling after 42m36s in supported checks. The active repair removes that 3,424-line focused owner
+from routine CI, switches its semantic execution to Align's `dev` generated-program profile, and
+sets a 20-minute hosted hard ceiling with a roughly 15-minute operating target. Issue #287 owns any
+remaining test or compiler cost diagnosis; another timeout increase is not accepted.
 
 Completed work:
-- Binary and compiler optimization audit across x86-64 and ARM64:
-  - Discovered missed SIMD vectorization in 152k logits scan (`greedy` and `select`).
-  - Discovered missing `exp` intrinsic causing libc dynamic `pow@GLIBC` / `_pow` calls in Softmax.
-  - Discovered cross-module inlining suppression under default per-unit compilation without ThinLTO.
-  - Discovered per-token heap allocation storm in decode loop (`mf_decode_layer_node_table`).
-  - Discovered `tokenizer_qwen2.filled_i64` capacity reallocations.
-  - Discovered compiler verifier bug in `alignc explain-opt src/decode_step.align` (`dropdeep` invalid empty `!dbg !{}`).
-- Created upstream Align issues on `sanohiro/align`:
-  - #1063: [Standard Library & Codegen] Add x.exp() math intrinsic in core.math (lowering to llvm.exp)
-  - #1064: [Optimization RFC] SIMD slice argmax and aligned typed float slice views for logit selection
-  - #1065: [Language RFC] Support fixed-size inline arrays in structs ([T; N])
-  - #1066: [Compiler Optimization] Default ThinLTO on --profile release or small function body exposure for cross-module inlining
-  - #1067: [Compiler Bug] Invalid empty !dbg metadata attached to dropdeep loop in align_codegen_llvm causes LLVM verifier failure
-- Registered Align Requests 92–96 in `docs/align-requests.md` with links to issues #1063–#1067.
-- Implemented immediate application optimizations in `align-llm`:
-  - `src/runtime_generation.align`: Eliminated duplicate memory loads (`u32_le` + `f32_le`) in `greedy` by using single `f32_le` load and in-register `value.to_bits()`.
-  - `src/runtime_sampler.align`: Eliminated duplicate memory loads in `select` by using single `f32_le` load and in-register `value.to_bits()`.
-  - `src/tokenizer_qwen2.align`: Preallocated builder capacity in `copy_i64` and `filled_i64` (`array_builder(count)`), eliminating up to 54 doubling reallocations per piece.
-- Formatted and verified all suites.
-- Mac-native binary optimization audit of the `--profile release` image at Align pin `8c8bfbc7` (alignc 0.7.5, LLVM 22.1.8), Apple M1 / macOS 27.0, on align-llm `b72b0b48`. Measured, not inferred:
-  - Zero-FP-SIMD census: the 5.3 MB release image contains zero floating-point SIMD instructions in any Align-generated function, in all three of `--profile release`, `--target-cpu native` and `--profile fast`; only 73 `vector.body` across 2,108 defined Align functions.
-  - `--rt-lto` does not inline at the default `--target-cpu baseline` on aarch64: 1,523 / 162 / 42 `str_eq` / `starts_with` / `ends_with` call sites at the default target against 445 / 0 / 7 at `--target-cpu native`, plus 81 duplicate internal bodies; `--profile fast` is worse (1,580 / 171 / 53).
-  - `alignc build src/main.align --thin-lto` is a hard failure (ThinLTO prelink provenance rejection), so there is no working cross-boundary inlining mechanism at default settings today.
-  - `alignc explain-opt` crashed on 7 hot modules (`decode_step`, `moe_decode_step`, `gguf`, `tokenizer_qwen2`, `alignpack`, `model_ir`, `main`) at that pin; this is Align #1067, now fixed upstream by PR #1068 (merge `25391cde`). A separate root-model defect leaves a further 4 modules reporting an empty module.
-  - Real Metal generation profile (Qwen2.5-Coder-7B Q4_K_M, 128 tokens, ~8.0 tok/s on M1): Align-compiled code is about 0.1% of sampled CPU; the run is GPU-bound in Metal completion waits, and load and prefill are ggml-dominated.
-  - Real tokenizer profile (same vocabulary, 55 KB mixed input, 120 repetitions, 161,237 tokens/s): 74.5% of leaf samples are Align-compiled code, with `array_builder_push` plus `ArrayBuilder::reserve` at 14.1% and `align_rt_str_eq` at 4.5%.
-  - Audit baselines for the Align-owned CPU kernels on this Mac: greedy 242 us/call over 151,936 logits and sampler 267 us/call over 152,064.
-  - Audit artifacts live in the session scratchpad (disposable); nothing is retained in Git.
-- Filed the audit results upstream on `sanohiro/align`: issues #1069–#1087 (19 issues), the umbrella design issue #1088 ("[Design] Vectorization contract"), and review comments on #1063, #1064 (two comments), #1066 and #1067.
-- Registered Align Requests 97–116 in `docs/align-requests.md` (one per issue #1069–#1087 in issue-number order, plus Request 116 for umbrella #1088), all PROPOSED and non-blocking, and recorded the design-review conclusions for #1063 and #1064 under Requests 92 and 93.
-- Registered Align Request 117 in `docs/align-requests.md` for the C2 `null_handle` constant gap
-  (PROPOSED, non-blocking, tracked by sanohiro/align#1159).
-- Expanded Request 118 with the pin-only tokenizer, alignpack, runtime-provider, and GPU-session
-  failure matrix recorded on sanohiro/align#1157.
-- Registered Request 119 for borrowed fixed-array record producer certification across fallible
-  imported calls (PROPOSED, non-blocking, tracked by sanohiro/align#1158).
+- Materialized and verified the managed compiler/runtime at exact revision `df14e8bd` using the
+  explicit Homebrew LLVM 22/OpenSSL/zstd paths required on this host.
+- Adopted scalar `exp`, checked `bytes.view_le<f32>()`, structural mask selection, string literal
+  patterns, `buffer.append_filled`, and fixed-array table storage.
+- Replaced the Qwen `[i64; 38]` and OLMoE `[i64; 72]` node-table builders with inline arrays, then
+  removed the temporary `NodeView` carriers and passed the fixed-array table records directly.
+- Adopted Request 117's `pub NULL: raw := raw.null()` surface. The six legacy modules contain zero
+  `ggml_ffi.null_handle()` calls.
+- `gmake check`: PASS, 155 units in whole and per-unit compilation.
+- `gmake fmt`, `scripts/check-format`, and `git diff --check`: PASS.
+- Same-pin local benchmark control versus the adopted source on this Apple M1:
+  greedy 468 -> 104 us/call over about 152k logits (77.8% reduction); sampler 435 -> 480 us/call
+  (10.3% regression). These are one-host consumer measurements, not a cross-backend claim.
+- Request 93 is `ALIGN_LLM_VERIFIED`: both originally named benchmarks pass and the corrected
+  contract owns checked zero-copy typed views rather than a latency ceiling.
+- Requests 96 and 114 are `ALIGN_LLM_VERIFIED`: `explain-opt` completes for all seven formerly
+  failing modules, and the two main-less unit owners report their own public inspection roots.
+- Current release-image static counts are 325 `str_eq`, 143 `buffer_put`, and 888
+  `array_builder_push` calls; `starts_with` has zero calls and `ends_with` has six. The optimized
+  `build_eog_set` body has zero `str_eq` calls and ten switches. The formerly blocked tokenizer,
+  alignpack and runtime-provider owners now pass at the final rebuilt artifact.
+- `scripts/run-decode-step` and `scripts/run-moe-decode-step`: N/A because
+  `ALIGN_LLM_GGML_INCLUDE` is unset; the owning modules pass their direct per-unit checks.
+- `scripts/run-layer-forward-smoke`: PASS with the checked-in 1,426 `sha256` and 626 `bit_sum`
+  goldens.
+- `scripts/run-gpu-session-reuse-smoke`: PASS at `df14e8bd`, including both normal phases and the
+  forced-failure cases.
+- `scripts/run-tokenizer-smoke`: PASS after rebuilding `main` at the final pin.
+- `scripts/run-alignpack-smoke`: PASS, 20,541 assertions.
+- `scripts/run-runtime-provider-smoke`: PASS, including self-test, shim matrix and 61 CLI assertions.
+- Stable-candidate review found that OLMoE's 68-row inline table was four rows too short for the
+  accepted 32-expert prefill boundary. It is now 72 rows, and `runtime_generation_smoke` permanently
+  constructs and reads the last row of that boundary. The repaired runtime-provider owner passes.
+- Publication preflight found that `run-model-ir-smoke`'s role mirror still parsed the historical
+  `role_id` if-chain after the consumer adopted a string `match`. The extractor now accepts both
+  shipped forms; the focused owner passes all qwen, gpt-oss, OLMoE, and R0 fixtures.
+- PR #286's hosted job was cancelled first at 30m24s after 28m17s in supported checks and again at
+  45m16s after 42m36s in supported checks, while running `prompt_verifier_smoke`. A cached rerun
+  completed the x86_64 and aarch64 native fresh-image jobs in 13m40s and 14m09s. The retained hosted
+  logs contain no failed assertion. The fixture has grown from Request 19's 1,573-line admission
+  case to 3,424 lines and is not a valid routine-lane member at that cost. It remains a focused
+  verifier-boundary owner using Align's `dev` generated-program profile; routine CI keeps the
+  smaller scorer, prefix, state, and gate owners. The hosted hard ceiling is 20 minutes and the
+  operating target remains roughly 15 minutes.
+- The first 20-minute-capped cold rerun then spent more than 17 minutes compiling `src/main.align`
+  at the default release/O2 profile and timed out before any assertion. Hosted functional `build`
+  and `run` calls now use `scripts/alignc-hosted-test`, which adds `--profile dev` only when the
+  caller supplied no profile. This matches Align's native test default; explicit profile owners and
+  ordinary local `make build` remain unchanged.
+- Audit of Align's build-performance path found that the compiler has default-on content-addressed
+  frontend/codegen reuse and pipelined codegen, but align-llm's hosted workflow discarded its
+  writable unit cache with every fresh runner and its exact compiler bundle contains no adjacent
+  prebuilt cache. The repair persists an explicit runner-temporary `ALIGNC_CACHE` through an Actions
+  cache keyed by OS, architecture, and pin; Align's internal source/profile keys still own misses,
+  and GitHub branch scope keeps pull-request entries out of trusted `main` state.
+- The attempted canonical-baseline refresh exposed a pre-existing cutover contradiction: normal
+  `main --eval coding-v1` intentionally refuses the retired corpus, while the old checker still
+  required every later Makefile and compiler-pin change to regenerate it. The repair keeps the
+  canonical measurement immutable, binds its full artifact manifest and Align revision to its
+  recorded source commit, and continues to reject any later change to the seven external replay
+  inputs. `verify-baseline.py` and `check-baseline-chain` both pass at the current pin and Makefile.
+- Reduced two newly discovered Align gaps and registered them as Requests 118 and 119.
+  The previously local Request 117 is filed as Align #1159. Request 118 is filed as Align #1158.
+  Request 119 reuses the independently reduced Align #1157;
+  the tokenizer, alignpack, runtime-provider, and GPU-session matrix is attached in comment
+  `5759259675`. Request 94's consumer checkpoint is attached to Align #1065 in comment
+  `5759271198`.
 
-Next actions in priority order (backend parity items lead; register: `docs/backend-parity.md` sections 5 and 6):
-0. When Align fixes #1157: adopt the fixed pin, run the standing owner set plus `run-gpu-session-reuse-smoke` and `run-layer-forward-smoke`, refresh the C0 platform profile (`--print-identity`; it mismatches on `align_revision` and `compiler_sha256` at any new pin) and `docs/python-boundary-inventory.json` `align_revision`, then move the merged requests to ALIGN_LLM_VERIFIED.
-1. After this request-only publication merges, resume independent roadmap work at the current pin.
-2. Metal items P4, P5 and the P3 Metal leg: the `llama-server` paired rerun at current main (M1).
-3. C3 CPU resident session per `docs/specs/cpu-resident-session.md` (scheduled before R9).
-4. P9 pinned logits staging (cheap; request protocol).
-5. P10 OLMoE host-side per-token attribution.
-6. P8 ready frame schema 2 (design merged in #281; implement per `docs/specs/gpu-runtime.md` §3.12).
-7. §3.13 GPU-side greedy selection: census step 0 only, delete on any tie.
-8. R9 speculation after C3.
-9. C1 deferral: record bit identity of the legacy path at 4 vs 16 threads with `scripts/run-moe-decode-step` gate G1 on `linux-x86_64-v1`.
-
-Continued next actions from the previous checkpoint, after the list above:
-1. Adopt the Align pin containing PR #1068: update `.align-revision`, materialize and verify the managed toolchain, and confirm `alignc explain-opt` now reports on the 7 modules that crashed at `8c8bfbc7` (Request 96 moves toward ALIGN_LLM_VERIFIED).
-2. Application-side improvements available today at the current compiler, ranked by measured effect:
-   - Add length pre-checks before string-literal `==` chains (`src/tokenizer_qwen2.align:1754-1767`, `build_eog_set`).
-   - Give hot `array_builder()` calls their known capacity.
-   - Split `model_forward$Outcome` into a hot per-step record and a cold per-run diagnostics record.
-   - Recommend `--target-cpu native` for align-llm's own release builds in `docs/align-development.md` (removes 1,275 call sites and 41 duplicate bodies; the portable compiler default stays settled upstream).
-   - Dropped, with the disposition recorded in the register: the 13 member columns (skipped, not structural) and the `best.max`/bits argmax fast path (legacy argmax loops keep explicit compares; see `docs/specs/cpu-baseline-linux.md` §9).
-3. Monitor upstream Align responses to issues #1069–#1088 and to the comments on #1063, #1064, #1066 and #1067.
+Next actions in priority order:
+1. Await provider follow-up on the five remaining open Align issues. #1066 fails with 545 small
+   cross-unit call sites against `<100`; #1074 fails with the 37 Align `$fail` sites at 53.4% mean
+   position and a 1,820-byte function growth; #1075 fails with 905 boolean masks against `<100`;
+   #1077 fails with a 2,080-byte `decode_pass` local frame allocation (2,176-byte total stack-pointer
+   movement including callee saves) and 787 remaining whole-program result scratch allocas. #1065's
+   static/allocation and GPU owners pass, but its final real-ggml decode owner needs
+   a host with the llama instruments. Exact residual comments are on each issue.
+2. Commit the bounded topology and frozen-baseline repair, complete one fresh review, push PR #286,
+   then require the hosted job to finish within the 20-minute hard ceiling and inspect its measured
+   duration before merge.
 
 Latest durable verification:
-- `python3 scripts/pre-pr --base origin/main --owner-test bundle-owners -- sh -c 'make build >/dev/null && python3 scripts/measure-cuda-optimization --self-test && python3 scripts/run-gpu-session-measurement-smoke && python3 scripts/run-olmoe-platform-sampled-runtime-baseline --self-test && scripts/run-ggml-spike-smoke'`: PASS at the repaired branch head (hosted; owner bundle-owners), rerun after the review repair.
-- `make check`: PASS, 155 units.
-- `make fmt`: no change.
+- `gmake check`: PASS, 155 units, managed Align `df14e8bd`.
+- `gmake fmt`: PASS, no remaining format delta.
 - `scripts/check-format`: PASS.
-- `scripts/run-layer-forward-smoke`: PASS.
-- `scripts/run-ggml-spike-smoke`: PASS.
-- `scripts/run-runtime-provider-smoke`: PASS.
-- `scripts/run-gpu-session-measurement-smoke`: PASS.
-- `scripts/measure-cuda-optimization --self-test`: PASS.
-- `scripts/run-olmoe-platform-sampled-runtime-baseline --self-test`: PASS (with the new unresolved-name guard).
-- `python3 scripts/check-python-boundary --strict`: PASS (after the C2 launch-source digest refresh).
-- G1 `run-gpu-independent-acceptance`: PASS (19 cases twice) on the bundle build.
-- `run-gpu-session-measurement --campaign cuda-current`: PASS (348.7 s).
-- C0-protocol pairs C2 and C1: COMPLETE.
+- `scripts/align-toolchain ensure compiler` and `scripts/align-toolchain verify`: PASS at the exact
+  `df14e8bd` pin.
+- `scripts/run-layer-forward-smoke` and `scripts/run-gpu-session-reuse-smoke`: PASS.
+- `scripts/run-tokenizer-smoke`: PASS; `scripts/run-alignpack-smoke`: PASS (20,541 assertions);
+  `scripts/run-runtime-provider-smoke`: PASS (61 CLI assertions).
+- `scripts/run-model-ir-smoke`: PASS after the publication repair (49 qwen, 31 gpt-oss, 29 OLMoE,
+  and 62 R0 fixtures). The remaining hosted tail owners (`expert-trace`, `residency-sim`,
+  `alignpack`, `ggml-spike`, `layer-forward`, `tokenizer`, and `prompt`) also PASS.
+- `python3 eval/runners/verify-baseline.py` and `python3 scripts/check-baseline-chain`: PASS with the
+  retired measurement frozen at its recorded source identity.
+- Repair verification after the stable review: `check-per-unit src/runtime_generation_smoke.align`,
+  `scripts/run-runtime-provider-smoke`, and `gmake check` all PASS. The new regression exercises
+  the maximum 72-row OLMoE prefill table and reads row 71.
+- Managed compiler SHA-256 is `ea2f3ecfb98a7945c823b96381d8fcae6c49d72f9f22612997aa66ee085c90b4`;
+  rebuilt `main` SHA-256 is `5b44026c312f29d012428a883ec20152e1a0acb4cc0e15e9c9b8897e0a1e806b`.
+- `scripts/run-decode-step` and `scripts/run-moe-decode-step`: explicit N/A because
+  `ALIGN_LLM_GGML_INCLUDE` is unset; the owning modules pass direct per-unit checks.
+- `scripts/bench-runtime-greedy`: PASS, 104 us/call after adoption; same-pin unmodified control 468.
+- `scripts/bench-runtime-sampler`: PASS, 480 us/call after adoption; same-pin unmodified control 435.
+- Direct per-unit checks for `layer_forward`, `model_forward`, `decode_step`, `moe_model_forward`,
+  `moe_decode_step`, and the runtime greedy benchmark graph: PASS.
+- Optimized IR for `mf_decode_layer_node_table` and OLMoE `mm_table` contains zero builder or heap
+  calls; Request 94's GPU-session owner passes at `df14e8bd`.
+- Request 115 is `ALIGN_LLM_VERIFIED`: explicit target/SDK 27.0 object metadata is exact, and the
+  cached 155-unit release link emits zero newer-macOS warnings.
+- Request 98's `--thin-lto` build completes across 155 frontend units and 3,586 backend functions;
+  its runtime-provider owner now executes successfully.
+- Fresh comprehensive `codex review --uncommitted` of the stable candidate against branch head and
+  original merge base `50e89367` completed with two P2 findings: the 68-row OLMoE table did not cover the
+  accepted 72-row prefill maximum, and Request 98 retained stale SIGTRAP status despite final-pin
+  success. Both are accepted and repaired: storage and a permanent boundary regression now cover
+  all 72 rows, and Request 98 is `ALIGN_LLM_VERIFIED`. These narrow repairs do not change the
+  approach; their owner checks pass. The later rebase onto `1e9ea492` brought only the request-note
+  publication checkpoint into the base; its provider metadata was reconciled without changing the
+  reviewed executable surfaces.
+- The governance-expanding review of the 45-minute CI repair found one P2: `HANDOFF.md` still
+  named already-completed preflight and publication instead of the active CI rerun. This checkpoint
+  is the accepted repair; workflow, assertions, and specifications were otherwise internally
+  consistent.
 
 Blockers, constraints, decisions:
-- Zero regressions against all smoke and benchmark suites.
-- Python boundary launch sources strictly preserved without unverified digest modifications.
-- Request 118 is the only blocking Align request (pin adoption); Requests 92–95, 97–117, and 119
-  are `Blocking: no`, so every application-side item at pin `8c8bfbc7` may proceed. Do not consume
-  any proposed Align surface while those requests are PROPOSED.
-- Align #1070 (Request 98) means `--thin-lto` cannot be used on align-llm at all today, and Align #1069 (Request 97) means the default `--target-cpu` loses the `--rt-lto` inline on aarch64; choosing `--target-cpu native` for align-llm's own builds is the only available mitigation.
-- The audit's own artifacts are in the session scratchpad (disposable). Re-derive them rather than citing a local path.
-- Request 118 (Blocking: yes) pauses every `.align-revision` adoption at or after `2c39850b`; resume when sanohiro/align#1157 is fixed and the reproducer passes; then adopt in one pin update and verify Requests 92–95, 99–100, 102–103, 105–106, 109–110, 112–116.
+- Request 119 is `ALIGN_LLM_VERIFIED` and non-blocking. The apparent residual GGUF traps came from
+  a stale linked `main`, not a remaining compiler defect. Pin adoption must rebuild consumer
+  executables before smoke execution; changing `.align-revision` alone does not invalidate them.
+- Requests 117 and 118 are also `ALIGN_LLM_VERIFIED`. Their shipped surfaces and exact local evidence are
+  recorded in `docs/align-requests.md`.
+- Request 113 is `CLOSED`: a retained-session real Qwen2.5-Coder-7B profile over a deterministic
+  56,320-byte input repeated 120 times produced 1,428,720 token ids and 725 leaf samples with zero
+  `align_rt_str_eq` samples (0.0% versus the 4.5% baseline). Issue #1085 is closed in comment
+  `5771980776`.
+- The sampler benchmark regresses 10.3% on this host after replacing `pow(e, x)` with `exp(x)` and
+  adopting the typed view. Do not claim a sampler performance improvement without a new measured
+  intervention.
+- Do not merge PR #286 until the amended exact-head publication preflight and required GitHub checks
+  pass under the repaired ceiling.
+- The local toolchain build requires explicit Homebrew LLVM 22, OpenSSL and zstd library paths.
+  Reuse the successful environment recorded by the current shell history when materializing the
+  next Align repair.
 
 ## Completed capability: latest merged Align adoption
 

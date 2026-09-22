@@ -891,12 +891,7 @@ pub fn derive_key(
   preimage.put_u32_le(ELEMENT_TYPE_F32 as u32)
   preimage.put_u32_le(FORMAT_VERSION as u32)
   preimage.put_u32_le(KEY_VERSION as u32)
-  mut zero := 128
-  loop {
-    if zero >= KEY_PREIMAGE_BYTES { break }
-    preimage.put_u8(0)
-    zero = zero + 1
-  }
+  preimage.append_filled(KEY_PREIMAGE_BYTES - 128, 0 as u8)
   view := preimage.bytes()
   if view.len() != KEY_PREIMAGE_BYTES { return "".clone() }
   raw := crypto.sha256(view)
@@ -990,12 +985,7 @@ fn encode_header_image(borrow mut b: buffer, borrow h: KvHeader) {
   b.put_i32_le(h.prefill_argmax as i32)
   b.put_u32_le(h.document_schema_version as u32)
   b.put_u32_le(h.reserved_u32 as u32)
-  mut zero := 144
-  loop {
-    if zero >= HEADER_BYTES { break }
-    b.put_u8(0)
-    zero = zero + 1
-  }
+  b.append_filled(HEADER_BYTES - 144, 0 as u8)
 }
 
 fn encode_identity_image(
@@ -1013,12 +1003,7 @@ fn encode_identity_image(
   b.append(logits_digest[0..DIGEST_BYTES])
   b.append(plane_digest[0..DIGEST_BYTES])
   b.put_u64_le(pack_total_bytes as u64)
-  mut zero := 168
-  loop {
-    if zero >= IDENTITY_RECORD_BYTES { break }
-    b.put_u8(0)
-    zero = zero + 1
-  }
+  b.append_filled(IDENTITY_RECORD_BYTES - 168, 0 as u8)
 }
 
 fn write_view(borrow dst: file, borrow value: slice<u8>, at: i64) -> Result<(), Error> {
@@ -1095,12 +1080,7 @@ pub fn write_container(
     record, pack_digest, geometry_digest, tokens_view, logits_view, plane_view,
     h.pack_total_bytes)
   mut pad: buffer := buffer(PLANE_ALIGN)
-  mut zero := 0
-  loop {
-    if zero >= PLANE_ALIGN { break }
-    pad.put_u8(0)
-    zero = zero + 1
-  }
+  pad.append_filled(PLANE_ALIGN, 0 as u8)
   head_view := head.bytes()
   record_view := record.bytes()
   pad_view := pad.bytes()
