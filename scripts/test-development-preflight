@@ -2336,7 +2336,7 @@ def test_workflow_topology() -> None:
         in check_step(workflow, "Run supported project checks")
         and "python3 scripts/run-output-summary --phase hosted-checks --"
         in check_step(workflow, "Run supported project checks")
-        and 'make -j8 ALIGNC="$ALIGNC" hosted-checks'
+        and 'make -j8 ALIGNC="$GITHUB_WORKSPACE/scripts/alignc-hosted-test" hosted-checks'
         in check_step(workflow, "Run supported project checks")
         and "if: always() && steps.supported-checks.outcome != 'skipped'"
         in check_step(workflow, "Retain supported-check logs")
@@ -2515,6 +2515,13 @@ def test_workflow_topology() -> None:
         "${{ hashFiles('.align-revision') }}" in workflow,
         "hosted Align unit cache routing changed",
     )
+    supported = check_step(workflow, "Run supported project checks")
+    require(
+        'export ALIGN_LLM_HOSTED_ALIGNC="$ALIGNC"' in supported
+        and 'make -j8 ALIGNC="$GITHUB_WORKSPACE/scripts/alignc-hosted-test" hosted-checks'
+        in supported,
+        "hosted checks do not use the dev-default generated-program launcher",
+    )
     require(
         "--complete-aggregate" not in workflow,
         "routine CI still runs the explicit complete aggregate audit",
@@ -2612,6 +2619,69 @@ def test_workflow_topology() -> None:
     )
 
 
+def test_hosted_alignc_profile() -> None:
+    with tempfile.TemporaryDirectory(prefix="align-llm-hosted-alignc-") as temporary:
+        root = Path(temporary)
+        arguments = root / "arguments"
+        compiler = root / "alignc"
+        compiler.write_text(
+            "#!/bin/sh\n"
+            "set -eu\n"
+            "printf '%s\\n' \"$@\" > \"$ALIGN_LLM_ARGUMENTS\"\n",
+            encoding="utf-8",
+        )
+        compiler.chmod(0o700)
+        environment = os.environ.copy()
+        environment.update(
+            ALIGN_LLM_HOSTED_ALIGNC=str(compiler),
+            ALIGN_LLM_ARGUMENTS=str(arguments),
+        )
+
+        cases = (
+            (("build", "app.align"), ("build", "--profile", "dev", "app.align")),
+            (("run", "app.align", "--profile", "release"),
+             ("run", "app.align", "--profile", "release")),
+            (("run", "app.align", "--profile=fast"),
+             ("run", "app.align", "--profile=fast")),
+            (("check-per-unit", "app.align"), ("check-per-unit", "app.align")),
+            (("run", "app.align", "--", "--profile", "program-value"),
+             ("run", "--profile", "dev", "app.align", "--", "--profile", "program-value")),
+        )
+        for supplied, expected in cases:
+            result = subprocess.run(
+                (str(SCRIPTS / "alignc-hosted-test"), *supplied),
+                cwd=REPOSITORY,
+                env=environment,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                check=False,
+            )
+            require(result.returncode == 0 and not result.stderr, f"hosted alignc failed: {result!r}")
+            require(
+                tuple(arguments.read_text(encoding="utf-8").splitlines()) == expected,
+                f"hosted Align profile routing changed for {supplied!r}",
+            )
+
+        invalid = environment.copy()
+        invalid["ALIGN_LLM_HOSTED_ALIGNC"] = "relative-alignc"
+        result = subprocess.run(
+            (str(SCRIPTS / "alignc-hosted-test"), "build", "app.align"),
+            cwd=REPOSITORY,
+            env=invalid,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            check=False,
+        )
+        require(
+            result.returncode == 2
+            and result.stderr
+            == "alignc-hosted-test: ALIGN_LLM_HOSTED_ALIGNC must be an absolute path\n",
+            "hosted Align launcher accepted an unresolved compiler",
+        )
+
+
 def test_cli() -> None:
     output_summary = subprocess.run(
         (sys.executable, "scripts/test-output-summary"),
@@ -2706,6 +2776,7 @@ def main() -> int:
     test_image_profile_plan()
     test_apt_llvm_cache()
     test_align_bundle()
+    test_hosted_alignc_profile()
     test_workflow_topology()
     test_cli()
     print(

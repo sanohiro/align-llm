@@ -1,0 +1,37 @@
+#!/bin/sh
+
+set -eu
+
+compiler=${ALIGN_LLM_HOSTED_ALIGNC:-}
+case "$compiler" in
+  /*) ;;
+  *)
+    echo "alignc-hosted-test: ALIGN_LLM_HOSTED_ALIGNC must be an absolute path" >&2
+    exit 2
+    ;;
+esac
+if [ ! -x "$compiler" ]; then
+  echo "alignc-hosted-test: compiler is not executable" >&2
+  exit 2
+fi
+
+case "${1:-}" in
+  build|run)
+    command=$1
+    shift
+    explicit_profile=false
+    for argument in "$@"; do
+      case "$argument" in
+        --) break ;;
+        --profile|--profile=*) explicit_profile=true ;;
+      esac
+    done
+    if [ "$explicit_profile" = false ]; then
+      set -- "$command" --profile dev "$@"
+    else
+      set -- "$command" "$@"
+    fi
+    ;;
+esac
+
+exec "$compiler" "$@"

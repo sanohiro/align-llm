@@ -264,8 +264,9 @@ jobs:
           # baseline-check remains in the capable gate with coding-v1.
           test -x "$ALIGNC"
           python3 scripts/check-gate-topology --self-test
+          export ALIGN_LLM_HOSTED_ALIGNC="$ALIGNC"
           python3 scripts/run-output-summary --phase hosted-checks -- \
-            make -j8 ALIGNC="$ALIGNC" hosted-checks
+            make -j8 ALIGNC="$GITHUB_WORKSPACE/scripts/alignc-hosted-test" hosted-checks
 
       - name: Retain supported-check logs
         if: always() && steps.supported-checks.outcome != 'skipped'

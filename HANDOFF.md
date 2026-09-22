@@ -62,6 +62,11 @@ Completed work:
   verifier-boundary owner using Align's `dev` generated-program profile; routine CI keeps the
   smaller scorer, prefix, state, and gate owners. The hosted hard ceiling is 20 minutes and the
   operating target remains roughly 15 minutes.
+- The first 20-minute-capped cold rerun then spent more than 17 minutes compiling `src/main.align`
+  at the default release/O2 profile and timed out before any assertion. Hosted functional `build`
+  and `run` calls now use `scripts/alignc-hosted-test`, which adds `--profile dev` only when the
+  caller supplied no profile. This matches Align's native test default; explicit profile owners and
+  ordinary local `make build` remain unchanged.
 - Audit of Align's build-performance path found that the compiler has default-on content-addressed
   frontend/codegen reuse and pipelined codegen, but align-llm's hosted workflow discarded its
   writable unit cache with every fresh runner and its exact compiler bundle contains no adjacent
