@@ -498,12 +498,7 @@ fn base_mod(borrow b: buffer, modulus: i64) -> i64 {
 }
 
 fn fill_zero(borrow mut b: buffer, n: i64) {
-  mut index := 0
-  loop {
-    if index >= n { break }
-    b.put_u8(0 as u8)
-    index = index + 1
-  }
+  b.append_filled(n, 0 as u8)
 }
 
 // Section 3.6 step 3, exactly: `act[j] = ((j mod 17) - 8) / 8` as f32, in ggml's element order.
@@ -948,13 +943,13 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
   }
 
   // Steps 16 to 19. One block, no early return, one convergent teardown.
-  mut backend := ggml_ffi.null_handle()
-  mut ctx := ggml_ffi.null_handle()
-  mut reference_ctx := ggml_ffi.null_handle()
-  mut weights_buffer := ggml_ffi.null_handle()
-  mut output_buffer := ggml_ffi.null_handle()
-  mut activation_buffer := ggml_ffi.null_handle()
-  mut reference_buffer := ggml_ffi.null_handle()
+  mut backend := ggml_ffi.NULL
+  mut ctx := ggml_ffi.NULL
+  mut reference_ctx := ggml_ffi.NULL
+  mut weights_buffer := ggml_ffi.NULL
+  mut output_buffer := ggml_ffi.NULL
+  mut activation_buffer := ggml_ffi.NULL
+  mut reference_buffer := ggml_ffi.NULL
 
   device := ggml_ffi.device_open()
   if ggml_ffi.handle_absent(device) {
@@ -978,9 +973,9 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
     }
   }
 
-  mut weight_tensor := ggml_ffi.null_handle()
-  mut activation_tensor := ggml_ffi.null_handle()
-  mut result_tensor := ggml_ffi.null_handle()
+  mut weight_tensor := ggml_ffi.NULL
+  mut activation_tensor := ggml_ffi.NULL
+  mut result_tensor := ggml_ffi.NULL
   if o.code.len() == 0 {
     weight_tensor = ggml_ffi.new_tensor_2d(ctx, member.ggml_type, member.dim0, member.dim1)
     if ggml_ffi.handle_absent(weight_tensor) {
@@ -1152,9 +1147,9 @@ fn execute(pack_path: str, block_text: str, member_text: str, reference_path: st
     } else {
       o.contexts_created = o.contexts_created + 1
     }
-    mut reference_weights := ggml_ffi.null_handle()
-    mut reference_activation := ggml_ffi.null_handle()
-    mut reference_result := ggml_ffi.null_handle()
+    mut reference_weights := ggml_ffi.NULL
+    mut reference_activation := ggml_ffi.NULL
+    mut reference_result := ggml_ffi.NULL
     if o.code.len() == 0 {
       reference_weights =
       ggml_ffi.new_tensor_2d(reference_ctx, member.ggml_type, member.dim0, member.dim1)

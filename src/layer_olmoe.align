@@ -1722,20 +1722,41 @@ pub fn mm_head_member_table(borrow g: Geometry) -> MemberTable {
 pub MmNodeTable {
   count: i64,
   base: i64,
-  op: array<i64>,
-  a: array<i64>,
-  b: array<i64>,
-  c: array<i64>,
-  out: array<i64>,
-  p0: array<i64>,
-  p1: array<i64>,
-  p2: array<i64>,
-  p3: array<i64>,
-  p4: array<i64>,
-  when: array<i64>,
-  alt_when: array<i64>,
-  alt_a: array<i64>,
-  alt_b: array<i64>,
+  // The prefill boundary admits 32 selected experts, so phase B needs `2 * 32 + 8 = 72` rows.
+  op: [i64; 72],
+  a: [i64; 72],
+  b: [i64; 72],
+  c: [i64; 72],
+  out: [i64; 72],
+  p0: [i64; 72],
+  p1: [i64; 72],
+  p2: [i64; 72],
+  p3: [i64; 72],
+  p4: [i64; 72],
+  when: [i64; 72],
+  alt_when: [i64; 72],
+  alt_a: [i64; 72],
+  alt_b: [i64; 72],
+}
+
+fn mm_zero_column() -> [i64; 72] {
+  values := [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+  ]
+  return values
+}
+
+fn mm_minus_one_column() -> [i64; 72] {
+  values := [
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+    -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1,
+  ]
+  return values
 }
 
 MmRow {
@@ -2253,57 +2274,57 @@ fn mm_table(
   width: i64,
   n_past: i64,
 ) -> MmNodeTable {
-  mut op: array_builder<i64> := array_builder()
-  mut a: array_builder<i64> := array_builder()
-  mut b: array_builder<i64> := array_builder()
-  mut c: array_builder<i64> := array_builder()
-  mut out: array_builder<i64> := array_builder()
-  mut p0: array_builder<i64> := array_builder()
-  mut p1: array_builder<i64> := array_builder()
-  mut p2: array_builder<i64> := array_builder()
-  mut p3: array_builder<i64> := array_builder()
-  mut p4: array_builder<i64> := array_builder()
-  mut when: array_builder<i64> := array_builder()
-  mut alt_when: array_builder<i64> := array_builder()
-  mut alt_a: array_builder<i64> := array_builder()
-  mut alt_b: array_builder<i64> := array_builder()
+  mut op := mm_zero_column()
+  mut a := mm_zero_column()
+  mut b := mm_zero_column()
+  mut c := mm_minus_one_column()
+  mut out := mm_zero_column()
+  mut p0 := mm_zero_column()
+  mut p1 := mm_zero_column()
+  mut p2 := mm_zero_column()
+  mut p3 := mm_zero_column()
+  mut p4 := mm_zero_column()
+  mut when := mm_zero_column()
+  mut alt_when := mm_zero_column()
+  mut alt_a := mm_minus_one_column()
+  mut alt_b := mm_minus_one_column()
   mut index := 0
   loop {
     if index >= count { break }
     r := mm_table_row(g, kind, tokens, width, n_past, base, index)
-    op.push(r.op)
-    a.push(r.a)
-    b.push(r.b)
-    c.push(r.c)
-    out.push(base + index)
-    p0.push(r.p0)
-    p1.push(r.p1)
-    p2.push(r.p2)
-    p3.push(r.p3)
-    p4.push(r.p4)
-    when.push(r.when)
-    alt_when.push(r.alt_when)
-    alt_a.push(r.alt_a)
-    alt_b.push(r.alt_b)
+    op[index] = r.op
+    a[index] = r.a
+    b[index] = r.b
+    c[index] = r.c
+    out[index] = base + index
+    p0[index] = r.p0
+    p1[index] = r.p1
+    p2[index] = r.p2
+    p3[index] = r.p3
+    p4[index] = r.p4
+    when[index] = r.when
+    alt_when[index] = r.alt_when
+    alt_a[index] = r.alt_a
+    alt_b[index] = r.alt_b
     index = index + 1
   }
   return MmNodeTable {
     count: count,
     base: base,
-    op: op.build(),
-    a: a.build(),
-    b: b.build(),
-    c: c.build(),
-    out: out.build(),
-    p0: p0.build(),
-    p1: p1.build(),
-    p2: p2.build(),
-    p3: p3.build(),
-    p4: p4.build(),
-    when: when.build(),
-    alt_when: alt_when.build(),
-    alt_a: alt_a.build(),
-    alt_b: alt_b.build(),
+    op: op,
+    a: a,
+    b: b,
+    c: c,
+    out: out,
+    p0: p0,
+    p1: p1,
+    p2: p2,
+    p3: p3,
+    p4: p4,
+    when: when,
+    alt_when: alt_when,
+    alt_a: alt_a,
+    alt_b: alt_b,
   }
 }
 

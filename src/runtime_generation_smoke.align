@@ -1,6 +1,7 @@
 module runtime_generation_smoke
 
 import ggml_ffi
+import layer_olmoe
 import runtime_diagnostic
 import runtime_generation
 import runtime_numeric_stream
@@ -314,6 +315,23 @@ fn diagnostic_refusals() -> Result<(), Error> {
   return Ok(())
 }
 
+fn olmoe_prefill_table_capacity() -> Result<(), Error> {
+  mut g := layer_olmoe.empty_geometry()
+  g.n_embd = 8
+  g.n_head = 2
+  g.n_head_kv = 2
+  g.head_dim = 4
+  g.n_ff_exp = 16
+  g.n_vocab = 32
+  g.n_expert = 32
+  g.n_expert_used = 32
+  table := layer_olmoe.mm_b_node_table(g, 1)
+  if table.count != 72 || table.out[71] != layer_olmoe.MM_B_NODE_BASE + 71 {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
 fn bucket_boundary(pack_path: str, geometry: str, model: i64) -> Result<(), Error> {
   config := options(67108864)
   owner := ggml_ffi.gpu_device_open(
@@ -348,6 +366,7 @@ fn bucket_boundary(pack_path: str, geometry: str, model: i64) -> Result<(), Erro
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 5 { return Err(Error.Invalid) }
   diagnostic_refusals()?
+  olmoe_prefill_table_capacity()?
   reject_mismatched_identity(args[1], args[2])?
   run_qwen(args[1])?
   eog := qwen_first_token(args[1])?

@@ -48,12 +48,7 @@ pub fn create(root: str, relative: str, model: i64, maximum_bytes: i64,
   if (model != 1 && model != 2) || maximum_bytes < 108 || maximum_bytes > 4294967296
     || host_budget_bytes < HOST_BYTES { return Err(Error.Invalid) }
   mut header := buffer(40)
-  mut at := 0
-  loop {
-    if at >= 40 { break }
-    header.put_u8(0)
-    at = at + 1
-  }
+  header.append_filled(40, 0 as u8)
   sink := fs.create_exclusive_beneath(root, relative)?
   mut owner := Stream {
     sink: Some(sink), header: header, active: true, failed: true, finished: false,

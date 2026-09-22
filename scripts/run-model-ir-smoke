@@ -638,7 +638,9 @@ def align_role_list(source, function):
     if body is None:
         fail("role-list-mirror: src/alignpack.align declares no %s" % function)
     if function == "role_id":
-        pairs = re.findall(r'if label == "([^"]+)" \{ return (\d+) \}', body.group(0))
+        pairs = re.findall(r'^\s*"([^"]+)"\s*=>\s*(\d+),?$', body.group(0), re.M)
+        if not pairs:
+            pairs = re.findall(r'if label == "([^"]+)" \{ return (\d+) \}', body.group(0))
     else:
         pairs = re.findall(r'if id == (\d+) \{ return "([^"]+)" \}', body.group(0))
         pairs = [(label, index) for index, label in pairs]

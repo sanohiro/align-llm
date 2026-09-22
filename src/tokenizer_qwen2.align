@@ -1709,13 +1709,14 @@ fn collect_eog_metadata(borrow table: gguf.GgufTable) -> EogMetadata {
 }
 
 fn eog_text(value: str) -> bool {
-  return value == "<|eot_id|>" || value == "<|im_end|>" || value == "<|end|>"
-    || value == "<|return|>" || value == "<|call|>" || value == "<|flush|>"
-    || value == "<|calls|>" || value == "<end_of_turn>" || value == "<|endoftext|>"
-    || value == "</s>" || value == "<|eom_id|>" || value == "<EOT>" || value == "_<EOT>"
-    || value == "[EOT]" || value == "[EOS]" || value == "<|end_of_text|>"
-    || value == "<end_of_utterance>" || value == "<eos>" || value == "<turn|>"
-    || value == "<|tool_response>" || value == "<｜end▁of▁sentence｜>" || value == "[e~["
+  return match value {
+    "<|eot_id|>" | "<|im_end|>" | "<|end|>" | "<|return|>" | "<|call|>"
+      | "<|flush|>" | "<|calls|>" | "<end_of_turn>" | "<|endoftext|>" | "</s>"
+      | "<|eom_id|>" | "<EOT>" | "_<EOT>" | "[EOT]" | "[EOS]"
+      | "<|end_of_text|>" | "<end_of_utterance>" | "<eos>" | "<turn|>"
+      | "<|tool_response>" | "<｜end▁of▁sentence｜>" | "[e~[" => true,
+    _ => false,
+  }
 }
 
 fn build_eog_set(borrow t: Tokenizer, borrow metadata: EogMetadata) -> EogSet {

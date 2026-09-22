@@ -13,6 +13,7 @@ import ggml_ffi
 import kv_plane
 import layer_forward
 import layer_qwen2
+import qwen_nodes
 import model_forward
 
 // R6-DECODE-KV-STEP1 (`docs/specs/r6-decode-kv-step1.md`) and R6-STEP-N
@@ -899,16 +900,16 @@ fn run_step_graph(
   borrow mut result: model_forward.GraphResult,
   borrow mut o: model_forward.Outcome,
 ) {
-  mut weight_ctx := ggml_ffi.null_handle()
-  mut input_ctx := ggml_ffi.null_handle()
-  mut graph_ctx := ggml_ffi.null_handle()
-  mut weight_buffer := ggml_ffi.null_handle()
+  mut weight_ctx := ggml_ffi.NULL
+  mut input_ctx := ggml_ffi.NULL
+  mut graph_ctx := ggml_ffi.NULL
+  mut weight_buffer := ggml_ffi.NULL
   // The wrap this graph must free, which is the wrap this graph created. In resident mode it stays
   // `null` and the teardown below is a no-op for it.
-  mut owned_buffer := ggml_ffi.null_handle()
-  mut input_buffer := ggml_ffi.null_handle()
-  mut graph := ggml_ffi.null_handle()
-  mut galloc := ggml_ffi.null_handle()
+  mut owned_buffer := ggml_ffi.NULL
+  mut input_buffer := ggml_ffi.NULL
+  mut graph := ggml_ffi.NULL
+  mut galloc := ggml_ffi.NULL
   layer_graph := spec.kind == model_forward.GRAPH_LAYER
 
   take(o, ggml_ffi.slots_init(slot_view, slot_view.len(), "slots"))
@@ -1081,8 +1082,8 @@ fn run_step_graph(
     }
   }
   model_forward.teardown_graph(
-    galloc, ggml_ffi.null_handle(), graph_ctx, ggml_ffi.null_handle(), owned_buffer, weight_ctx,
-    ggml_ffi.null_handle(), ggml_ffi.null_handle(), input_buffer, input_ctx, o)
+    galloc, ggml_ffi.NULL, graph_ctx, ggml_ffi.NULL, owned_buffer, weight_ctx,
+    ggml_ffi.NULL, ggml_ffi.NULL, input_buffer, input_ctx, o)
 }
 
 // R6 section 2.2's "written by", generalised by R6-STEP-N section 2.4. One layer's post-RoPE K and
@@ -3145,7 +3146,7 @@ fn schedule_decode(
   mut breach := false
   mut decoded_token := -1
   mut activation: array_builder<i64> := array_builder()
-  mut backend := ggml_ffi.null_handle()
+  mut backend := ggml_ffi.NULL
   if o.code.len() == 0 {
     backend = ggml_ffi.backend_open(device)
     if ggml_ffi.handle_absent(backend) {
@@ -3160,7 +3161,7 @@ fn schedule_decode(
   // of counters is separate from `ggml_buffers_*` on purpose (section 4.3): the per-graph balance
   // check keeps its exact meaning and this wrap's own balance is asserted at the scope that owns
   // it, after `backend_close` and before this frame's arena leaves scope.
-  mut resident_buffer := ggml_ffi.null_handle()
+  mut resident_buffer := ggml_ffi.NULL
   if o.code.len() == 0 && resident {
     fill_resident(pak, g, table, plan, ends, tokens, head_members, window, layout, o)
   }

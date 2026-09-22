@@ -384,36 +384,38 @@ fn valid_path(path: str) -> bool {
 // frontends number their own internal role enumerations differently, so an id taken from a frontend
 // would mean two different things in two packs.
 fn role_id(label: str) -> i64 {
-  if label == "attn_norm" { return 0 }
-  if label == "attn_q" { return 1 }
-  if label == "attn_q_bias" { return 2 }
-  if label == "attn_k" { return 3 }
-  if label == "attn_k_bias" { return 4 }
-  if label == "attn_v" { return 5 }
-  if label == "attn_v_bias" { return 6 }
-  if label == "attn_output" { return 7 }
-  if label == "ffn_norm" { return 8 }
-  if label == "ffn_gate" { return 9 }
-  if label == "ffn_up" { return 10 }
-  if label == "ffn_down" { return 11 }
-  if label == "token_embd" { return 12 }
-  if label == "output_norm" { return 13 }
-  if label == "output" { return 14 }
-  if label == "attn_output_bias" { return 15 }
-  if label == "attn_sinks" { return 16 }
-  if label == "router" { return 17 }
-  if label == "router_bias" { return 18 }
-  if label == "ffn_gate_exps" { return 19 }
-  if label == "ffn_gate_exps_bias" { return 20 }
-  if label == "ffn_up_exps" { return 21 }
-  if label == "ffn_up_exps_bias" { return 22 }
-  if label == "ffn_down_exps" { return 23 }
-  if label == "ffn_down_exps_bias" { return 24 }
-  if label == "ffn_gate_up_exps" { return 25 }
-  if label == "ffn_gate_up_exps_bias" { return 26 }
-  if label == "attn_q_norm" { return 27 }
-  if label == "attn_k_norm" { return 28 }
-  return DEFERRED_U32
+  return match label {
+    "attn_norm" => 0,
+    "attn_q" => 1,
+    "attn_q_bias" => 2,
+    "attn_k" => 3,
+    "attn_k_bias" => 4,
+    "attn_v" => 5,
+    "attn_v_bias" => 6,
+    "attn_output" => 7,
+    "ffn_norm" => 8,
+    "ffn_gate" => 9,
+    "ffn_up" => 10,
+    "ffn_down" => 11,
+    "token_embd" => 12,
+    "output_norm" => 13,
+    "output" => 14,
+    "attn_output_bias" => 15,
+    "attn_sinks" => 16,
+    "router" => 17,
+    "router_bias" => 18,
+    "ffn_gate_exps" => 19,
+    "ffn_gate_exps_bias" => 20,
+    "ffn_up_exps" => 21,
+    "ffn_up_exps_bias" => 22,
+    "ffn_down_exps" => 23,
+    "ffn_down_exps_bias" => 24,
+    "ffn_gate_up_exps" => 25,
+    "ffn_gate_up_exps_bias" => 26,
+    "attn_q_norm" => 27,
+    "attn_k_norm" => 28,
+    _ => DEFERRED_U32,
+  }
 }
 
 fn role_label(id: i64) -> str {
@@ -1310,12 +1312,7 @@ fn encode_source_record(
   b.append(digest[0..digest.len()])
   b.put_u64_le(total_tensor_bytes as u64)
   b.put_u64_le(0 as u64)
-  mut zero := 0
-  loop {
-    if zero >= 32 { break }
-    b.put_u8(0)
-    zero = zero + 1
-  }
+  b.append_filled(32, 0 as u8)
 }
 
 fn encode_block_record(borrow mut b: buffer, borrow p: PackPlan, index: i64) {
@@ -1738,12 +1735,7 @@ fn realize(
   }
   mut window := buffer(0)
   mut pad := buffer(BLOCK_ALIGN)
-  mut zero := 0
-  loop {
-    if zero >= BLOCK_ALIGN { break }
-    pad.put_u8(0)
-    zero = zero + 1
-  }
+  pad.append_filled(BLOCK_ALIGN, 0 as u8)
   match write_container(src, dst, t, p, total_tensor_bytes, raw, window, pad, c, window_bytes) {
     Ok(_) => {},
     Err(failure) => { return written_fault(failure, true, hexed_view) },

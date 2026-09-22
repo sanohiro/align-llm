@@ -12,6 +12,7 @@ import alignpack
 import alignpack_read
 import ggml_ffi
 import layer_olmoe
+import olmoe_nodes
 import model_forward
 import moe_layer_forward
 import moe_model_forward
@@ -1960,40 +1961,40 @@ fn run_moe_layer(
     }
   } else { runtime_diagnostic.disabled() }
   mut setup_started := time.instant()
-  mut weight_ctx := ggml_ffi.null_handle()
-  mut input_ctx := ggml_ffi.null_handle()
-  mut graph_a_ctx := ggml_ffi.null_handle()
-  mut graph_b_ctx := ggml_ffi.null_handle()
-  mut diagnostic_ctx := ggml_ffi.null_handle()
-  mut weight_buffer := ggml_ffi.null_handle()
+  mut weight_ctx := ggml_ffi.NULL
+  mut input_ctx := ggml_ffi.NULL
+  mut graph_a_ctx := ggml_ffi.NULL
+  mut graph_b_ctx := ggml_ffi.NULL
+  mut diagnostic_ctx := ggml_ffi.NULL
+  mut weight_buffer := ggml_ffi.NULL
   // The wrap this graph must free, which is the wrap this graph created. In `dense` mode it stays
   // `null` and `teardown_layer` is a no-op for it.
-  mut owned_weight_buffer := ggml_ffi.null_handle()
-  mut claim_buffer := ggml_ffi.null_handle()
-  mut input_buffer := ggml_ffi.null_handle()
-  mut graph_a := ggml_ffi.null_handle()
-  mut graph_b := ggml_ffi.null_handle()
-  mut attention_graph := ggml_ffi.null_handle()
-  mut projection_graph := ggml_ffi.null_handle()
-  mut attention_core_graph := ggml_ffi.null_handle()
-  mut qk_preparation_graph := ggml_ffi.null_handle()
-  mut score_matmul_graph := ggml_ffi.null_handle()
-  mut masked_softmax_graph := ggml_ffi.null_handle()
-  mut value_preparation_graph := ggml_ffi.null_handle()
-  mut value_matmul_graph := ggml_ffi.null_handle()
-  mut output_packing_graph := ggml_ffi.null_handle()
-  mut output_residual_graph := ggml_ffi.null_handle()
-  mut router_graph := ggml_ffi.null_handle()
-  mut expert_input_preparation_graph := ggml_ffi.null_handle()
-  mut expert_gate_projection_graph := ggml_ffi.null_handle()
-  mut expert_up_projection_graph := ggml_ffi.null_handle()
-  mut expert_swiglu_graph := ggml_ffi.null_handle()
-  mut expert_down_projection_graph := ggml_ffi.null_handle()
-  mut expert_weighting_graph := ggml_ffi.null_handle()
-  mut expert_reduction_graph := ggml_ffi.null_handle()
-  mut expert_residual_graph := ggml_ffi.null_handle()
-  mut galloc_a := ggml_ffi.null_handle()
-  mut galloc_b := ggml_ffi.null_handle()
+  mut owned_weight_buffer := ggml_ffi.NULL
+  mut claim_buffer := ggml_ffi.NULL
+  mut input_buffer := ggml_ffi.NULL
+  mut graph_a := ggml_ffi.NULL
+  mut graph_b := ggml_ffi.NULL
+  mut attention_graph := ggml_ffi.NULL
+  mut projection_graph := ggml_ffi.NULL
+  mut attention_core_graph := ggml_ffi.NULL
+  mut qk_preparation_graph := ggml_ffi.NULL
+  mut score_matmul_graph := ggml_ffi.NULL
+  mut masked_softmax_graph := ggml_ffi.NULL
+  mut value_preparation_graph := ggml_ffi.NULL
+  mut value_matmul_graph := ggml_ffi.NULL
+  mut output_packing_graph := ggml_ffi.NULL
+  mut output_residual_graph := ggml_ffi.NULL
+  mut router_graph := ggml_ffi.NULL
+  mut expert_input_preparation_graph := ggml_ffi.NULL
+  mut expert_gate_projection_graph := ggml_ffi.NULL
+  mut expert_up_projection_graph := ggml_ffi.NULL
+  mut expert_swiglu_graph := ggml_ffi.NULL
+  mut expert_down_projection_graph := ggml_ffi.NULL
+  mut expert_weighting_graph := ggml_ffi.NULL
+  mut expert_reduction_graph := ggml_ffi.NULL
+  mut expert_residual_graph := ggml_ffi.NULL
+  mut galloc_a := ggml_ffi.NULL
+  mut galloc_b := ggml_ffi.NULL
 
   mut plane_builder: array_builder<i64> := array_builder()
   mut type_builder: array_builder<i64> := array_builder()
@@ -2860,14 +2861,14 @@ fn run_moe_end_graph(
   borrow mut o: moe_model_forward.Outcome,
 ) {
   setup_started := time.instant()
-  mut weight_ctx := ggml_ffi.null_handle()
-  mut input_ctx := ggml_ffi.null_handle()
-  mut graph_ctx := ggml_ffi.null_handle()
-  mut weight_buffer := ggml_ffi.null_handle()
-  mut owned_weight_buffer := ggml_ffi.null_handle()
-  mut input_buffer := ggml_ffi.null_handle()
-  mut graph := ggml_ffi.null_handle()
-  mut galloc := ggml_ffi.null_handle()
+  mut weight_ctx := ggml_ffi.NULL
+  mut input_ctx := ggml_ffi.NULL
+  mut graph_ctx := ggml_ffi.NULL
+  mut weight_buffer := ggml_ffi.NULL
+  mut owned_weight_buffer := ggml_ffi.NULL
+  mut input_buffer := ggml_ffi.NULL
+  mut graph := ggml_ffi.NULL
+  mut galloc := ggml_ffi.NULL
 
   take(o, ggml_ffi.slots_init(slot_view, slot_view.len(), "slots"))
   if o.code.len() == 0 {
@@ -3013,8 +3014,8 @@ fn run_moe_end_graph(
   }
   teardown_started := time.instant()
   teardown_layer(
-    ggml_ffi.null_handle(), ggml_ffi.null_handle(), ggml_ffi.null_handle(),
-    ggml_ffi.null_handle(), galloc, graph_ctx, owned_weight_buffer, weight_ctx, input_buffer,
+    ggml_ffi.NULL, ggml_ffi.NULL, ggml_ffi.NULL,
+    ggml_ffi.NULL, galloc, graph_ctx, owned_weight_buffer, weight_ctx, input_buffer,
     input_ctx, o)
   o.graph_teardown_ns = o.graph_teardown_ns + (time.instant() - teardown_started)
 }
@@ -4866,7 +4867,7 @@ fn schedule_decode(
   ranges := moe_model_forward.empty_ranges()
   mut breach := false
   mut activation: array_builder<i64> := array_builder()
-  mut backend := ggml_ffi.null_handle()
+  mut backend := ggml_ffi.NULL
   mut first_selected := -1
   if o.code.len() == 0 {
     backend = ggml_ffi.backend_open(device)
@@ -4885,7 +4886,7 @@ fn schedule_decode(
   // The pair of counters is separate from `ggml_buffers_*` on purpose (section 4.3): this wrap's own
   // balance is asserted at the scope that owns it, after `backend_close` and before `execute`'s
   // region leaves scope.
-  mut resident_buffer := ggml_ffi.null_handle()
+  mut resident_buffer := ggml_ffi.NULL
   mut direct_cache := generation && resident && reference_path.len() == 0
     && transcript_path.len() == 0
     && cache_direct_layout(cache_window, plan, g, cache, o.tensor_alignment)

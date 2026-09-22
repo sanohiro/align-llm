@@ -10,6 +10,7 @@ import alignpack_read
 import ggml_ffi
 import layer_forward
 import layer_qwen2
+import qwen_nodes
 
 // R5B-MODEL-PREFILL-FORWARD (`docs/specs/r5b-model-prefill-forward.md`). The `--model-forward` arm:
 // the thirty window fills of section 3.4, the one reused window of section 3.5, the three node
@@ -321,12 +322,7 @@ pub fn column_at(borrow column: array<i64>, index: i64) -> i64 {
 }
 
 pub fn fill_zero(borrow mut b: buffer, n: i64) {
-  mut index := 0
-  loop {
-    if index >= n { break }
-    b.put_u8(0 as u8)
-    index = index + 1
-  }
+  b.append_filled(n, 0 as u8)
 }
 
 pub fn base_mod(borrow b: buffer, modulus: i64) -> i64 {
@@ -2237,18 +2233,18 @@ pub fn run_graph(
   borrow mut result: GraphResult,
   borrow mut o: Outcome,
 ) {
-  mut weight_ctx := ggml_ffi.null_handle()
-  mut input_ctx := ggml_ffi.null_handle()
-  mut graph_ctx := ggml_ffi.null_handle()
-  mut reference_ctx := ggml_ffi.null_handle()
-  mut reference_graph_ctx := ggml_ffi.null_handle()
-  mut weight_buffer := ggml_ffi.null_handle()
-  mut input_buffer := ggml_ffi.null_handle()
-  mut reference_buffer := ggml_ffi.null_handle()
-  mut graph := ggml_ffi.null_handle()
-  mut reference_graph := ggml_ffi.null_handle()
-  mut galloc := ggml_ffi.null_handle()
-  mut reference_galloc := ggml_ffi.null_handle()
+  mut weight_ctx := ggml_ffi.NULL
+  mut input_ctx := ggml_ffi.NULL
+  mut graph_ctx := ggml_ffi.NULL
+  mut reference_ctx := ggml_ffi.NULL
+  mut reference_graph_ctx := ggml_ffi.NULL
+  mut weight_buffer := ggml_ffi.NULL
+  mut input_buffer := ggml_ffi.NULL
+  mut reference_buffer := ggml_ffi.NULL
+  mut graph := ggml_ffi.NULL
+  mut reference_graph := ggml_ffi.NULL
+  mut galloc := ggml_ffi.NULL
+  mut reference_galloc := ggml_ffi.NULL
 
   take(o, ggml_ffi.slots_init(slot_view, slot_view.len(), "slots"))
   if spec.reference && o.code.len() == 0 {
@@ -4172,7 +4168,7 @@ fn schedule_model(
   // The device is the caller's: `execute` selected it at step 20a and published its properties
   // before the window was validated, so this function holds exactly one ggml object of its own —
   // the backend — and every other one is created and freed inside `run_graph`.
-  mut backend := ggml_ffi.null_handle()
+  mut backend := ggml_ffi.NULL
   if o.code.len() == 0 {
     backend = ggml_ffi.backend_open(device)
     if ggml_ffi.handle_absent(backend) {
