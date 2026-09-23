@@ -2,7 +2,58 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Current checkpoint
+## Linux real-ggml qualification checkpoint
+
+Branch: `agent/linux-real-ggml-qualifications`, based on `main` `6149e993`.
+Active capability: qualify the pending Linux real-ggml decode owners at managed
+Align `d9b0df32` on Linux x86_64 under WSL2. Both owners ran real models and
+failed their C' single-shot prefill comparisons; neither is accepted as a pass.
+
+Completed work:
+- Materialized and verified the exact managed compiler, rebuilt `main`, and
+  prepared the pinned R2C `llama-eval-callback` plus a same-flag `llama-debug`
+  and shared ggml build. The arm and `llama-debug` load the same ggml-base
+  object. The model hashes are in the Request 94/103 qualification notes;
+  SHA-256 prefixes are `d0e25b99` for `llama-debug`, `d83375c0` for the patched
+  callback, and `1a9ae09b` for the shared ggml-base object.
+- `scripts/run-decode-step` ran four Qwen prompts at 16 steps. G, B and A'
+  passed; C' differed at k=1, 8 and 16 in every prompt and the KV load path.
+  Its resident/streamed timing remains diagnostic because the owner failed.
+- `scripts/run-moe-decode-step` ran OLMoE at 16 steps. Prompts 1 and 2 passed;
+  prompt 3 failed C' at k=16 (prefill argmax 15741, decode argmax 4149), before
+  prompt 4. The patched and debug llama instruments agreed before the arm ran.
+- The MoE runner used a hard-coded `/usr/bin/time` absent on this host and
+  misparsed Linux `ldd`'s soname as a resolved object. This branch changes the
+  two timing sites to Bash `time -p` and fixes the resolved-path extraction;
+  the second full owner run used the timing repair. A focused one-prompt,
+  16-step rerun passes with the identity parser repair and the MRD owner.
+
+Next actions in priority order:
+1. Diagnose the dense C' disagreement at k=1 with one bounded prefill/decode
+   comparison, then classify it as ggml numeric behavior or a client defect.
+2. Diagnose OLMoE prompt 3 k=16's argmax swap, including the two near-tied
+   logits and the C' tolerance rule. Repeat only affected owners after a fix
+   or an explicitly revised acceptance rule.
+3. Run exact-head publication preflight and publish the reviewed Linux
+   measurement disposition when the candidate is stable.
+
+Latest durable verification:
+- `scripts/align-toolchain verify`: PASS at `d9b0df32`.
+- `make build`: PASS, `main` SHA-256
+  `2dab916e8871f1d78a1d540d7a4529a65380331de55768c5954d73c9b9fe0f43`.
+- `scripts/run-decode-step`: FAIL only C' at all 12 named checkpoints.
+- `scripts/run-moe-decode-step`: FAIL C' at prompt 3 k=16; prompts 1 and 2 PASS.
+- `ALIGN_LLM_MOE_DECODE_STEP_PROMPTS=1 scripts/run-moe-decode-step`: PASS at
+  16 steps with the timing and library-identity repairs, including MRD.
+- `bash -n scripts/run-moe-decode-step` and `git diff --check`: PASS.
+
+Blockers and decisions:
+- Both real-ggml owners are measured but not verified. Keep Requests 94 and 103
+  at `ALIGN_MERGED`; Requests 106 and 109 consume the same failed owners.
+- No cross-host speedup is claimed from these runs. Do not turn the failed
+  correctness run's resident timing into an accepted performance result.
+
+## Concurrent macOS checkpoint
 
 Branch: `agent/record-align-residual-corrections`, based on merged PR #289 at
 `d2dab0b6`. Active capability: adopt the merged Align residual corrections and

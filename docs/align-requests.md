@@ -639,6 +639,24 @@ with no fixed-array allocation path. Align PR #1138 merged as
 pending `scripts/run-decode-step`, `scripts/run-gpu-session-reuse-smoke`, and
 confirmation that the migrated tables allocate zero dynamic arrays.
 
+### Linux real-ggml qualification (2026-09-23)
+
+At align-llm `6149e993`, managed Align `d9b0df32`, Linux x86_64 under WSL2,
+`scripts/run-decode-step` ran its default four prompts and 16 steps against
+Qwen2 GGUF SHA-256 `509287f78cb4d4cf6b3843734733b914b2c158e43e22a7f4bf5e963800894d3c`.
+The rebuilt `main` SHA-256 was
+`2dab916e8871f1d78a1d540d7a4529a65380331de55768c5954d73c9b9fe0f43`.
+The real shim and `llama-debug` loaded the same ggml-base object; the patched
+`llama-eval-callback` was built from llama.cpp `bb4caa754` with matching
+baseline CPU flags. Gate G passed for 16 ids per prompt, oracle B was byte-identical,
+and oracle A' passed every step. The owner nevertheless exited 1: oracle C' differed
+from this arm's single-shot prefill at k=1, 8 and 16 in all four prompts,
+including the KV load path. The resident-weights diagnostic measured a
+13.350 s streamed versus 6.065 s resident median at N=16, but the failed
+correctness gate prevents an accepted performance claim. Request 94 remains
+`ALIGN_MERGED`; the Linux C' discrepancy needs bounded diagnosis before this
+owner can verify it.
+
 ### Request 95: default ThinLTO on --profile release or cross-module function inlining (2026-09-17)
 
 Status: ALIGN_MERGED
@@ -1176,6 +1194,26 @@ matrix, sampler vectors and 61 CLI assertions. The originally named real-ggml
 `scripts/run-moe-decode-step` remains assigned to the separate capable Linux
 measurement and was not run in this macOS session. No further Align-side ABI
 defect is established by the bounded comparison.
+
+### Linux real-ggml qualification (2026-09-23)
+
+At the same align-llm head and managed Align pin, `scripts/run-moe-decode-step`
+ran its default 16 steps against OLMoE GGUF SHA-256
+`4ddc0e53159ed512b8dd67914a66e27bc618f694672ba43a9a0454eabd9c684f`.
+The patched `llama-eval-callback` and same-flag `llama-debug` agreed on the
+`result_output` sum before the arm ran. The arm and `llama-debug` loaded the
+same resolved `libggml-base.so.0`; the runner's Linux `ldd` parser incorrectly
+reported this check as failed open, so the shared-object identity was confirmed
+separately. Prompts 1 and 2 passed the complete gate, including 16 token ids,
+routing at 2048/2048, oracle B, three deterministic runs, and the resident-dense
+leg. Prompt 3 failed oracle C' at k=16: the single-shot prefill argmax was
+15741 versus decode-step argmax 4149. The top-ten sets agreed and maximum
+absolute difference was 4246 ten-thousandths over ten compared indices.
+The owner exited 1 before prompt 4. The Linux `ldd` path extraction is repaired
+in the measurement branch; a focused one-prompt, 16-step rerun passes the
+shared-object check and the full resident-dense measurement owner. The four-prompt
+runtime acceptance remains blocked by prompt 3's C' result; it does not
+contradict the completed static scalar-ABI comparison.
 
 ### Request 104: lay out every sum type as a tagged union, including `Option` and `Result` (2026-09-18)
 
