@@ -874,6 +874,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/qwen35_frontdoor_smoke.py",
+      "classification": "INDEPENDENT_ORACLE",
+      "behavior": "Independent synthetic Qwen3.5 GGUF and CLI verification for Model IR and alignpack.",
+      "reachability": "Focused developer qualification only; never part of normal product execution.",
+      "substitution": "Exercises Align-owned format and pack behavior without implementing shipping inference.",
+      "python_reason": "Independent fixture bytes and malformed-input oracle verify a new architecture boundary.",
+      "target": "Retain outside shipping closure; native Qwen3.5 runtime remains Align-owned.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/qwen35_frontdoor_smoke.py; python3 scripts/check-python-boundary",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/gguf_fixture.py",
       "classification": "FIXTURE_OR_GOLDEN_GENERATOR",
       "behavior": "Independent GGUF container writer for the R0-GGUF-INSPECT owner test.",
