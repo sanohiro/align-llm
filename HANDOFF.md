@@ -49,8 +49,8 @@ full-attention and 18 recurrent layers with a shared post-attention norm/FFN res
 The current shim has no `ggml_rope_multi`, `ggml_ssm_conv`, or `ggml_gated_delta_net` wrappers;
 the existing session graph supports only Qwen2 or OLMoE and has no recurrent state ownership.
 `docs/specs/qwen35-text.md` records the exact 0.8B state geometry and next acceptance oracle.
-No native graph or provider result is claimed yet. This plan and handoff are a local checkpoint;
-the branch is not a publication candidate until the native consumer and its owner tests exist.
+No native graph or provider result is claimed yet. The prompt command is an independently useful
+publication candidate; the native consumer and its owner tests remain next work.
 
 Reference bottleneck diagnosis: pinned llama.cpp `bb4caa7` on Apple M1, Qwen3.5-0.8B Q4_0,
 three repetitions: CPU 464.98 prompt / 55.32 generation tok/s; Metal 1180.77 / 61.85 with
@@ -72,6 +72,10 @@ The pinned llama.cpp Jinja renderer was invoked directly with a vocabulary-only 
 it removes vertical tab and retains U+3000. The review's claim that it trims Unicode whitespace
 is rejected on that source and execution evidence; the valid vertical-tab mismatch was repaired
 and added to the owner cases. No new native graph result is claimed.
+The first full preflight failed during a temporary Git pack copy in an unrelated source-bundle
+smoke; rerun passed that phase but exposed the prompt fixture's former 4,096-byte template-size
+boundary. The fixture now checks exactly 8,192 and 8,193 bytes, and `scripts/run-prompt-smoke`
+passes. Final-head preflight remains to be rerun after this repair.
 
 ## Codex binary audit checkpoint (2026-09-23)
 

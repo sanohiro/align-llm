@@ -68,6 +68,7 @@ JSON token result, existing `R7` errors, and tokenizer ownership. The rendered f
 99 bytes before trimmed content; input files remain bounded independently and the final prompt
 retains the existing 1 MiB ceiling. `scripts/run-qwen35-tokenizer-smoke` pairs five real-file
 system/user cases with pinned llama.cpp tokenization of the template's text-only branch;
+`scripts/run-prompt-smoke` checks the admitted 8,192-byte template limit and 8,193-byte refusal;
 `scripts/run-tokenizer-smoke` retains Qwen2/OLMoE prompt and error coverage. This supplies a
 stable prompt oracle for the native graph; it makes no inference or speed claim.
 
