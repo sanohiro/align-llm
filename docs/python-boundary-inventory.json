@@ -3292,6 +3292,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/run-qwen35-tokenizer-smoke",
+      "classification": "INDEPENDENT_ORACLE",
+      "behavior": "Compare Qwen3.5 Align tokenizer CLI with the pinned llama.cpp tokenizer on a local real GGUF.",
+      "reachability": "Focused developer qualification only; never part of normal product execution.",
+      "substitution": "Compares two executable tokenizers and does not implement shipping tokenization.",
+      "python_reason": "Independent paired corpus and output comparison remain outside Align product execution.",
+      "target": "Retain as a real-model qualification oracle for Qwen3.5 tokenization.",
+      "migration": "N/A",
+      "acceptance": "QWEN35_GGUF=... QWEN35_LLAMA_TOKENIZE=... python3 scripts/run-qwen35-tokenizer-smoke; python3 scripts/check-python-boundary",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/run-tokenizer-parity",
       "classification": "CI_OR_DEVELOPER_TOOL",
       "behavior": "R7-TOKENIZER focused parity qualification against pinned llama-tokenize.",

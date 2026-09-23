@@ -1,0 +1,73 @@
+#!/usr/bin/env python3
+"""Pair the real Qwen3.5 tokenizer CLI with the pinned llama.cpp tokenizer."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_SHA256 = "57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf"
+CASES = (
+    ("ascii", "Hello world", False),
+    ("combining", "e\u0301 cafe\u0301", False),
+    ("leading-marks", "\u0301a \u0301\u0301b", False),
+    ("japanese", "日本語の文章です。", False),
+    ("whitespace", "  alpha\n\n beta\t", False),
+    ("punctuation", "?!.\r\nnext", False),
+    ("control-literal", "<|im_start|>user\nHi<|im_end|>", False),
+    ("control-parse", "<|im_start|>user\nHi<|im_end|>", True),
+)
+
+
+def run(args: list[str]) -> bytes:
+    completed = subprocess.run(args, cwd=ROOT, capture_output=True, timeout=30, check=False)
+    if completed.returncode != 0:
+        raise RuntimeError(f"{args[0]} failed ({completed.returncode}): {completed.stderr[-600:]!r}")
+    return completed.stdout
+
+
+def main() -> None:
+    model = Path(os.environ["QWEN35_GGUF"]).resolve()
+    reference = Path(os.environ["QWEN35_LLAMA_TOKENIZE"]).resolve()
+    digest = hashlib.sha256()
+    with model.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    if digest.hexdigest() != MODEL_SHA256:
+        raise RuntimeError("QWEN35_GGUF differs from the recorded 0.8B Q4_0 file")
+    version_result = subprocess.run([str(reference), "--version"], capture_output=True, timeout=30, check=False)
+    if version_result.returncode != 0:
+        raise RuntimeError("QWEN35_LLAMA_TOKENIZE version probe failed")
+    version = (version_result.stdout + version_result.stderr).decode("utf-8")
+    if "commit bb4caa7" not in version:
+        raise RuntimeError("QWEN35_LLAMA_TOKENIZE is not the pinned llama.cpp revision")
+
+    with tempfile.TemporaryDirectory(prefix="qwen35-tokenizer-") as raw_dir:
+        work = Path(raw_dir)
+        for label, value, parse_control in CASES:
+            text_path = work / f"{label}.txt"
+            ids_path = work / f"{label}.json"
+            text_path.write_bytes(value.encode("utf-8"))
+            mode = "parse-control" if parse_control else "literal-control"
+            actual = json.loads(run([str(ROOT / "main"), "--tokenize", str(model), str(text_path), mode]))
+            reference_args = [str(reference), "-m", str(model), "-f", str(text_path), "--ids", "--no-bos"]
+            if not parse_control:
+                reference_args.append("--no-parse-special")
+            expected = json.loads(run(reference_args))
+            if actual != expected:
+                raise RuntimeError(f"{label}: Align ids {actual!r} differ from llama.cpp {expected!r}")
+            ids_path.write_text(json.dumps(actual), encoding="utf-8")
+            decoded = run([str(ROOT / "main"), "--detokenize", str(model), str(ids_path), "render-control"])
+            if decoded != value.encode("utf-8"):
+                raise RuntimeError(f"{label}: detokenization did not round-trip")
+    print(f"Qwen3.5 tokenizer PASS: {len(CASES)} paired real-model cases at {MODEL_SHA256}")
+
+
+if __name__ == "__main__":
+    main()

@@ -195,6 +195,46 @@ def main() -> int:
             ids_path.write_bytes(expected_json)
             expect_success(run_cli(model, ids_path, "--detokenize", "render-control"), text.encode(), f"{label}-decode")
 
+        tokens, types, merges = fixture.fixture_data()
+        qwen35_model = work / "qwen35-tokenizer.gguf"
+        fixture.write_model(
+            qwen35_model, tokens, types, merges, pre="qwen35",
+            extra_kvs=[fixture.Kv("general.architecture", fixture.strv("qwen35"))],
+        )
+        qwen35_input = work / "qwen35-input.txt"
+        qwen35_input.write_text("Hello, e\u0301 日本語 <CTRL>", encoding="utf-8")
+        qwen35_expected = fixture.encode(qwen35_input.read_text(encoding="utf-8"), True)
+        qwen35_json = (json.dumps(qwen35_expected, separators=(",", ":")) + "\n").encode()
+        expect_success(
+            run_cli(qwen35_model, qwen35_input, "--tokenize", "parse-control"),
+            qwen35_json, "qwen35-profile-encode",
+        )
+        qwen35_ids = work / "qwen35-ids.json"
+        qwen35_ids.write_bytes(qwen35_json)
+        expect_success(
+            run_cli(qwen35_model, qwen35_ids, "--detokenize", "render-control"),
+            qwen35_input.read_bytes(), "qwen35-profile-decode",
+        )
+        mismatched_arch = work / "qwen35-wrong-arch.gguf"
+        fixture.write_model(
+            mismatched_arch, tokens, types, merges, pre="qwen35",
+            extra_kvs=[fixture.Kv("general.architecture", fixture.strv("qwen2"))],
+        )
+        expect_failure(
+            run_cli(mismatched_arch, qwen35_input, "--tokenize", "parse-control"),
+            "qwen35-profile-architecture-refusal",
+        )
+        for wrong_pre in ("qwen2", "olmo"):
+            mismatched_pre = work / f"qwen35-wrong-{wrong_pre}.gguf"
+            fixture.write_model(
+                mismatched_pre, tokens, types, merges, pre=wrong_pre,
+                extra_kvs=[fixture.Kv("general.architecture", fixture.strv("qwen35"))],
+            )
+            expect_failure(
+                run_cli(mismatched_pre, qwen35_input, "--tokenize", "parse-control"),
+                f"qwen35-{wrong_pre}-profile-refusal",
+            )
+
         ids = manifest["ids"]
         for spelling in ("<UNK>", "<CTRL>", "<USER>", "</s>"):
             special_input = work / "special.txt"

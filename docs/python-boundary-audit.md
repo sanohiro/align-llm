@@ -217,7 +217,8 @@ owner evidence; an unchanged native boundary needs no repeat GPU campaign.
 - Fixture/golden generators and the external Python coding projects remain. Do not mechanically
   rewrite them into Align or weaken tests to produce a Python-free demonstration.
   `qwen35_frontdoor_smoke.py` is a synthetic GGUF fixture and independent CLI oracle; it performs
-  no shipping model selection or inference.
+  no shipping model selection or inference. `run-qwen35-tokenizer-smoke` compares Align CLI token
+  ids with a pinned llama.cpp executable on a local real GGUF; it is a qualification oracle only.
 - `gpu_session_client.py`, `run-gpu-session-coding`, `run-gpu-session-measurement`, the OLMoE
   diagnoses and the qualification framework remain experiment/test infrastructure. Their fixed
   retry and session clients must not become an imported shipping runtime implementation.

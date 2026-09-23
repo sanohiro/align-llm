@@ -4,22 +4,24 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Qwen3.5 text capability checkpoint (2026-09-24)
 
-Branch: `agent/qwen35-text-first`, based on `main` `0d9eb873`. Active user priority is staged
-Qwen3.5 text support before a Qwen3.8-27B attempt. `docs/specs/qwen35-text.md` owns the contract.
+Branch: `agent/qwen35-tokenizer`, based on merged PR #294 (`8e2649e4`). Active user priority is
+staged Qwen3.5 text support before a Qwen3.8-27B attempt. `docs/specs/qwen35-text.md` owns the
+contract.
 
-The first independently usable boundary is implemented locally: `--model-ir`, `--pack`, and
+The first independently usable boundary is merged: `--model-ir`, `--pack`, and
 `--pack-verify` accept a real Qwen3.5-0.8B Q4_0 GGUF. Its SHA-256 is recorded in the plan;
 Model IR claims all 320 tensors, has 50 blocks, and passes its size-sum check. The synthetic
 frontdoor owner passes positive IR/pack/verify and missing-key, wrong-shape, and wrong-tokenizer
 refusals. Existing model IR and alignpack smoke owners pass. One comprehensive Codex review found
 missing tokenizer-vocabulary validation; the full tokenizer metadata class was repaired and its
-focused owners passed again. This candidate is not yet published. Native `align-runtime`
-generation and tokenizer support have not started.
+focused owners passed again. Final-head preflight and all three hosted checks passed for #294.
+The Qwen3.5 tokenizer CLI is now an independently useful candidate on this branch. Native
+`align-runtime` generation remains the next boundary.
 
 Next actions in priority order:
-1. Run executable publication preflight at the final head and merge the reviewed first consumer.
-2. Design and implement the text-only native Qwen3.5 tokenizer and hybrid recurrent/attention
-   session with an explicit recurrent-state closure matrix and pinned llama.cpp oracle.
+1. Publish the reviewed tokenizer CLI candidate after exact-head preflight and checks.
+2. Implement the text-only native Qwen3.5 hybrid recurrent/attention session with the
+   recurrent-state closure matrix and pinned llama.cpp oracle in `docs/specs/qwen35-text.md`.
 3. Qualify 0.8B prefill, multistep decode, and provider output; then select a middle-size Qwen3.5
    model before Qwen3.8-27B. No speed claim is active.
 
@@ -30,6 +32,13 @@ real-model `--model-ir`/`--pack`/`--pack-verify` PASS after review repair;
 `python3 scripts/check-python-boundary` PASS. The root `main` worktree's prior
 `docs/align-requests.md` modification is intentional and
 untouched; this branch is in a separate worktree.
+
+Tokenizer candidate verification: `gmake fmt` and `gmake build` PASS (Homebrew
+`LIBRARY_PATH` for the latter); `scripts/run-tokenizer-smoke` PASS; real 0.8B
+`scripts/run-qwen35-tokenizer-smoke` PASS on eight paired cases against pinned
+llama.cpp `bb4caa7`; `python3 scripts/check-python-boundary` PASS. One independent
+Codex review found the reverse architecture/profile mismatch; the accepted finding
+was repaired with two synthetic refusals and the affected owners passed again.
 
 ## Codex binary audit checkpoint (2026-09-23)
 

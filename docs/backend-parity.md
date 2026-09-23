@@ -66,6 +66,7 @@ is measured on more than one host profile:
 | Latest Align pin adoption (`8c8bfbc7`) | `done` (`make check` only) | `unmeasured` (P5) | `done` on session build `46aea33` | `HANDOFF.md` "## Completed capability: latest merged Align adoption". |
 | Independent 16-request session oracle | `n/a` | `done` `d60e2b6` | `done` `688232c`, `46aea33` | Receipts do not record the attention policy (P8). |
 | G1 19-case numeric acceptance | `done` (reference arm) | `done` `5ae5351` | `done` `688232c` (19x2) | `docs/specs/gpu-runtime.md:6-7`; `docs/gpu-cuda-session-repair.md:57`. |
+| Qwen3.5 tokenizer CLI parity | `done` on macOS arm64: eight real 0.8B paired cases against pinned llama.cpp `bb4caa7`, including combining marks and control tokens; `unmeasured` on Linux x86_64 (deferred until the native text qualification environment is prepared) | `n/a` (tokenization is complete before backend selection) | `n/a` (tokenization is complete before backend selection) | `scripts/run-qwen35-tokenizer-smoke`; `docs/specs/qwen35-text.md` tokenizer closure matrix. This is correctness evidence, not a performance claim. |
 
 ## 4. Document staleness recorded here
 
