@@ -102,11 +102,11 @@ def build(output: Path) -> dict[str, object]:
     wrong_hash_id = hashlib.sha256((template + " ").encode()).hexdigest()
 
     exact_cap = output / "exact-cap-template.gguf"
-    write_model(exact_cap, tokens, types, merges, chat_template="x" * 4096)
-    exact_cap_id = hashlib.sha256(("x" * 4096).encode()).hexdigest()
+    write_model(exact_cap, tokens, types, merges, chat_template="x" * 8192)
+    exact_cap_id = hashlib.sha256(("x" * 8192).encode()).hexdigest()
 
     over_cap = output / "over-cap-template.gguf"
-    write_model(over_cap, tokens, types, merges, chat_template="x" * 4097)
+    write_model(over_cap, tokens, types, merges, chat_template="x" * 8193)
 
     wrong_template_bad_tokenizer = output / "wrong-template-bad-tokenizer.gguf"
     bad_types = list(types)
@@ -178,7 +178,7 @@ def build(output: Path) -> dict[str, object]:
             {
                 "model": over_cap.name,
                 "code": "R7_CHAT_TEMPLATE_SIZE",
-                "detail": "4097",
+                "detail": "8193",
                 "template_id": "",
                 "vocab_size": -1,
                 "merge_count": -1,

@@ -4,7 +4,7 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Qwen3.5 text capability checkpoint (2026-09-24)
 
-Branch: `agent/qwen35-tokenizer`, based on merged PR #294 (`8e2649e4`). Active user priority is
+Branch: `agent/qwen35-native-text`, based on merged PR #295 (`ea0fb956`). Active user priority is
 staged Qwen3.5 text support before a Qwen3.8-27B attempt. `docs/specs/qwen35-text.md` owns the
 contract.
 
@@ -15,15 +15,19 @@ frontdoor owner passes positive IR/pack/verify and missing-key, wrong-shape, and
 refusals. Existing model IR and alignpack smoke owners pass. One comprehensive Codex review found
 missing tokenizer-vocabulary validation; the full tokenizer metadata class was repaired and its
 focused owners passed again. Final-head preflight and all three hosted checks passed for #294.
-The Qwen3.5 tokenizer CLI is now an independently useful candidate on this branch. Native
-`align-runtime` generation remains the next boundary.
+The Qwen3.5 tokenizer CLI merged in #295 with eight paired real-file cases against pinned
+llama.cpp and all three hosted checks. This branch also implements the existing
+`--prepare-prompt` command for the 0.8B text-only chat template, with five paired prompt cases.
+Native `align-runtime` generation is the active boundary after this independently useful input
+capability is published.
 
 Next actions in priority order:
-1. Publish the reviewed tokenizer CLI candidate after exact-head preflight and checks.
-2. Implement the text-only native Qwen3.5 hybrid recurrent/attention session with the
+1. Implement the text-only native Qwen3.5 hybrid recurrent/attention session with the
    recurrent-state closure matrix and pinned llama.cpp oracle in `docs/specs/qwen35-text.md`.
-3. Qualify 0.8B prefill, multistep decode, and provider output; then select a middle-size Qwen3.5
-   model before Qwen3.8-27B. No speed claim is active.
+2. Qualify 0.8B prefill, multistep decode, and provider output. Profile the passing native session
+   against the reference bottleneck checkpoint, then select and measure one optimization under
+   its declared paired floor. GPU kernel attribution needs a separate trace with shader rows.
+3. Select a middle-size Qwen3.5 model before Qwen3.8-27B. No speed claim is active.
 
 Latest local verification: `gmake build` PASS with the documented Homebrew `LIBRARY_PATH`;
 `python3 scripts/qwen35_frontdoor_smoke.py` PASS; `scripts/run-model-ir-smoke` PASS;
@@ -33,12 +37,45 @@ real-model `--model-ir`/`--pack`/`--pack-verify` PASS after review repair;
 `docs/align-requests.md` modification is intentional and
 untouched; this branch is in a separate worktree.
 
-Tokenizer candidate verification: `gmake fmt` and `gmake build` PASS (Homebrew
+Tokenizer merged verification: `gmake fmt` and `gmake build` PASS (Homebrew
 `LIBRARY_PATH` for the latter); `scripts/run-tokenizer-smoke` PASS; real 0.8B
 `scripts/run-qwen35-tokenizer-smoke` PASS on eight paired cases against pinned
 llama.cpp `bb4caa7`; `python3 scripts/check-python-boundary` PASS. One independent
 Codex review found the reverse architecture/profile mismatch; the accepted finding
 was repaired with two synthetic refusals and the affected owners passed again.
+
+Native text investigation: the pinned `qwen35.cpp` and `delta-net-base.cpp` graph confirms six
+full-attention and 18 recurrent layers with a shared post-attention norm/FFN residual order.
+The current shim has no `ggml_rope_multi`, `ggml_ssm_conv`, or `ggml_gated_delta_net` wrappers;
+the existing session graph supports only Qwen2 or OLMoE and has no recurrent state ownership.
+`docs/specs/qwen35-text.md` records the exact 0.8B state geometry and next acceptance oracle.
+No native graph or provider result is claimed yet. The prompt command is an independently useful
+publication candidate; the native consumer and its owner tests remain next work.
+
+Reference bottleneck diagnosis: pinned llama.cpp `bb4caa7` on Apple M1, Qwen3.5-0.8B Q4_0,
+three repetitions: CPU 464.98 prompt / 55.32 generation tok/s; Metal 1180.77 / 61.85 with
+Flash Attention off and 1195.65 / 63.87 with it. A separate 10-second CPU sample showed
+quantized GEMV as the dominant active stack, while the Metal trace did not provide shader rows.
+`docs/specs/qwen35-text.md` records commands, scope and the future paired floor;
+`docs/backend-parity.md` records backend coverage. The native path remains prerequisite to any
+align-llm bottleneck fix or optimization claim.
+
+Prompt checkpoint verification: `gmake fmt` PASS; `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib
+gmake build` PASS; `scripts/run-tokenizer-smoke` PASS with the same library path;
+`scripts/run-qwen35-tokenizer-smoke` PASS with the recorded real GGUF and pinned `llama-tokenize`
+(eight token and five prompt cases); `python3 scripts/check-python-boundary` PASS;
+`git diff --check` PASS. A plain `gmake build` and plain tokenizer smoke failed only because this
+host's Homebrew `libcrypto` is outside the default linker search path; both passed with the
+documented library path. The prompt capability is a candidate for review and publication; the
+native graph remains pending.
+The pinned llama.cpp Jinja renderer was invoked directly with a vocabulary-only model load:
+it removes vertical tab and retains U+3000. The review's claim that it trims Unicode whitespace
+is rejected on that source and execution evidence; the valid vertical-tab mismatch was repaired
+and added to the owner cases. No new native graph result is claimed.
+The first full preflight failed during a temporary Git pack copy in an unrelated source-bundle
+smoke; rerun passed that phase but exposed the prompt fixture's former 4,096-byte template-size
+boundary. The fixture now checks exactly 8,192 and 8,193 bytes, and `scripts/run-prompt-smoke`
+passes. Final-head preflight remains to be rerun after this repair.
 
 ## Codex binary audit checkpoint (2026-09-23)
 

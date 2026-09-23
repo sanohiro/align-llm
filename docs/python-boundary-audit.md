@@ -216,9 +216,12 @@ owner evidence; an unchanged native boundary needs no repeat GPU campaign.
   `alignpack_reader.py` remain an independent pack-format oracle, not a product role dispatcher.
 - Fixture/golden generators and the external Python coding projects remain. Do not mechanically
   rewrite them into Align or weaken tests to produce a Python-free demonstration.
+  `prompt_fixture.py` generates synthetic GGUF prompt-admission cases and independently checks
+  the current template-size ceiling; it is test-only and supplies no shipping prompt behavior.
   `qwen35_frontdoor_smoke.py` is a synthetic GGUF fixture and independent CLI oracle; it performs
   no shipping model selection or inference. `run-qwen35-tokenizer-smoke` compares Align CLI token
-  ids with a pinned llama.cpp executable on a local real GGUF; it is a qualification oracle only.
+  ids and the existing `--prepare-prompt` text-only Qwen3.5 token sequence with a pinned llama.cpp
+  executable on a local real GGUF; it is a qualification oracle only.
 - `gpu_session_client.py`, `run-gpu-session-coding`, `run-gpu-session-measurement`, the OLMoE
   diagnoses and the qualification framework remain experiment/test infrastructure. Their fixed
   retry and session clients must not become an imported shipping runtime implementation.

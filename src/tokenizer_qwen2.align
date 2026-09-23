@@ -16,14 +16,16 @@ MAX_OPERATION_INPUT_BYTES := 1048576
 MAX_OPERATION_TOKEN_IDS := 1048576
 MAX_OPERATION_OUTPUT_BYTES := 1048576
 MAX_DETAIL_BYTES := 256
-MAX_CHAT_TEMPLATE_BYTES := 4096
+MAX_CHAT_TEMPLATE_BYTES := 8192
 MAX_PROMPT_BYTES := 1048576
 PROMPT_FIXED_BYTES := 80
 OLMO_PROMPT_FIXED_BYTES := 36
+QWEN35_PROMPT_FIXED_BYTES := 99
 I64_MAX := 9223372036854775807
 
 SUPPORTED_CHAT_TEMPLATE_ID := "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4"
 SUPPORTED_OLMO_CHAT_TEMPLATE_ID := "fe689ffbd6a4e2d0532d7480696b065b10e0e1eff3f9b9fc4bea415761e4bf4a"
+SUPPORTED_QWEN35_CHAT_TEMPLATE_ID := "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80"
 
 CLASSIFIER_ID := "align-regex-v1;regex=1.13.1+f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d;regex-automata=0.4.16+8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad;regex-syntax=0.8.11+d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
@@ -1866,7 +1868,28 @@ fn prompt_size_detail(system_bytes: i64, user_bytes: i64, attempted: i64) -> str
   return detail.to_string()
 }
 
-fn render_prompt(system: str, user: str, olmo: bool, bos_token: str) -> string {
+// The pinned llama.cpp Jinja `trim` aliases `strip`, whose default uses byte `isspace` in the
+// C locale. Unlike Align's core trim, it includes vertical tab; UTF-8 whitespace stays intact.
+fn qwen35_chat_space(value: u8) -> bool {
+  return value == 9 || value == 10 || value == 11 || value == 12 || value == 13 || value == 32
+}
+
+fn qwen35_chat_trim(value: str) -> str {
+  bytes := value.bytes()
+  mut begin := 0
+  mut end := bytes.len()
+  loop {
+    if begin >= end || !qwen35_chat_space(bytes[begin]) { break }
+    begin = begin + 1
+  }
+  loop {
+    if end <= begin || !qwen35_chat_space(bytes[end - 1]) { break }
+    end = end - 1
+  }
+  return value[begin..end]
+}
+
+fn render_prompt(system: str, user: str, olmo: bool, qwen35: bool, bos_token: str) -> string {
   output := builder()
   if olmo {
     output.write(bos_token)
@@ -1875,6 +1898,14 @@ fn render_prompt(system: str, user: str, olmo: bool, bos_token: str) -> string {
     output.write("\n<|user|>\n")
     output.write(user)
     output.write("\n<|assistant|>\n")
+  } else if qwen35 {
+    output.write("<|im_start|>system\n")
+    output.write(qwen35_chat_trim(system))
+    output.write("<|im_end|>\n")
+    output.write("<|im_start|>user\n")
+    output.write(qwen35_chat_trim(user))
+    output.write("<|im_end|>\n")
+    output.write("<|im_start|>assistant\n<think>\n\n</think>\n\n")
   } else {
     output.write("<|im_start|>system\n")
     output.write(system)
@@ -1923,7 +1954,8 @@ fn prepare_snapshot(
   template_id := template_id_of(chat_source)
   template_id_view: str := template_id
   template_olmo := template_id_view == SUPPORTED_OLMO_CHAT_TEMPLATE_ID
-  if template_id_view != SUPPORTED_CHAT_TEMPLATE_ID && !template_olmo {
+  template_qwen35 := template_id_view == SUPPORTED_QWEN35_CHAT_TEMPLATE_ID
+  if template_id_view != SUPPORTED_CHAT_TEMPLATE_ID && !template_olmo && !template_qwen35 {
     detail := builder()
     detail.write("sha256[")
     detail.write(template_id_view)
@@ -1941,7 +1973,7 @@ fn prepare_snapshot(
         profile.code, profile.detail, template_id_view, "", -1, -1,
         system_bytes, user_bytes, 0))
   }
-  if profile.olmo != template_olmo {
+  if profile.olmo != template_olmo || profile.qwen35 != template_qwen35 {
     return Ok(failed_generation(
         "R7_UNSUPPORTED_CHAT_TEMPLATE", "tokenizer_profile", template_id_view, "", -1, -1,
         system_bytes, user_bytes, 0))
@@ -1960,10 +1992,13 @@ fn prepare_snapshot(
   }
 
   mut attempted := -1
-  if !template_olmo && system_bytes <= I64_MAX - user_bytes {
-    combined := system_bytes + user_bytes
-    if combined <= I64_MAX - PROMPT_FIXED_BYTES {
-      attempted = combined + PROMPT_FIXED_BYTES
+  prompt_system_bytes := if template_qwen35 { qwen35_chat_trim(system).len() } else { system_bytes }
+  prompt_user_bytes := if template_qwen35 { qwen35_chat_trim(user).len() } else { user_bytes }
+  fixed_bytes := if template_qwen35 { QWEN35_PROMPT_FIXED_BYTES } else { PROMPT_FIXED_BYTES }
+  if !template_olmo && prompt_system_bytes <= I64_MAX - prompt_user_bytes {
+    combined := prompt_system_bytes + prompt_user_bytes
+    if combined <= I64_MAX - fixed_bytes {
+      attempted = combined + fixed_bytes
     }
   }
   if !template_olmo && (attempted < 0 || attempted > MAX_PROMPT_BYTES) {
@@ -1983,7 +2018,7 @@ fn prepare_snapshot(
         system_bytes, user_bytes, pre_load_prompt_bytes))
   }
 
-  if loaded.tokenizer.olmo != template_olmo {
+  if loaded.tokenizer.olmo != template_olmo || loaded.tokenizer.qwen35 != template_qwen35 {
     tokenizer_id: str := loaded.tokenizer.tokenizer_id
     return Ok(failed_generation(
         "R7_UNSUPPORTED_CHAT_TEMPLATE", "tokenizer_profile", template_id_view, tokenizer_id,
@@ -2017,7 +2052,7 @@ fn prepare_snapshot(
   }
 
   bos_token_view: str := bos_token
-  prompt := render_prompt(system, user, template_olmo, bos_token_view)
+  prompt := render_prompt(system, user, template_olmo, template_qwen35, bos_token_view)
   if prompt.len() != attempted {
     detail := indexed_detail("bytes", prompt.len())
     detail_view: str := detail
@@ -2295,15 +2330,18 @@ pub fn load_generation_snapshot(snapshot: gguf.GgufSnapshot) -> Result<Generatio
   if source.len() > MAX_CHAT_TEMPLATE_BYTES { return Err(Error.Invalid) }
   template_id := template_id_of(source)
   olmo := template_id == SUPPORTED_OLMO_CHAT_TEMPLATE_ID
-  if !olmo && template_id != SUPPORTED_CHAT_TEMPLATE_ID { return Err(Error.Invalid) }
+  qwen35 := template_id == SUPPORTED_QWEN35_CHAT_TEMPLATE_ID
+  if !olmo && !qwen35 && template_id != SUPPORTED_CHAT_TEMPLATE_ID { return Err(Error.Invalid) }
   profile := tokenizer_profile(snapshot.table)
-  if !profile.ok || profile.olmo != olmo { return Err(Error.Invalid) }
+  if !profile.ok || profile.olmo != olmo || profile.qwen35 != qwen35 { return Err(Error.Invalid) }
   metadata := collect_eog_metadata(snapshot.table)
   bos_id := if olmo {
     gguf.kv_int(snapshot.table, "tokenizer.ggml.bos_token_id") else { return Err(Error.Invalid) }
   } else { -1 }
   loaded := load_snapshot(snapshot)?
-  if !loaded.ok || loaded.tokenizer.olmo != olmo { return Err(Error.Invalid) }
+  if !loaded.ok || loaded.tokenizer.olmo != olmo || loaded.tokenizer.qwen35 != qwen35 {
+    return Err(Error.Invalid)
+  }
   bos_token := if olmo {
     if bos_id < 0 || bos_id >= loaded.vocab_size || effective_type(loaded.tokenizer, bos_id) != 3 {
       return Err(Error.Invalid)
@@ -2324,12 +2362,19 @@ pub fn load_generation_snapshot(snapshot: gguf.GgufSnapshot) -> Result<Generatio
 pub fn prepare_retained(borrow session: GenerationTokenizer, system: str, user: str) -> Result<GenerationPromptResult, Error> {
   fixed := if session.loaded.tokenizer.olmo {
     OLMO_PROMPT_FIXED_BYTES + session.bos_token.len()
-  } else { PROMPT_FIXED_BYTES }
+  } else if session.loaded.tokenizer.qwen35 { QWEN35_PROMPT_FIXED_BYTES } else { PROMPT_FIXED_BYTES }
+  prompt_system_bytes := if session.loaded.tokenizer.qwen35 {
+    qwen35_chat_trim(system).len()
+  } else { system.len() }
+  prompt_user_bytes := if session.loaded.tokenizer.qwen35 {
+    qwen35_chat_trim(user).len()
+  } else { user.len() }
   if system.len() > MAX_PROMPT_BYTES || user.len() > MAX_PROMPT_BYTES
-    || system.len() + user.len() + fixed > MAX_PROMPT_BYTES {
+    || prompt_system_bytes + prompt_user_bytes + fixed > MAX_PROMPT_BYTES {
     return Err(Error.Invalid)
   }
-  prompt := render_prompt(system, user, session.loaded.tokenizer.olmo, session.bos_token)
+  prompt := render_prompt(system, user, session.loaded.tokenizer.olmo,
+    session.loaded.tokenizer.qwen35, session.bos_token)
   ids := encode_text(session.loaded.tokenizer, prompt, true,
     session.letter, session.mark, session.number, session.space)
   if ids.len() > MAX_OPERATION_TOKEN_IDS { return Err(Error.Invalid) }
