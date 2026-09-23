@@ -4,9 +4,9 @@ Status: active. This plan owns the `qwen35` extension; the existing Qwen2 and OL
 
 ## Evidence and delivery order
 
-The first real consumer is `ggml-org/Qwen3.5-0.8B-GGUF`, file `Qwen3.5-0.8B-Q4_0.gguf` (563,036,064 bytes; SHA-256 `57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf`). Its GGUF inspection at the current `.llama-revision` reports architecture `qwen35`, 24 layers, 320 tensors, embedding width 1024, feed-forward width 3584, vocabulary 248320, context 262144, full attention every fourth layer, and 18 recurrent Gated DeltaNet layers. The six full-attention layers and 18 recurrent layers have distinct tensor sets. The file declares `tokenizer.ggml.pre = qwen35` and has a tied output embedding. The current `--model-ir` refuses it with `R1_UNSUPPORTED_ARCH`; this is the baseline, not a regression.
+The first real consumer is `ggml-org/Qwen3.5-0.8B-GGUF`, file `Qwen3.5-0.8B-Q4_0.gguf` (563,036,064 bytes; SHA-256 `57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf`). Its GGUF inspection at the current `.llama-revision` reports architecture `qwen35`, 24 layers, 320 tensors, embedding width 1024, feed-forward width 3584, vocabulary 248320, context 262144, full attention every fourth layer, and 18 recurrent Gated DeltaNet layers. The six full-attention layers and 18 recurrent layers have distinct tensor sets. The file declares `tokenizer.ggml.pre = qwen35` and has a tied output embedding. Before #294, `--model-ir` refused it with `R1_UNSUPPORTED_ARCH`; #294 completed the first boundary.
 
-The first independently useful consumer boundary is `--model-ir` plus `--pack` for this real GGUF. It permits validated model inspection, complete tensor coverage, and an owned layout artifact without claiming inference. The next boundary is text-only native `align-runtime` prefill and decode through `--provider align-runtime`; it includes Qwen3.5 tokenization, hybrid recurrent/attention state, and reference comparison. Vision, MTP/speculative heads, MoE, and 27B are later consumers. Do not infer their support from a passing 0.8B case. No speed claim is made by this work.
+The first independently useful consumer boundary is `--model-ir` plus `--pack` for this real GGUF. It permits validated model inspection, complete tensor coverage, and an owned layout artifact without claiming inference. The next independently useful boundary is `--tokenize` and `--detokenize` on this GGUF, with exact pinned llama.cpp token parity; those existing commands let callers prepare and inspect real Qwen3.5 input before inference. Then text-only native `align-runtime` prefill and decode through `--provider align-runtime` uses that tokenizer plus hybrid recurrent/attention state. Vision, MTP/speculative heads, MoE, and 27B are later consumers. Do not infer their support from a passing 0.8B case. No speed claim is made by this work.
 
 ## Public contract ledger
 
@@ -20,6 +20,36 @@ The first independently useful consumer boundary is `--model-ir` plus `--pack` f
 | Prerequisites | Pinned ggml already supplies the Qwen3.5 model reference and the Gated DeltaNet, SSM convolution, and Metal operations. Adopt a newer pin only for a demonstrated missing consumer requirement. | A real reference run at the same pinned llama.cpp revision and a stable text prompt oracle precede native acceptance. |
 | Acceptance and metrics | Exact real-file `--model-ir` success, all tensors claimed once except the tied embedding alias, byte-identical `--pack` verification, malformed-key and wrong-shape refusals, unchanged Qwen2/OLMoE owners. No performance metric. | Prefill and multistep decode token parity against the reference under named prompts, then an actual provider request with text and token counts; correctness before any performance comparison. |
 
+The intermediate tokenizer consumer retains existing `--tokenize GGUF INPUT MODE` and
+`--detokenize GGUF IDS MODE` arity, JSON results and error vocabulary. It accepts only the
+`gpt2/qwen35` tokenizer profile on a `qwen35` GGUF and derives a distinct tokenizer identity from
+profile, classifier, tokens, types, and merges. The model loader owns the arrays, the tokenizer
+owns temporary index and regex allocations, and every command releases them at return. GGUF
+metadata is read before allocation and malformed profiles fail with the existing `R7` errors.
+The native provider need not accept Qwen3.5 until its graph and state boundary passes. Acceptance
+for this intermediate consumer is exact token ids from the pinned llama.cpp tokenizer on ASCII,
+Unicode combining marks, Japanese text, whitespace, punctuation, and control-token cases, plus
+detokenization parity and unchanged Qwen2/OLMoE tokenizer smoke. Its owner is
+`scripts/run-qwen35-tokenizer-smoke`; the observed real model hash above identifies the corpus.
+
+### Tokenizer closure matrix
+
+| Phase | Implementation and exact regression |
+| --- | --- |
+| Construction | `tokenizer_qwen2.tokenizer_profile` checks `gpt2/qwen35` and `general.architecture = qwen35` before array allocation; `scripts/run-tokenizer-smoke` exercises a synthetic accepted and mismatched profile. |
+| Success | `tokenizer_qwen2.qwen_pieces` includes Unicode marks only for Qwen3.5 and the identity uses a distinct profile domain; `scripts/run-qwen35-tokenizer-smoke` compares eight real-file paired cases with pinned llama.cpp and round-trips their bytes. |
+| Failure and malformed input | The existing `R7` errors reject absent or mismatched metadata and invalid arrays before tokenization; `scripts/run-tokenizer-smoke` covers both directions of architecture/profile mismatch and its existing malformed corpus. |
+| Early exit and cleanup | `--tokenize` and `--detokenize` retain the existing bounded read, result, and temporary allocation lifecycle; `scripts/run-tokenizer-smoke` covers failed and repeated operations. |
+| Reused modules | `main` retains verb arity and `gguf` reader ownership; existing Qwen2/OLMoE tokenizer owners run unchanged alongside the Qwen3.5 cases. |
+
+The tokenizer implementation maps to `tokenizer_qwen2.tokenizer_profile`,
+`tokenizer_qwen2.identity`, and `tokenizer_qwen2.qwen_pieces`. After the accepted review finding,
+the profile rejects both `qwen35` tokenizer on a different architecture and `qwen35`
+architecture with a different tokenizer. `scripts/run-tokenizer-smoke` passes its synthetic
+positive and malformed corpus; `scripts/run-qwen35-tokenizer-smoke` passes eight paired real-file
+cases against pinned llama.cpp, including control-token modes and detokenization. This closes the
+intermediate tokenizer boundary only; the native text matrix remains open.
+
 The first boundary adds these stable role ids after 28: `post_attention_norm` 29, `attn_qkv` 30, `attn_gate` 31, `ssm_conv1d` 32, `ssm_dt` 33, `ssm_a` 34, `ssm_beta` 35, `ssm_alpha` 36, `ssm_norm` 37, `ssm_out` 38. Existing ids never move. The frontend uses the GGUF's declared `attention.key_length` and `attention.value_length`; it does not derive either from `embedding_length / head_count`. The pinned llama.cpp reference selects interleaved M-RoPE (`GGML_ROPE_TYPE_IMROPE = 40`), which the Model IR records. `rope.dimension_sections` is an array of four INT32 values and is validated in the native text boundary before graph construction. The model's `full_attention_interval` fixes the block type; no inferred tensor fallback is permitted.
 
 ## Closure matrix for the first boundary
@@ -32,7 +62,23 @@ The first boundary adds these stable role ids after 28: `post_attention_norm` 29
 | Early exit and cleanup | The borrowed GGUF table and partially built plan end with the command. `alignpack` retains its existing atomic write/cleanup path; failed derivation creates no pack. Focused owner asserts refusal and no destination. |
 | Reused modules | `gguf` parses the same table once, `model_ir` consumes the plan without architecture dispatch, and `alignpack` resolves every appended role. `run-model-ir-smoke` and `run-alignpack-smoke` own consistency. |
 
-Before publishing each boundary, map these cells to the final diff and passing commands or an explicit deferral here. The native text boundary needs a separate closure matrix for session construction, recurrent state updates, failure, rollback, and cleanup before its implementation begins.
+Before publishing each boundary, map these cells to the final diff and passing commands or an explicit deferral here.
+
+## Native text closure matrix
+
+The next generation consumer is one Qwen3.5-0.8B text-only provider request with prefill and multiple decode
+steps. The pinned llama.cpp
+`qwen35` graph and tokenizer are the oracle; do not treat Qwen2 graph geometry or token splitting
+as interchangeable.
+
+| Phase | Implementation owner | Exact regression target |
+| --- | --- | --- |
+| Construction | `tokenizer_qwen2` admits the `qwen35` profile with its own pre-tokenization and chat-template identity; `runtime_bundle` and `runtime_generation` derive the hybrid geometry, role table, KV and recurrent state sizes before device allocation. | `scripts/run-qwen35-generation-smoke` compares real-file tokenizer metadata, prompt ids, and rejected geometry. |
+| Success | `runtime_qwen35` builds full-attention layers and Gated DeltaNet layers using the pinned ggml operations; `provider_runtime` routes the native request, and `runtime_generation` commits full-attention KV plus recurrent state after a successful step. | `scripts/run-qwen35-generation-smoke` compares real 0.8B prefill and at least two decode tokens with the pinned llama.cpp oracle and checks provider text and token counts. |
+| Failure and malformed input | `runtime_bundle` rejects missing roles, invalid rope sections, unsupported quantization, or state dimensions before graph allocation; `runtime_generation` propagates compute and state-update failures. | The same owner changes one role/section and injects one compute failure, asserting an error and no response. |
+| Early exit and rollback | The session retains its prior committed KV and recurrent state until a step succeeds; an EOG, cancellation, or error releases in-flight graph/input/output buffers without advancing either state. | The same owner compares a failed or early-ended session with a fresh session on the next request. |
+| Cleanup | `runtime_generation` and `runtime_session_io` release session KV, recurrent state, graph, and device allocations on every terminal path; `provider_runtime` closes the request. | The same owner runs two consecutive requests and checks state isolation and allocation counts. |
+| Reused modules | `ggml_ffi` exposes only thin wrappers for shipped pinned ggml operations, with owner state and shapes in Align; existing Qwen2/OLMoE dispatch remains explicit. | `scripts/run-layer-forward-smoke`, `scripts/run-tokenizer-smoke`, and `scripts/run-runtime-provider-smoke` remain regression owners. |
 
 ## First-boundary implementation map
 

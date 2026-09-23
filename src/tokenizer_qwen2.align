@@ -86,6 +86,7 @@ pub GenerationPromptResult {
 
 pub Tokenizer {
   olmo: bool,
+  qwen35: bool,
   tokens: array<string>,
   types: array<i64>,
   merges: array<string>,
@@ -118,6 +119,7 @@ TokenizerProfile {
   code: string,
   detail: string,
   olmo: bool,
+  qwen35: bool,
 }
 
 PairLookup { rank: i64, result: i64 }
@@ -164,6 +166,7 @@ fn filled_i64(count: i64, value: i64) -> array<i64> {
 
 fn empty_tokenizer() -> Tokenizer = Tokenizer {
   olmo: false,
+  qwen35: false,
   tokens: empty_string(),
   types: empty_i64(),
   merges: empty_string(),
@@ -221,6 +224,7 @@ fn failed_profile(code: str, detail: str) -> TokenizerProfile = TokenizerProfile
   code: code.clone(),
   detail: bounded_detail(detail),
   olmo: false,
+  qwen35: false,
 }
 
 fn tokenizer_profile(borrow table: gguf.GgufTable) -> TokenizerProfile {
@@ -235,7 +239,8 @@ fn tokenizer_profile(borrow table: gguf.GgufTable) -> TokenizerProfile {
   model_view: str := model
   pre_view: str := pre
   olmo := model_view == "gpt2" && pre_view == "olmo"
-  if model_view != "gpt2" || (pre_view != "qwen2" && !olmo) {
+  qwen35 := model_view == "gpt2" && pre_view == "qwen35"
+  if model_view != "gpt2" || (pre_view != "qwen2" && !olmo && !qwen35) {
     detail := builder()
     detail.write(model_view)
     detail.write("/")
@@ -244,11 +249,30 @@ fn tokenizer_profile(borrow table: gguf.GgufTable) -> TokenizerProfile {
     rendered_view: str := rendered
     return failed_profile("R7_UNSUPPORTED_TOKENIZER", rendered_view)
   }
+  declared_arch := gguf.kv_string(table, "general.architecture")
+  declared_qwen35 := match declared_arch {
+    Some(value) => { view: str := value; view == "qwen35" },
+    None => false,
+  }
+  if !qwen35 && declared_qwen35 {
+    return failed_profile("R7_UNSUPPORTED_TOKENIZER", "general.architecture")
+  }
+  if qwen35 {
+    arch := match gguf.kv_string(table, "general.architecture") {
+      Some(value) => value,
+      None => { return failed_profile("R7_TOKENIZER_METADATA", "general.architecture") },
+    }
+    arch_view: str := arch
+    if arch_view != "qwen35" {
+      return failed_profile("R7_UNSUPPORTED_TOKENIZER", "general.architecture")
+    }
+  }
   return TokenizerProfile {
     ok: true,
     code: "".clone(),
     detail: "".clone(),
     olmo: olmo,
+    qwen35: qwen35,
   }
 }
 
@@ -503,16 +527,22 @@ fn effective_type(borrow t: Tokenizer, id: i64) -> i64 {
 }
 
 fn identity(
-  borrow tokens: array<string>, borrow types: array<i64>, borrow merges: array<string>, olmo: bool,
+  borrow tokens: array<string>, borrow types: array<i64>, borrow merges: array<string>,
+  olmo: bool, qwen35: bool,
 ) -> string {
   mut preimage := buffer(0)
-  if olmo { preimage.append("R8OLMOTK".bytes()) } else { preimage.append("R7QW2TOK".bytes()) }
+  if olmo { preimage.append("R8OLMOTK".bytes())
+  } else if qwen35 { preimage.append("Q35TOKID".bytes())
+  } else { preimage.append("R7QW2TOK".bytes()) }
   preimage.put_u32_le(1)
   preimage.put_u64_le(4)
   preimage.append("gpt2".bytes())
   if olmo {
     preimage.put_u64_le(4)
     preimage.append("olmo".bytes())
+  } else if qwen35 {
+    preimage.put_u64_le(6)
+    preimage.append("qwen35".bytes())
   } else {
     preimage.put_u64_le(5)
     preimage.append("qwen2".bytes())
@@ -564,6 +594,7 @@ fn load_snapshot(snapshot: gguf.GgufSnapshot) -> Result<LoadResult, Error> {
     return Ok(failed_load(profile.code, profile.detail, -1, -1))
   }
   olmo := profile.olmo
+  qwen35 := profile.qwen35
 
   if gguf.kv_type(snapshot.table, "tokenizer.ggml.tokens") != 9
     || gguf.kv_array_element_type(snapshot.table, "tokenizer.ggml.tokens") != 8 {
@@ -905,9 +936,10 @@ fn load_snapshot(snapshot: gguf.GgufSnapshot) -> Result<LoadResult, Error> {
     at = at + 1
   }
 
-  tokenizer_id := identity(tokens, types, merges, olmo)
+  tokenizer_id := identity(tokens, types, merges, olmo, qwen35)
   tokenizer := Tokenizer {
     olmo: olmo,
+    qwen35: qwen35,
     tokens: tokens,
     types: types,
     merges: merges,
@@ -1226,8 +1258,10 @@ fn contraction_end(raw: str, borrow starts: array<i64>, borrow ends: array<i64>,
 fn qwen_pieces(
   raw: str,
   borrow letter: regex,
+  borrow mark: regex,
   borrow number: regex,
   borrow space: regex,
+  qwen35: bool,
 ) -> array<string> {
   mut starts: array_builder<i64> := array_builder()
   mut ends: array_builder<i64> := array_builder()
@@ -1238,7 +1272,9 @@ fn qwen_pieces(
     width := scalar_width(raw.bytes().u8(byte_at) as i64)
     end := byte_at + width
     scalar := raw[byte_at..end]
-    class := if letter.is_match(scalar) { 1 } else if number.is_match(scalar) {
+    class := if letter.is_match(scalar) { 1 } else if qwen35 && mark.is_match(scalar) {
+      4
+    } else if number.is_match(scalar) {
       2
     } else if space.is_match(scalar) { 3 } else { 0 }
     starts.push(byte_at)
@@ -1266,14 +1302,17 @@ fn qwen_pieces(
       current := raw[scalar_starts[at]..scalar_ends[at]]
       mut letter_at := at
       if scalar_classes[at] != 1 && scalar_classes[at] != 2
+        && (scalar_classes[at] != 4 || !qwen35)
         && current != "\r" && current != "\n"
-        && at + 1 < scalar_starts.len() && scalar_classes[at + 1] == 1 {
+        && at + 1 < scalar_starts.len()
+        && (scalar_classes[at + 1] == 1 || (qwen35 && scalar_classes[at + 1] == 4)) {
         letter_at = at + 1
       }
-      if scalar_classes[letter_at] == 1 {
+      if scalar_classes[letter_at] == 1 || (qwen35 && scalar_classes[letter_at] == 4) {
         mut end_at := letter_at + 1
         loop {
-          if end_at >= scalar_starts.len() || scalar_classes[end_at] != 1 { break }
+          if end_at >= scalar_starts.len()
+            || (scalar_classes[end_at] != 1 && (!qwen35 || scalar_classes[end_at] != 4)) { break }
           end_at = end_at + 1
         }
         pieces.push(raw[scalar_starts[start]..scalar_ends[end_at - 1]].clone())
@@ -1466,6 +1505,7 @@ fn encode_raw_append(
   borrow t: Tokenizer,
   raw: str,
   borrow letter: regex,
+  borrow mark: regex,
   borrow number: regex,
   borrow space: regex,
   borrow mut output: array_builder<i64>,
@@ -1473,7 +1513,7 @@ fn encode_raw_append(
   pieces := if t.olmo {
     olmo_pieces(raw, letter, number, space)
   } else {
-    qwen_pieces(raw, letter, number, space)
+    qwen_pieces(raw, letter, mark, number, space, t.qwen35)
   }
   mut at := 0
   loop {
@@ -1487,11 +1527,12 @@ fn encode_raw(
   borrow t: Tokenizer,
   raw: str,
   borrow letter: regex,
+  borrow mark: regex,
   borrow number: regex,
   borrow space: regex,
 ) -> array<i64> {
   mut output: array_builder<i64> := array_builder(raw.len())
-  encode_raw_append(t, raw, letter, number, space, output)
+  encode_raw_append(t, raw, letter, mark, number, space, output)
   return output.build()
 }
 
@@ -1505,6 +1546,7 @@ fn encode_text(
   text: str,
   parse: bool,
   borrow letter: regex,
+  borrow mark: regex,
   borrow number: regex,
   borrow space: regex,
 ) -> array<i64> {
@@ -1534,7 +1576,7 @@ fn encode_text(
     }
     if best_id >= 0 {
       if raw_start < at {
-        encode_raw_append(t, text[raw_start..at], letter, number, space, output)
+        encode_raw_append(t, text[raw_start..at], letter, mark, number, space, output)
       }
       output.push(best_id)
       at = best_end
@@ -1544,7 +1586,7 @@ fn encode_text(
     }
   }
   if raw_start < text.len() {
-    encode_raw_append(t, text[raw_start..text.len()], letter, number, space, output)
+    encode_raw_append(t, text[raw_start..text.len()], letter, mark, number, space, output)
   }
   return output.build()
 }
@@ -1611,9 +1653,10 @@ fn encode_loaded(
       ))
   }
   letter := regex.compile("^\\p{L}$")?
+  mark := regex.compile("^\\p{M}$")?
   number := regex.compile("^\\p{N}$")?
   space := regex.compile("^\\s$")?
-  ids := encode_text(loaded.tokenizer, text, encode_parse(specials), letter, number, space)
+  ids := encode_text(loaded.tokenizer, text, encode_parse(specials), letter, mark, number, space)
   if ids.len() > MAX_OPERATION_TOKEN_IDS {
     return Ok(failed_ids(
         "R7_TOKEN_COUNT",
@@ -2004,9 +2047,10 @@ fn prepare_snapshot(
   vocab_size := loaded.vocab_size
   merge_count := loaded.merge_count
   letter := regex.compile("^\\p{L}$")?
+  mark := regex.compile("^\\p{M}$")?
   number := regex.compile("^\\p{N}$")?
   space := regex.compile("^\\s$")?
-  ids := encode_text(loaded.tokenizer, prompt_view, true, letter, number, space)
+  ids := encode_text(loaded.tokenizer, prompt_view, true, letter, mark, number, space)
   if ids.len() > MAX_OPERATION_TOKEN_IDS {
     return Ok(failed_generation(
         "R7_TOKEN_COUNT", int_text(ids.len()), encoded_template_id, encoded_tokenizer_id_view,
@@ -2240,6 +2284,7 @@ pub GenerationTokenizer {
   bos_token: string,
   eog_ids: array<i64>,
   letter: regex,
+  mark: regex,
   number: regex,
   space: regex,
 }
@@ -2270,7 +2315,8 @@ pub fn load_generation_snapshot(snapshot: gguf.GgufSnapshot) -> Result<Generatio
   eog_ids := copy_i64(eog.ids)
   return Ok(GenerationTokenizer {
       loaded: loaded, template_id: template_id, bos_token: bos_token, eog_ids: eog_ids,
-      letter: regex.compile("^\\p{L}$")?, number: regex.compile("^\\p{N}$")?,
+      letter: regex.compile("^\\p{L}$")?, mark: regex.compile("^\\p{M}$")?,
+      number: regex.compile("^\\p{N}$")?,
       space: regex.compile("^\\s$")?,
     })
 }
@@ -2285,7 +2331,7 @@ pub fn prepare_retained(borrow session: GenerationTokenizer, system: str, user: 
   }
   prompt := render_prompt(system, user, session.loaded.tokenizer.olmo, session.bos_token)
   ids := encode_text(session.loaded.tokenizer, prompt, true,
-    session.letter, session.number, session.space)
+    session.letter, session.mark, session.number, session.space)
   if ids.len() > MAX_OPERATION_TOKEN_IDS { return Err(Error.Invalid) }
   return Ok(GenerationPromptResult {
       status: TokenizerStatus.Ok, error_code: "".clone(), error_detail: "".clone(),
