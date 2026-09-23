@@ -186,8 +186,16 @@ ggml_identity() {
   # statically linked instrument. The `|| true` keeps "no dynamic libggml" an answer rather than an
   # abort; an empty result is what the caller reads as unresolved.
   local found=""
-  found=$(${lister} "${resolved}" 2>/dev/null \
-    | grep -oE '(@[a-z_]+/|/[^ ]*)?libggml-base[^ ]*\.(so|dylib)[^ ]*' | head -1 || true)
+  if [ "${lister}" = ldd ]; then
+    # ldd prints the soname before `=>`; use the resolved path after it.
+    found=$(ldd "${resolved}" 2>/dev/null | awk '
+      $1 ~ /^libggml-base/ && $2 == "=>" && $3 ~ /^\// { print $3; exit }
+      $1 ~ /^\/.*libggml-base/ { print $1; exit }
+    ' || true)
+  else
+    found=$(otool -L "${resolved}" 2>/dev/null \
+      | grep -oE '(@[a-z_]+/|/[^ ]*)?libggml-base[^ ]*\.dylib[^ ]*' | head -1 || true)
+  fi
   # A build directory's binaries name their libraries through `@rpath`/`@loader_path`, which is not
   # a filesystem path. Both resolve to the binary's own directory for a tree laid out the way every
   # llama.cpp build lays one out, and resolving them is what makes this check answer at all for the
@@ -401,11 +409,12 @@ PY
   for repeat in 1 2 3; do
     echo "moe decode step qualification: prompt ${index} run ${repeat}/3 -- N=${steps}," \
       "KV_WIDTH=${KV_WIDTH}"
-    /usr/bin/time -p "${root_dir}/ggml-spike" --moe-decode-step \
+    { time -p "${root_dir}/ggml-spike" --moe-decode-step \
       "${work_dir}/model.alignpack" "${work_dir}/geometry.json" "${tokens}" \
       "${work_dir}/${tag}-run${repeat}.json" "${ALIGN_LLM_GGUF_MODEL}" \
       "${work_dir}/${tag}-transcript.txt" "${KV_WIDTH}" "${logits_bin}" "${steps}" \
-      > "${work_dir}/${tag}-run${repeat}.out" 2> "${work_dir}/${tag}-run${repeat}.time" || {
+      > "${work_dir}/${tag}-run${repeat}.out"; } \
+      2> "${work_dir}/${tag}-run${repeat}.time" || {
         status=$?
         cat "${work_dir}/${tag}-run${repeat}.time" >&2 || true
         python3 -c 'import json,sys;d=json.load(open(sys.argv[1]));
@@ -425,12 +434,12 @@ print("error_code", d["error_code"], "detail", d["error_detail"])' \
     for repeat in 1 2 3; do
       echo "moe decode step qualification: prompt ${index} dense run ${repeat}/3 -- N=${steps}," \
         "KV_WIDTH=${KV_WIDTH}, RESIDENT=dense"
-      /usr/bin/time -p "${root_dir}/ggml-spike" --moe-decode-step \
+      { time -p "${root_dir}/ggml-spike" --moe-decode-step \
         "${work_dir}/model.alignpack" "${work_dir}/geometry.json" "${tokens}" \
         "${work_dir}/${tag}-dense${repeat}.json" "${ALIGN_LLM_GGUF_MODEL}" \
         "${work_dir}/${tag}-transcript.txt" "${KV_WIDTH}" "${logits_bin}" "${steps}" \
         "-" "-" "dense" \
-        > "${work_dir}/${tag}-dense${repeat}.out" \
+        > "${work_dir}/${tag}-dense${repeat}.out"; } \
         2> "${work_dir}/${tag}-dense${repeat}.time" || {
           status=$?
           cat "${work_dir}/${tag}-dense${repeat}.time" >&2 || true
