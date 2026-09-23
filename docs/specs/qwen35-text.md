@@ -6,7 +6,7 @@ Status: active. This plan owns the `qwen35` extension; the existing Qwen2 and OL
 
 The first real consumer is `ggml-org/Qwen3.5-0.8B-GGUF`, file `Qwen3.5-0.8B-Q4_0.gguf` (563,036,064 bytes; SHA-256 `57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf`). Its GGUF inspection at the current `.llama-revision` reports architecture `qwen35`, 24 layers, 320 tensors, embedding width 1024, feed-forward width 3584, vocabulary 248320, context 262144, full attention every fourth layer, and 18 recurrent Gated DeltaNet layers. The six full-attention layers and 18 recurrent layers have distinct tensor sets. The file declares `tokenizer.ggml.pre = qwen35` and has a tied output embedding. Before #294, `--model-ir` refused it with `R1_UNSUPPORTED_ARCH`; #294 completed the first boundary.
 
-The first independently useful consumer boundary is `--model-ir` plus `--pack` for this real GGUF. It permits validated model inspection, complete tensor coverage, and an owned layout artifact without claiming inference. The next independently useful boundary is `--tokenize` and `--detokenize` on this GGUF, with exact pinned llama.cpp token parity; those existing commands let callers prepare and inspect real Qwen3.5 input before inference. Then text-only native `align-runtime` prefill and decode through `--provider align-runtime` uses that tokenizer plus hybrid recurrent/attention state. Vision, MTP/speculative heads, MoE, and 27B are later consumers. Do not infer their support from a passing 0.8B case. No speed claim is made by this work.
+The first independently useful consumer boundary is `--model-ir` plus `--pack` for this real GGUF. It permits validated model inspection, complete tensor coverage, and an owned layout artifact without claiming inference. The next boundary is `--tokenize` and `--detokenize` on this GGUF, with exact pinned llama.cpp token parity. The existing `--prepare-prompt` command then provides real text-only Qwen3.5 chat input IDs. Text-only native `align-runtime` prefill and decode through `--provider align-runtime` uses that tokenizer plus hybrid recurrent/attention state. Vision, MTP/speculative heads, MoE, and 27B are later consumers. Do not infer their support from a passing 0.8B case. No speed claim is made by this work.
 
 ## Public contract ledger
 
@@ -50,6 +50,22 @@ positive and malformed corpus; `scripts/run-qwen35-tokenizer-smoke` passes eight
 cases against pinned llama.cpp, including control-token modes and detokenization. This closes the
 intermediate tokenizer boundary only; the native text matrix remains open.
 
+### Text-only generation prompt boundary
+
+The existing `--prepare-prompt GGUF SYSTEM USER` command accepts the exact 0.8B GGUF chat
+template SHA-256 `273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80`.
+It renders one leading system message, one user message, and an assistant generation prefix with
+thinking disabled. Both contents are trimmed as the template specifies. Tools, images, message
+history, and thinking-enabled prompts remain outside this command's two-message text contract.
+The full source template is 7,755 bytes, so metadata admission permits 8,192 bytes but still
+requires its exact hash and the `gpt2/qwen35` profile. This boundary retains the command arity,
+JSON token result, existing `R7` errors, and tokenizer ownership. The rendered fixed length is
+99 bytes before trimmed content; input files remain bounded independently and the final prompt
+retains the existing 1 MiB ceiling. `scripts/run-qwen35-tokenizer-smoke` pairs three real-file
+system/user cases with pinned llama.cpp tokenization of the template's text-only branch;
+`scripts/run-tokenizer-smoke` retains Qwen2/OLMoE prompt and error coverage. This supplies a
+stable prompt oracle for the native graph; it makes no inference or speed claim.
+
 The first boundary adds these stable role ids after 28: `post_attention_norm` 29, `attn_qkv` 30, `attn_gate` 31, `ssm_conv1d` 32, `ssm_dt` 33, `ssm_a` 34, `ssm_beta` 35, `ssm_alpha` 36, `ssm_norm` 37, `ssm_out` 38. Existing ids never move. The frontend uses the GGUF's declared `attention.key_length` and `attention.value_length`; it does not derive either from `embedding_length / head_count`. The pinned llama.cpp reference selects interleaved M-RoPE (`GGML_ROPE_TYPE_IMROPE = 40`), which the Model IR records. `rope.dimension_sections` is an array of four INT32 values and is validated in the native text boundary before graph construction. The model's `full_attention_interval` fixes the block type; no inferred tensor fallback is permitted.
 
 ## Closure matrix for the first boundary
@@ -73,7 +89,7 @@ as interchangeable.
 
 | Phase | Implementation owner | Exact regression target |
 | --- | --- | --- |
-| Construction | `tokenizer_qwen2` admits the `qwen35` profile with its own pre-tokenization and chat-template identity; `runtime_bundle` and `runtime_generation` derive the hybrid geometry, role table, KV and recurrent state sizes before device allocation. | `scripts/run-qwen35-generation-smoke` compares real-file tokenizer metadata, prompt ids, and rejected geometry. |
+| Construction | `tokenizer_qwen2` supplies the already-qualified `qwen35` prompt identity; `runtime_bundle` and `runtime_generation` derive the hybrid geometry, role table, KV and recurrent state sizes before device allocation. | `scripts/run-qwen35-generation-smoke` compares real-file tokenizer metadata, prompt ids, and rejected geometry. |
 | Success | `runtime_qwen35` builds full-attention layers and Gated DeltaNet layers using the pinned ggml operations; `provider_runtime` routes the native request, and `runtime_generation` commits full-attention KV plus recurrent state after a successful step. | `scripts/run-qwen35-generation-smoke` compares real 0.8B prefill and at least two decode tokens with the pinned llama.cpp oracle and checks provider text and token counts. |
 | Failure and malformed input | `runtime_bundle` rejects missing roles, invalid rope sections, unsupported quantization, or state dimensions before graph allocation; `runtime_generation` propagates compute and state-update failures. | The same owner changes one role/section and injects one compute failure, asserting an error and no response. |
 | Early exit and rollback | The session retains its prior committed KV and recurrent state until a step succeeds; an EOG, cancellation, or error releases in-flight graph/input/output buffers without advancing either state. | The same owner compares a failed or early-ended session with a fresh session on the next request. |
@@ -104,6 +120,38 @@ adding thin checked ABI wrappers and Align-owned state is implementation work, n
 Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the
 tokenizer or Model IR checks.
+
+### 0.8B reference bottleneck checkpoint (2026-09-24)
+
+Before implementing an optimization, the pinned `bb4caa7` llama.cpp reference was built with
+CPU/Accelerate and Metal on an Apple M1. Both builds used the same Qwen3.5-0.8B Q4_0 file,
+four CPU threads, 128 prompt tokens or 32 generated tokens, three repetitions, and an explicit
+Flash Attention setting. These are reference measurements, not align-llm results or a shipping
+speed claim. The CPU build with Flash Attention off measured 464.98 prompt tok/s and 55.32
+generation tok/s. The Metal build with all layers offloaded and Flash Attention off measured
+1180.77 prompt tok/s and 61.85 generation tok/s; enabling Flash Attention measured 1195.65 and
+63.87 tok/s respectively. The three generation samples were 499.74, 503.82, and 551.64 ms
+without Flash Attention, versus 504.68, 499.55, and 498.85 ms with it. This short test cannot
+establish a stable Flash Attention win.
+
+A separate 1,024-token CPU generation run sampled at 1 ms for 10 seconds attributed the largest
+active stacks to quantized GEMV (`ggml_gemv_q8_0_4x4_q8_0`: 8,391 samples;
+`ggml_gemv_q4_0_4x4_q8_0`: 6,630); Gated DeltaNet had 212 and SSM convolution 67 top-of-stack
+samples. Samples across threads are not a normalized per-kernel time budget. A 10-second Metal
+System Trace and host sample were collected, but the exported shader-profiler table had no rows;
+host waits cannot attribute GPU kernel duration. Thus changing DeltaNet math, RoPE, or Flash
+Attention first has no measured 0.8B decode justification. The native graph should preserve
+ggml's quantized matrix operations and reuse the whole graph/session; its measured cost, including
+host launch and state handling, is the next actionable bottleneck investigation.
+
+The first native optimization campaign starts only after real 0.8B prefill and multistep decode
+parity. Fix the model hash above, pinned ggml, backend, prompt and 128-token generation request;
+compare an owner-tested native control with one proposed change in five alternating pairs on the
+same host, with exact outputs and token counts. Record startup, prompt, and generation clocks
+separately. The material floor is at least 15% lower median paired generation latency with at
+least four of five pairs faster, and no more than 5% prompt or startup regression. Preparation
+is capped at 3,600 seconds and the paired experiment at 900 seconds, with a 120-second request
+limit. A missing parity result or invalid receipt is an unmeasured outcome, not a speedup.
 
 ## First-boundary implementation map
 

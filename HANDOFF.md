@@ -16,13 +16,18 @@ refusals. Existing model IR and alignpack smoke owners pass. One comprehensive C
 missing tokenizer-vocabulary validation; the full tokenizer metadata class was repaired and its
 focused owners passed again. Final-head preflight and all three hosted checks passed for #294.
 The Qwen3.5 tokenizer CLI merged in #295 with eight paired real-file cases against pinned
-llama.cpp and all three hosted checks. Native `align-runtime` generation is the active boundary.
+llama.cpp and all three hosted checks. This branch also implements the existing
+`--prepare-prompt` command for the 0.8B text-only chat template, with three paired prompt cases.
+Native `align-runtime` generation is the active boundary after this independently useful input
+capability is published.
 
 Next actions in priority order:
 1. Implement the text-only native Qwen3.5 hybrid recurrent/attention session with the
    recurrent-state closure matrix and pinned llama.cpp oracle in `docs/specs/qwen35-text.md`.
-2. Qualify 0.8B prefill, multistep decode, and provider output; then select a middle-size Qwen3.5
-   model before Qwen3.8-27B. No speed claim is active.
+2. Qualify 0.8B prefill, multistep decode, and provider output. Profile the passing native session
+   against the reference bottleneck checkpoint, then select and measure one optimization under
+   its declared paired floor. GPU kernel attribution needs a separate trace with shader rows.
+3. Select a middle-size Qwen3.5 model before Qwen3.8-27B. No speed claim is active.
 
 Latest local verification: `gmake build` PASS with the documented Homebrew `LIBRARY_PATH`;
 `python3 scripts/qwen35_frontdoor_smoke.py` PASS; `scripts/run-model-ir-smoke` PASS;
@@ -46,6 +51,23 @@ the existing session graph supports only Qwen2 or OLMoE and has no recurrent sta
 `docs/specs/qwen35-text.md` records the exact 0.8B state geometry and next acceptance oracle.
 No native graph or provider result is claimed yet. This plan and handoff are a local checkpoint;
 the branch is not a publication candidate until the native consumer and its owner tests exist.
+
+Reference bottleneck diagnosis: pinned llama.cpp `bb4caa7` on Apple M1, Qwen3.5-0.8B Q4_0,
+three repetitions: CPU 464.98 prompt / 55.32 generation tok/s; Metal 1180.77 / 61.85 with
+Flash Attention off and 1195.65 / 63.87 with it. A separate 10-second CPU sample showed
+quantized GEMV as the dominant active stack, while the Metal trace did not provide shader rows.
+`docs/specs/qwen35-text.md` records commands, scope and the future paired floor;
+`docs/backend-parity.md` records backend coverage. The native path remains prerequisite to any
+align-llm bottleneck fix or optimization claim.
+
+Prompt checkpoint verification: `gmake fmt` PASS; `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib
+gmake build` PASS; `scripts/run-tokenizer-smoke` PASS with the same library path;
+`scripts/run-qwen35-tokenizer-smoke` PASS with the recorded real GGUF and pinned `llama-tokenize`
+(eight token and three prompt cases); `python3 scripts/check-python-boundary` PASS;
+`git diff --check` PASS. A plain `gmake build` and plain tokenizer smoke failed only because this
+host's Homebrew `libcrypto` is outside the default linker search path; both passed with the
+documented library path. The prompt capability is a candidate for review and publication; the
+native graph remains pending.
 
 ## Codex binary audit checkpoint (2026-09-23)
 

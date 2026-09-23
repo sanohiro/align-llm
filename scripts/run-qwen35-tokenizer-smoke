@@ -23,6 +23,11 @@ CASES = (
     ("control-literal", "<|im_start|>user\nHi<|im_end|>", False),
     ("control-parse", "<|im_start|>user\nHi<|im_end|>", True),
 )
+PROMPT_CASES = (
+    ("plain", "System note", "Say hi"),
+    ("trimmed", "  System note  \n", "  Say hi  \n"),
+    ("empty-system", "", "日本語で答えて"),
+)
 
 
 def run(args: list[str]) -> bytes:
@@ -66,7 +71,26 @@ def main() -> None:
             decoded = run([str(ROOT / "main"), "--detokenize", str(model), str(ids_path), "render-control"])
             if decoded != value.encode("utf-8"):
                 raise RuntimeError(f"{label}: detokenization did not round-trip")
-    print(f"Qwen3.5 tokenizer PASS: {len(CASES)} paired real-model cases at {MODEL_SHA256}")
+        for label, system, user in PROMPT_CASES:
+            system_path = work / f"{label}-system.txt"
+            user_path = work / f"{label}-user.txt"
+            prompt_path = work / f"{label}-prompt.txt"
+            system_path.write_text(system, encoding="utf-8")
+            user_path.write_text(user, encoding="utf-8")
+            # The pinned GGUF template's text-only, tools-absent, thinking-disabled branch.
+            rendered = (
+                "<|im_start|>system\n" + system.strip() + "<|im_end|>\n"
+                "<|im_start|>user\n" + user.strip() + "<|im_end|>\n"
+                "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            )
+            prompt_path.write_text(rendered, encoding="utf-8")
+            actual = json.loads(run([str(ROOT / "main"), "--prepare-prompt", str(model),
+                                     str(system_path), str(user_path)]))
+            expected = json.loads(run([str(reference), "-m", str(model), "-f", str(prompt_path),
+                                       "--ids", "--no-bos"]))
+            if actual != expected:
+                raise RuntimeError(f"{label}: prompt ids {actual!r} differ from llama.cpp {expected!r}")
+    print(f"Qwen3.5 tokenizer PASS: {len(CASES)} token and {len(PROMPT_CASES)} prompt cases at {MODEL_SHA256}")
 
 
 if __name__ == "__main__":
