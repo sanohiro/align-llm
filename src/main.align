@@ -6,6 +6,7 @@ import verify
 import eval
 import gguf
 import frontend_qwen
+import frontend_qwen35
 import frontend_gpt_oss
 import frontend_olmoe
 import expert_trace
@@ -708,6 +709,8 @@ fn model_ir_demo(args: array<str>) -> Result<(), Error> {
     frontend_gpt_oss.build_model_ir(table, args[2])
   } else if table.architecture_present && architecture_view == "olmoe" {
     frontend_olmoe.build_model_ir(table, args[2])
+  } else if table.architecture_present && architecture_view == "qwen35" {
+    frontend_qwen35.build_model_ir(table, args[2])
   } else {
     frontend_qwen.build_model_ir(table, args[2])
   }
@@ -1052,6 +1055,8 @@ fn pack_demo(args: array<str>) -> Result<(), Error> {
     frontend_gpt_oss.prepare(table)
   } else if table.architecture_present && architecture_view == "olmoe" {
     frontend_olmoe.prepare(table)
+  } else if table.architecture_present && architecture_view == "qwen35" {
+    frontend_qwen35.prepare(table)
   } else {
     frontend_qwen.prepare(table)
   }
@@ -1190,6 +1195,8 @@ fn pack_verify_demo(args: array<str>) -> Result<(), Error> {
     frontend_gpt_oss.prepare(table)
   } else if table.architecture_present && architecture_view == "olmoe" {
     frontend_olmoe.prepare(table)
+  } else if table.architecture_present && architecture_view == "qwen35" {
+    frontend_qwen35.prepare(table)
   } else {
     frontend_qwen.prepare(table)
   }

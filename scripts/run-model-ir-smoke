@@ -663,9 +663,11 @@ if align_ids != align_labels:
 if align_ids != reader_roles:
     fail("role-list-mirror: the Align list is %r and the Python mirror is %r"
          % (align_ids, reader_roles))
-if align_ids[27:] != ["attn_q_norm", "attn_k_norm"]:
-    fail("role-list-mirror: entries 27 and 28 are %r, expected the two appended QK-norm roles"
-         % align_ids[27:])
+if align_ids[27:] != [
+    "attn_q_norm", "attn_k_norm", "post_attention_norm", "attn_qkv", "attn_gate",
+    "ssm_conv1d", "ssm_dt", "ssm_a", "ssm_beta", "ssm_alpha", "ssm_norm", "ssm_out",
+]:
+    fail("role-list-mirror: appended role ids changed: %r" % align_ids[27:])
 # Every role the olmoe plan emits must be named by the frozen list, or it would pack as a stated
 # absence and be silently useless to R4.5.
 olmoe_full_document = json.loads(
@@ -846,4 +848,4 @@ if [ ! -d "$temp_dir" ]; then
   exit 1
 fi
 
-printf '%s\n' "model ir smoke: hyperparameters, block IR, three-way architecture dispatch, per-expert claims, per-layer mixed quantization, the appended QK-norm roles and their two-language mirror, the MXFP4 geometry row, the quantization summary, the size-sum and claim-tiling oracles, the malformed corpora, table/inspect parity, and CLI arity/isolation PASS"
+printf '%s\n' "model ir smoke: hyperparameters, block IR, three-way architecture dispatch, per-expert claims, per-layer mixed quantization, appended role ids and their two-language mirror, the MXFP4 geometry row, the quantization summary, the size-sum and claim-tiling oracles, the malformed corpora, table/inspect parity, and CLI arity/isolation PASS"

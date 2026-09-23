@@ -414,6 +414,16 @@ fn role_id(label: str) -> i64 {
     "ffn_gate_up_exps_bias" => 26,
     "attn_q_norm" => 27,
     "attn_k_norm" => 28,
+    "post_attention_norm" => 29,
+    "attn_qkv" => 30,
+    "attn_gate" => 31,
+    "ssm_conv1d" => 32,
+    "ssm_dt" => 33,
+    "ssm_a" => 34,
+    "ssm_beta" => 35,
+    "ssm_alpha" => 36,
+    "ssm_norm" => 37,
+    "ssm_out" => 38,
     _ => DEFERRED_U32,
   }
 }
@@ -448,6 +458,16 @@ fn role_label(id: i64) -> str {
   if id == 26 { return "ffn_gate_up_exps_bias" }
   if id == 27 { return "attn_q_norm" }
   if id == 28 { return "attn_k_norm" }
+  if id == 29 { return "post_attention_norm" }
+  if id == 30 { return "attn_qkv" }
+  if id == 31 { return "attn_gate" }
+  if id == 32 { return "ssm_conv1d" }
+  if id == 33 { return "ssm_dt" }
+  if id == 34 { return "ssm_a" }
+  if id == 35 { return "ssm_beta" }
+  if id == 36 { return "ssm_alpha" }
+  if id == 37 { return "ssm_norm" }
+  if id == 38 { return "ssm_out" }
   return ""
 }
 

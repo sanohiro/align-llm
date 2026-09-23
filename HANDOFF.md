@@ -2,6 +2,35 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Qwen3.5 text capability checkpoint (2026-09-24)
+
+Branch: `agent/qwen35-text-first`, based on `main` `0d9eb873`. Active user priority is staged
+Qwen3.5 text support before a Qwen3.8-27B attempt. `docs/specs/qwen35-text.md` owns the contract.
+
+The first independently usable boundary is implemented locally: `--model-ir`, `--pack`, and
+`--pack-verify` accept a real Qwen3.5-0.8B Q4_0 GGUF. Its SHA-256 is recorded in the plan;
+Model IR claims all 320 tensors, has 50 blocks, and passes its size-sum check. The synthetic
+frontdoor owner passes positive IR/pack/verify and missing-key, wrong-shape, and wrong-tokenizer
+refusals. Existing model IR and alignpack smoke owners pass. One comprehensive Codex review found
+missing tokenizer-vocabulary validation; the full tokenizer metadata class was repaired and its
+focused owners passed again. This candidate is not yet published. Native `align-runtime`
+generation and tokenizer support have not started.
+
+Next actions in priority order:
+1. Run executable publication preflight at the final head and merge the reviewed first consumer.
+2. Design and implement the text-only native Qwen3.5 tokenizer and hybrid recurrent/attention
+   session with an explicit recurrent-state closure matrix and pinned llama.cpp oracle.
+3. Qualify 0.8B prefill, multistep decode, and provider output; then select a middle-size Qwen3.5
+   model before Qwen3.8-27B. No speed claim is active.
+
+Latest local verification: `gmake build` PASS with the documented Homebrew `LIBRARY_PATH`;
+`python3 scripts/qwen35_frontdoor_smoke.py` PASS; `scripts/run-model-ir-smoke` PASS;
+`scripts/run-alignpack-smoke` PASS (20,542 assertions; two existing injection N/A cases);
+real-model `--model-ir`/`--pack`/`--pack-verify` PASS after review repair;
+`python3 scripts/check-python-boundary` PASS. The root `main` worktree's prior
+`docs/align-requests.md` modification is intentional and
+untouched; this branch is in a separate worktree.
+
 ## Codex binary audit checkpoint (2026-09-23)
 
 Branch: `agent/adopt-align-5c7af9e5`, based on merged PR #292 (`98bbfff1`).

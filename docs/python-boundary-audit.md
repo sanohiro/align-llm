@@ -212,15 +212,19 @@ owner evidence; an unchanged native boundary needs no repeat GPU campaign.
   measurement v4 and gate locator v2, including the separate product and oracle identities and
   both new/legacy explicit-input branches. It does not supply the shipping `prompt accept` decision.
 - `alignpack_reader.py`, `kv_plane_reader.py`, `residency_oracle.py` and numeric/reference comparison
-  modules provide separately implemented byte/arithmetic checks.
+  modules provide separately implemented byte/arithmetic checks. The Qwen3.5 role additions in
+  `alignpack_reader.py` remain an independent pack-format oracle, not a product role dispatcher.
 - Fixture/golden generators and the external Python coding projects remain. Do not mechanically
   rewrite them into Align or weaken tests to produce a Python-free demonstration.
+  `qwen35_frontdoor_smoke.py` is a synthetic GGUF fixture and independent CLI oracle; it performs
+  no shipping model selection or inference.
 - `gpu_session_client.py`, `run-gpu-session-coding`, `run-gpu-session-measurement`, the OLMoE
   diagnoses and the qualification framework remain experiment/test infrastructure. Their fixed
   retry and session clients must not become an imported shipping runtime implementation.
 - Fresh compiler/image controllers, preflight/classification, CI bundle tools and smoke launchers
   remain developer infrastructure. Installing such a controller as a product dependency would
-  change its role and require reclassification.
+  change its role and require reclassification. `run-model-ir-smoke` remains a fixture/consistency
+  owner when its Qwen3.5 role-list assertion is extended.
 
 The current render parity owner loads the Python evaluator's renderer; once that evaluator leaves
 the product path, retain the frozen reference algorithm outside the production import graph.

@@ -20,6 +20,16 @@ align-runtimeは、重要な技術spikeと小さな実装を並行して進め�
 
 ## 2. Capability delivery model
 
+### Active Qwen3.5 text lane (2026-09-24)
+
+The user prioritized staged Qwen3.5 support over another pinned-ggml speed intervention. The
+authoritative contract is [Qwen3.5 text support](qwen35-text.md). First deliver real GGUF Model IR
+and alignpack as an independently usable validation/layout consumer. Then deliver native text
+prefill and decode through `align-runtime`, starting with 0.8B and verifying against the pinned
+llama.cpp reference. Scale to a Qwen3.5 middle size before attempting Qwen3.8-27B. Vision, MTP,
+and MoE remain outside the first text boundary. This priority does not relax the Align product
+ownership and Python boundary rules below.
+
 ### Active priority override: Align product ownership (2026-09-09)
 
 The user requested concentrated removal of Python from shipping product execution before more

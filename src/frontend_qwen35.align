@@ -1,0 +1,788 @@
+module frontend_qwen35
+
+import gguf
+import model_ir
+
+// Qwen3.5 dense GGUF frontend. The architecture-specific facts below are measured on the
+// ggml-org Qwen3.5-0.8B Q4_0 GGUF. model_ir owns geometry and coverage, and alignpack owns bytes.
+MAX_LAYERS := 512
+MAX_EMBD := 1048576
+MAX_HEADS := 4096
+MAX_FF := 16777216
+MAX_CONTEXT := 134217728
+MAX_VOCAB := 4194304
+ROPE_TYPE_IMROPE := 40
+TYPE_UINT32 := 4
+TYPE_FLOAT32 := 6
+TYPE_STRING := 8
+TYPE_ARRAY := 9
+TYPE_INT32 := 5
+
+Hyper {
+  n_layer: i64,
+  n_embd: i64,
+  n_head: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  n_ff: i64,
+  n_vocab: i64,
+  conv_kernel: i64,
+  state_size: i64,
+  group_count: i64,
+  time_step_rank: i64,
+  inner_size: i64,
+}
+
+Shape { n_dims: i64, d0: i64, d1: i64 }
+
+fn kv_text_decodable(borrow t: gguf.GgufTable, key: str) -> bool = match gguf.kv_string(t, key) {
+  Some(_) => true,
+  None => false,
+}
+
+// Local roles use compact ids; alignpack maps their stable text labels to persisted ids.
+fn role_label(role: i64) -> str {
+  if role == 0 { return "token_embd" }
+  if role == 1 { return "attn_norm" }
+  if role == 2 { return "attn_q" }
+  if role == 3 { return "attn_q_norm" }
+  if role == 4 { return "attn_k" }
+  if role == 5 { return "attn_k_norm" }
+  if role == 6 { return "attn_v" }
+  if role == 7 { return "attn_output" }
+  if role == 8 { return "post_attention_norm" }
+  if role == 9 { return "attn_qkv" }
+  if role == 10 { return "attn_gate" }
+  if role == 11 { return "ssm_conv1d" }
+  if role == 12 { return "ssm_dt" }
+  if role == 13 { return "ssm_a" }
+  if role == 14 { return "ssm_beta" }
+  if role == 15 { return "ssm_alpha" }
+  if role == 16 { return "ssm_norm" }
+  if role == 17 { return "ssm_out" }
+  if role == 18 { return "ffn_gate" }
+  if role == 19 { return "ffn_up" }
+  if role == 20 { return "ffn_down" }
+  if role == 21 { return "output_norm" }
+  if role == 22 { return "output" }
+  return ""
+}
+
+fn role_suffix(role: i64) -> str {
+  if role == 1 { return "attn_norm.weight" }
+  if role == 2 { return "attn_q.weight" }
+  if role == 3 { return "attn_q_norm.weight" }
+  if role == 4 { return "attn_k.weight" }
+  if role == 5 { return "attn_k_norm.weight" }
+  if role == 6 { return "attn_v.weight" }
+  if role == 7 { return "attn_output.weight" }
+  if role == 8 { return "post_attention_norm.weight" }
+  if role == 9 { return "attn_qkv.weight" }
+  if role == 10 { return "attn_gate.weight" }
+  if role == 11 { return "ssm_conv1d.weight" }
+  if role == 12 { return "ssm_dt.bias" }
+  if role == 13 { return "ssm_a" }
+  if role == 14 { return "ssm_beta.weight" }
+  if role == 15 { return "ssm_alpha.weight" }
+  if role == 16 { return "ssm_norm.weight" }
+  if role == 17 { return "ssm_out.weight" }
+  if role == 18 { return "ffn_gate.weight" }
+  if role == 19 { return "ffn_up.weight" }
+  if role == 20 { return "ffn_down.weight" }
+  return ""
+}
+
+fn role_tensor_name(role: i64, layer: i64) -> string {
+  if role == 0 { return "token_embd.weight".clone() }
+  if role == 21 { return "output_norm.weight".clone() }
+  if role == 22 { return "output.weight".clone() }
+  b := builder()
+  b.write("blk.")
+  b.write_int(layer)
+  b.write(".")
+  b.write(role_suffix(role))
+  return b.to_string()
+}
+
+fn block_role_at(kind: i64, slot: i64, full: bool) -> i64 {
+  if kind == 0 { return if slot == 0 { 0 } else { -1 } }
+  if kind == 1 {
+    if slot == 0 { return 1 }
+    if full {
+      if slot >= 1 && slot <= 6 { return slot + 1 }
+      if slot == 7 { return 8 }
+    } else {
+      if slot >= 1 && slot <= 9 { return slot + 8 }
+      if slot == 10 { return 8 }
+    }
+    return -1
+  }
+  if kind == 2 {
+    if slot >= 0 && slot < 3 { return slot + 18 }
+    return -1
+  }
+  if kind == 3 {
+    if slot == 0 { return 21 }
+    if slot == 1 { return 22 }
+  }
+  return -1
+}
+
+fn expected_shape(role: i64, h: Hyper) -> Shape {
+  if role == 0 || role == 22 { return Shape { n_dims: 2, d0: h.n_embd, d1: h.n_vocab } }
+  if role == 1 || role == 8 || role == 21 { return Shape { n_dims: 1, d0: h.n_embd, d1: 1 } }
+  if role == 2 { return Shape { n_dims: 2, d0: h.n_embd, d1: h.n_head * h.head_dim * 2 } }
+  if role == 3 || role == 5 { return Shape { n_dims: 1, d0: h.head_dim, d1: 1 } }
+  if role == 4 || role == 6 { return Shape { n_dims: 2, d0: h.n_embd, d1: h.n_head_kv * h.head_dim } }
+  if role == 7 { return Shape { n_dims: 2, d0: h.n_head * h.head_dim, d1: h.n_embd } }
+  if role == 9 { return Shape { n_dims: 2, d0: h.n_embd, d1: 2 * h.state_size * h.group_count + h.inner_size } }
+  if role == 10 { return Shape { n_dims: 2, d0: h.n_embd, d1: h.inner_size } }
+  if role == 11 { return Shape { n_dims: 2, d0: h.conv_kernel, d1: 2 * h.state_size * h.group_count + h.inner_size } }
+  if role == 12 || role == 13 { return Shape { n_dims: 1, d0: h.time_step_rank, d1: 1 } }
+  if role == 14 || role == 15 { return Shape { n_dims: 2, d0: h.n_embd, d1: h.time_step_rank } }
+  if role == 16 { return Shape { n_dims: 1, d0: h.state_size, d1: 1 } }
+  if role == 17 { return Shape { n_dims: 2, d0: h.inner_size, d1: h.n_embd } }
+  if role == 18 || role == 19 { return Shape { n_dims: 2, d0: h.n_embd, d1: h.n_ff } }
+  if role == 20 { return Shape { n_dims: 2, d0: h.n_ff, d1: h.n_embd } }
+  return Shape { n_dims: -1, d0: -1, d1: -1 }
+}
+
+pub fn build_model_ir(borrow table: gguf.GgufTable, path: str) -> model_ir.ModelIr {
+  prepared := prepare(table)
+  code_view: str := prepared.code
+  detail_view: str := prepared.detail
+  return model_ir.build(table, prepared.geometry, prepared.plan, path, code_view, detail_view)
+}
+
+pub fn prepare(borrow table: gguf.GgufTable) -> model_ir.Prepared {
+  mut code := "".clone()
+  mut detail := "".clone()
+  mut n_layer := -1
+  mut n_embd := -1
+  mut n_head := -1
+  mut n_head_kv := -1
+  mut head_dim := -1
+  mut value_dim := -1
+  mut conv_kernel := -1
+  mut state_size := -1
+  mut group_count := -1
+  mut time_step_rank := -1
+  mut inner_size := -1
+  mut full_interval := -1
+  mut n_ff := -1
+  mut n_vocab := -1
+  mut n_expert := -1
+  mut context_length := -1
+  mut rms_eps_bits := -1
+  mut rms_eps_text := "null".clone()
+  mut freq_base_bits := -1
+  mut freq_base_text := "null".clone()
+  mut rope_type := -1
+  mut rope_dim_count := -1
+  mut rope_dim_source := "".clone()
+  mut rope_scaling_json := "null".clone()
+  mut file_type := -1
+  mut file_type_present := false
+
+  loop {
+    // Step 3. A container failure is data with the container's own code as the detail.
+    container_failed := match table.status {
+      Ok => false,
+      Error => true,
+    }
+    if container_failed {
+      code = "R1_GGUF_ERROR".clone()
+      container_code: str := table.error_code
+      detail = model_ir.bounded_detail(container_code)
+      break
+    }
+
+    // Step 4. Architecture: present, UTF-8, exactly `qwen35`. A near relative such as `qwen3` shares
+    // much of the key vocabulary and differs in exactly the places a Model IR must be right about,
+    // so it is rejected rather than half-described. The dispatch in `src/main.align` already chose
+    // this frontend; the re-check is what keeps it unusable on the wrong file.
+    architecture_view: str := table.architecture
+    if !table.architecture_present || architecture_view != "qwen35" {
+      code = "R1_UNSUPPORTED_ARCH".clone()
+      detail = if table.architecture_present {
+        model_ir.bounded_detail(architecture_view)
+      } else {
+        "".clone()
+      }
+      break
+    }
+    rope_type = ROPE_TYPE_IMROPE
+
+    // Step 5, first pass: required keys in the Qwen3.5 contract order.
+    mut missing := ""
+    if gguf.kv_type(table, "qwen35.block_count") < 0 {
+      missing = "qwen35.block_count"
+    } else if gguf.kv_type(table, "qwen35.embedding_length") < 0 {
+      missing = "qwen35.embedding_length"
+    } else if gguf.kv_type(table, "qwen35.attention.head_count") < 0 {
+      missing = "qwen35.attention.head_count"
+    } else if gguf.kv_type(table, "qwen35.attention.head_count_kv") < 0 {
+      missing = "qwen35.attention.head_count_kv"
+    } else if gguf.kv_type(table, "qwen35.attention.key_length") < 0 {
+      missing = "qwen35.attention.key_length"
+    } else if gguf.kv_type(table, "qwen35.attention.value_length") < 0 {
+      missing = "qwen35.attention.value_length"
+    } else if gguf.kv_type(table, "qwen35.ssm.conv_kernel") < 0 {
+      missing = "qwen35.ssm.conv_kernel"
+    } else if gguf.kv_type(table, "qwen35.ssm.state_size") < 0 {
+      missing = "qwen35.ssm.state_size"
+    } else if gguf.kv_type(table, "qwen35.ssm.group_count") < 0 {
+      missing = "qwen35.ssm.group_count"
+    } else if gguf.kv_type(table, "qwen35.ssm.time_step_rank") < 0 {
+      missing = "qwen35.ssm.time_step_rank"
+    } else if gguf.kv_type(table, "qwen35.ssm.inner_size") < 0 {
+      missing = "qwen35.ssm.inner_size"
+    } else if gguf.kv_type(table, "qwen35.full_attention_interval") < 0 {
+      missing = "qwen35.full_attention_interval"
+    } else if gguf.kv_type(table, "qwen35.rope.dimension_sections") < 0 {
+      missing = "qwen35.rope.dimension_sections"
+    } else if gguf.kv_type(table, "tokenizer.ggml.pre") < 0 {
+      missing = "tokenizer.ggml.pre"
+    } else if gguf.kv_type(table, "tokenizer.ggml.model") < 0 {
+      missing = "tokenizer.ggml.model"
+    } else if gguf.kv_type(table, "tokenizer.ggml.tokens") < 0 {
+      missing = "tokenizer.ggml.tokens"
+    } else if gguf.kv_type(table, "tokenizer.ggml.token_type") < 0 {
+      missing = "tokenizer.ggml.token_type"
+    } else if gguf.kv_type(table, "tokenizer.ggml.merges") < 0 {
+      missing = "tokenizer.ggml.merges"
+    } else if gguf.kv_type(table, "qwen35.feed_forward_length") < 0 {
+      missing = "qwen35.feed_forward_length"
+    } else if gguf.kv_type(table, "qwen35.context_length") < 0 {
+      missing = "qwen35.context_length"
+    } else if gguf.kv_type(table, "qwen35.attention.layer_norm_rms_epsilon") < 0 {
+      missing = "qwen35.attention.layer_norm_rms_epsilon"
+    } else if gguf.kv_type(table, "qwen35.rope.freq_base") < 0 {
+      missing = "qwen35.rope.freq_base"
+    }
+    if missing.len() > 0 {
+      code = "R1_MISSING_KEY".clone()
+      detail = missing.clone()
+      break
+    }
+
+    // Step 5, second pass: the declared value type of every required key, then of every optional key
+    // that is present. `general.file_type` is deliberately absent from this pass: an absent or
+    // non-`UINT32` value is reported as `file_type_present: false`, not as a defect.
+    sections_length := match gguf.kv_array_length(table, "qwen35.rope.dimension_sections") {
+      Some(value) => value,
+      None => -1,
+    }
+    mut mistyped := ""
+    if gguf.kv_type(table, "qwen35.block_count") != TYPE_UINT32 {
+      mistyped = "qwen35.block_count"
+    } else if gguf.kv_type(table, "qwen35.embedding_length") != TYPE_UINT32 {
+      mistyped = "qwen35.embedding_length"
+    } else if gguf.kv_type(table, "qwen35.attention.head_count") != TYPE_UINT32 {
+      mistyped = "qwen35.attention.head_count"
+    } else if gguf.kv_type(table, "qwen35.attention.head_count_kv") != TYPE_UINT32 {
+      mistyped = "qwen35.attention.head_count_kv"
+    } else if gguf.kv_type(table, "qwen35.attention.key_length") != TYPE_UINT32 {
+      mistyped = "qwen35.attention.key_length"
+    } else if gguf.kv_type(table, "qwen35.attention.value_length") != TYPE_UINT32 {
+      mistyped = "qwen35.attention.value_length"
+    } else if gguf.kv_type(table, "qwen35.ssm.conv_kernel") != TYPE_UINT32 {
+      mistyped = "qwen35.ssm.conv_kernel"
+    } else if gguf.kv_type(table, "qwen35.ssm.state_size") != TYPE_UINT32 {
+      mistyped = "qwen35.ssm.state_size"
+    } else if gguf.kv_type(table, "qwen35.ssm.group_count") != TYPE_UINT32 {
+      mistyped = "qwen35.ssm.group_count"
+    } else if gguf.kv_type(table, "qwen35.ssm.time_step_rank") != TYPE_UINT32 {
+      mistyped = "qwen35.ssm.time_step_rank"
+    } else if gguf.kv_type(table, "qwen35.ssm.inner_size") != TYPE_UINT32 {
+      mistyped = "qwen35.ssm.inner_size"
+    } else if gguf.kv_type(table, "qwen35.full_attention_interval") != TYPE_UINT32 {
+      mistyped = "qwen35.full_attention_interval"
+    } else if gguf.kv_type(table, "qwen35.rope.dimension_sections") != TYPE_ARRAY
+      || gguf.kv_array_element_type(table, "qwen35.rope.dimension_sections") != TYPE_INT32
+      || sections_length != 4 {
+      mistyped = "qwen35.rope.dimension_sections"
+    } else if gguf.kv_type(table, "tokenizer.ggml.pre") != TYPE_STRING
+      || !kv_text_decodable(table, "tokenizer.ggml.pre") {
+      mistyped = "tokenizer.ggml.pre"
+    } else if gguf.kv_type(table, "tokenizer.ggml.model") != TYPE_STRING
+      || !kv_text_decodable(table, "tokenizer.ggml.model") {
+      mistyped = "tokenizer.ggml.model"
+    } else if gguf.kv_type(table, "tokenizer.ggml.tokens") != TYPE_ARRAY
+      || gguf.kv_array_element_type(table, "tokenizer.ggml.tokens") != TYPE_STRING {
+      mistyped = "tokenizer.ggml.tokens"
+    } else if gguf.kv_type(table, "tokenizer.ggml.token_type") != TYPE_ARRAY
+      || gguf.kv_array_element_type(table, "tokenizer.ggml.token_type") != TYPE_INT32 {
+      mistyped = "tokenizer.ggml.token_type"
+    } else if gguf.kv_type(table, "tokenizer.ggml.merges") != TYPE_ARRAY
+      || gguf.kv_array_element_type(table, "tokenizer.ggml.merges") != TYPE_STRING {
+      mistyped = "tokenizer.ggml.merges"
+    } else if gguf.kv_type(table, "qwen35.feed_forward_length") != TYPE_UINT32 {
+      mistyped = "qwen35.feed_forward_length"
+    } else if gguf.kv_type(table, "qwen35.context_length") != TYPE_UINT32 {
+      mistyped = "qwen35.context_length"
+    } else if gguf.kv_type(table, "qwen35.attention.layer_norm_rms_epsilon") != TYPE_FLOAT32 {
+      mistyped = "qwen35.attention.layer_norm_rms_epsilon"
+    } else if gguf.kv_type(table, "qwen35.rope.freq_base") != TYPE_FLOAT32 {
+      mistyped = "qwen35.rope.freq_base"
+    } else if gguf.kv_type(table, "qwen35.expert_count") >= 0
+      && gguf.kv_type(table, "qwen35.expert_count") != TYPE_UINT32 {
+      mistyped = "qwen35.expert_count"
+    } else if gguf.kv_type(table, "qwen35.rope.dimension_count") >= 0
+      && gguf.kv_type(table, "qwen35.rope.dimension_count") != TYPE_UINT32 {
+      mistyped = "qwen35.rope.dimension_count"
+    } else if gguf.kv_type(table, "qwen35.rope.scaling.type") >= 0
+      && gguf.kv_type(table, "qwen35.rope.scaling.type") != TYPE_STRING {
+      mistyped = "qwen35.rope.scaling.type"
+    } else if gguf.kv_type(table, "qwen35.rope.scaling.type") == TYPE_STRING
+      && !kv_text_decodable(table, "qwen35.rope.scaling.type") {
+      // Present, declared `STRING`, and not valid UTF-8. `null` is reserved for "the container did
+      // not supply it", so this is a rejection rather than a silently indistinguishable report.
+      mistyped = "qwen35.rope.scaling.type"
+    }
+    if mistyped.len() > 0 {
+      code = "R1_KEY_TYPE_MISMATCH".clone()
+      detail = mistyped.clone()
+      break
+    }
+
+    // Every accessor below is preceded by its presence and class check, so `else { -1 }` is a
+    // fail-closed default that the guards above already exclude.
+    n_layer = match gguf.kv_int(table, "qwen35.block_count") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_embd = match gguf.kv_int(table, "qwen35.embedding_length") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_head = match gguf.kv_int(table, "qwen35.attention.head_count") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_head_kv = match gguf.kv_int(table, "qwen35.attention.head_count_kv") {
+      Some(value) => value,
+      None => -1,
+    }
+    head_dim = match gguf.kv_int(table, "qwen35.attention.key_length") {
+      Some(value) => value,
+      None => -1,
+    }
+    value_dim = match gguf.kv_int(table, "qwen35.attention.value_length") {
+      Some(value) => value,
+      None => -1,
+    }
+    conv_kernel = match gguf.kv_int(table, "qwen35.ssm.conv_kernel") {
+      Some(value) => value,
+      None => -1,
+    }
+    state_size = match gguf.kv_int(table, "qwen35.ssm.state_size") {
+      Some(value) => value,
+      None => -1,
+    }
+    group_count = match gguf.kv_int(table, "qwen35.ssm.group_count") {
+      Some(value) => value,
+      None => -1,
+    }
+    time_step_rank = match gguf.kv_int(table, "qwen35.ssm.time_step_rank") {
+      Some(value) => value,
+      None => -1,
+    }
+    inner_size = match gguf.kv_int(table, "qwen35.ssm.inner_size") {
+      Some(value) => value,
+      None => -1,
+    }
+    full_interval = match gguf.kv_int(table, "qwen35.full_attention_interval") {
+      Some(value) => value,
+      None => -1,
+    }
+    n_ff = match gguf.kv_int(table, "qwen35.feed_forward_length") {
+      Some(value) => value,
+      None => -1,
+    }
+    context_length = match gguf.kv_int(table, "qwen35.context_length") {
+      Some(value) => value,
+      None => -1,
+    }
+    rms_eps_bits = match gguf.kv_float_bits(table, "qwen35.attention.layer_norm_rms_epsilon") {
+      Some(value) => value,
+      None => -1,
+    }
+    rms_eps_text = match gguf.kv_float_text(table, "qwen35.attention.layer_norm_rms_epsilon") {
+      Some(value) => value,
+      None => "null".clone(),
+    }
+    freq_base_bits = match gguf.kv_float_bits(table, "qwen35.rope.freq_base") {
+      Some(value) => value,
+      None => -1,
+    }
+    freq_base_text = match gguf.kv_float_text(table, "qwen35.rope.freq_base") {
+      Some(value) => value,
+      None => "null".clone(),
+    }
+    if gguf.kv_type(table, "general.file_type") == TYPE_UINT32 {
+      file_type = match gguf.kv_int(table, "general.file_type") {
+        Some(value) => value,
+        None => -1,
+      }
+      file_type_present = file_type >= 0
+    }
+    rope_scaling_json = match gguf.kv_string(table, "qwen35.rope.scaling.type") {
+      Some(value) => {
+        scaling_view: str := value
+        gguf.json_string(scaling_view)
+      },
+      None => "null".clone(),
+    }
+
+    // Step 6. Plausibility and derivation, including the hybrid-state shape relations.
+    mut implausible := ""
+    if n_layer < 1 || n_layer > MAX_LAYERS {
+      implausible = "qwen35.block_count"
+    } else if n_embd < 1 || n_embd > MAX_EMBD {
+      implausible = "qwen35.embedding_length"
+    } else if n_head < 1 || n_head > MAX_HEADS {
+      implausible = "qwen35.attention.head_count"
+    } else if n_head_kv < 1 || n_head_kv > n_head || n_head % n_head_kv != 0 {
+      implausible = "qwen35.attention.head_count_kv"
+    } else if head_dim < 1 || head_dim > MAX_EMBD {
+      implausible = "qwen35.attention.key_length"
+    } else if value_dim != head_dim {
+      implausible = "qwen35.attention.value_length"
+    } else if conv_kernel < 1 || conv_kernel > 1024 {
+      implausible = "qwen35.ssm.conv_kernel"
+    } else if state_size < 1 || state_size > 4096 {
+      implausible = "qwen35.ssm.state_size"
+    } else if group_count < 1 || group_count > 4096 {
+      implausible = "qwen35.ssm.group_count"
+    } else if time_step_rank < 1 || time_step_rank > 4096 {
+      implausible = "qwen35.ssm.time_step_rank"
+    } else if inner_size < 1 || inner_size > MAX_FF || inner_size != state_size * time_step_rank {
+      implausible = "qwen35.ssm.inner_size"
+    } else if full_interval != 4 || n_layer % full_interval != 0 {
+      implausible = "qwen35.full_attention_interval"
+    } else if n_ff < 1 || n_ff > MAX_FF {
+      implausible = "qwen35.feed_forward_length"
+    } else if context_length < 1 || context_length > MAX_CONTEXT {
+      implausible = "qwen35.context_length"
+    }
+    if implausible.len() > 0 {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = implausible.clone()
+      break
+    }
+    rope_dim_count = match gguf.kv_int(table, "qwen35.rope.dimension_count") {
+      Some(value) => value,
+      None => head_dim,
+    }
+    rope_dim_source = if gguf.kv_type(table, "qwen35.rope.dimension_count") >= 0 {
+      "metadata".clone()
+    } else {
+      "derived".clone()
+    }
+    if rope_dim_count < 1 || rope_dim_count > head_dim {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = "qwen35.rope.dimension_count".clone()
+      break
+    }
+
+    pre := match gguf.kv_string(table, "tokenizer.ggml.pre") {
+      Some(value) => value,
+      None => "".clone(),
+    }
+    pre_view: str := pre
+    if pre_view != "qwen35" {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = "tokenizer.ggml.pre".clone()
+      break
+    }
+    tokenizer_model := match gguf.kv_string(table, "tokenizer.ggml.model") {
+      Some(value) => value,
+      None => "".clone(),
+    }
+    tokenizer_model_view: str := tokenizer_model
+    if tokenizer_model_view != "gpt2" {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = "tokenizer.ggml.model".clone()
+      break
+    }
+
+    // Step 7. A dense frontend describes a dense model. A file declaring experts is rejected rather
+    // than half-described: a Model IR that silently omitted the expert tensors would satisfy neither
+    // the coverage check nor a consumer. A qwen3-MoE file is not a gpt-oss file, and
+    // `src/frontend_gpt_oss.align` is not a substitute for its own plan.
+    n_expert = match gguf.kv_int(table, "qwen35.expert_count") {
+      Some(value) => value,
+      None => 0,
+    }
+    if n_expert != 0 {
+      code = "R1_UNSUPPORTED_MOE".clone()
+      detail = model_ir.int_text(n_expert)
+      break
+    }
+    break
+  }
+
+  // Step 8. The neutral tensor geometry pass precedes architecture-specific vocabulary checks.
+  geometry := if code.len() == 0 {
+    model_ir.size_tensors(table)
+  } else {
+    model_ir.empty_geometry()
+  }
+
+  mut member_roles: array_builder<string> := array_builder()
+  mut member_names: array_builder<string> := array_builder()
+  mut block_kind_column: array_builder<i64> := array_builder()
+  mut block_layer_column: array_builder<i64> := array_builder()
+  mut block_expert_column: array_builder<i64> := array_builder()
+  mut block_member_start_column: array_builder<i64> := array_builder()
+  mut block_member_end_column: array_builder<i64> := array_builder()
+  mut member_required_column: array_builder<i64> := array_builder()
+  mut member_n_dims_column: array_builder<i64> := array_builder()
+  mut member_dim0_column: array_builder<i64> := array_builder()
+  mut member_dim1_column: array_builder<i64> := array_builder()
+  mut member_dim2_column: array_builder<i64> := array_builder()
+  mut member_dim3_column: array_builder<i64> := array_builder()
+  mut member_slice_index_column: array_builder<i64> := array_builder()
+  mut member_slice_count_column: array_builder<i64> := array_builder()
+  mut plan_blocks := 0
+  mut plan_members := 0
+
+  loop {
+    if code.len() > 0 || geometry.failed { break }
+
+    // Step 9. `n_vocab` is `dims[1]` of `token_embd.weight`, bounded, then cross-checked against the
+    // declared length of `tokenizer.ggml.tokens`. This boundary reads only the array length;
+    // token materialization belongs to the later text runtime.
+    embd_index := gguf.find_tensor(table, "token_embd.weight")
+    if embd_index < 0 {
+      code = "R1_MISSING_TENSOR".clone()
+      detail = "token_embd.weight".clone()
+      break
+    }
+    n_vocab = gguf.tensor_dim(table, embd_index, 1)
+    // `n_vocab` is derived from a tensor dimension, so step 10 cannot falsify it: the expected shape
+    // of `token_embd.weight` is built from the very value that tensor declared, and `[n_embd, 0]`
+    // therefore matches its own expectation exactly. This bound is what makes an implausible
+    // vocabulary a rejection rather than a Model IR no consumer can use.
+    if n_vocab < 1 || n_vocab > MAX_VOCAB {
+      code = "R1_TENSOR_SHAPE_UNEXPECTED".clone()
+      detail = "token_embd.weight".clone()
+      break
+    }
+    token_count := match gguf.kv_array_length(table, "tokenizer.ggml.tokens") {
+      Some(value) => value,
+      None => -1,
+    }
+    type_count := match gguf.kv_array_length(table, "tokenizer.ggml.token_type") {
+      Some(value) => value,
+      None => -1,
+    }
+    merge_count := match gguf.kv_array_length(table, "tokenizer.ggml.merges") {
+      Some(value) => value,
+      None => -1,
+    }
+    if token_count != n_vocab || type_count != n_vocab {
+      code = "R1_VOCAB_MISMATCH".clone()
+      b := builder()
+      b.write_int(token_count)
+      b.write("/")
+      b.write_int(type_count)
+      b.write("!=")
+      b.write_int(n_vocab)
+      detail = b.to_string()
+      break
+    }
+    if merge_count < 1 {
+      code = "R1_KEY_VALUE_IMPLAUSIBLE".clone()
+      detail = "tokenizer.ggml.merges".clone()
+      break
+    }
+
+    hyper := Hyper {
+      n_layer: n_layer,
+      n_embd: n_embd,
+      n_head: n_head,
+      n_head_kv: n_head_kv,
+      head_dim: head_dim,
+      n_ff: n_ff,
+      n_vocab: n_vocab,
+      conv_kernel: conv_kernel,
+      state_size: state_size,
+      group_count: group_count,
+      time_step_rank: time_step_rank,
+      inner_size: inner_size,
+    }
+
+    // The qwen35 block plan, in the fixed emission order, which is not file order:
+    //   index 0                   embedding WeightBlock
+    //   index 1 + 2*L             AttentionBlock, layer L
+    //   index 2 + 2*L             MlpBlock, layer L
+    //   index 1 + 2*n_layer       output WeightBlock
+    total_blocks := 2 * n_layer + 2
+    mut slot := 0
+    loop {
+      if slot >= total_blocks { break }
+      kind := if slot == 0 {
+        0
+      } else if slot == total_blocks - 1 {
+        3
+      } else if (slot - 1) % 2 == 0 {
+        1
+      } else {
+        2
+      }
+      layer := if slot == 0 || slot == total_blocks - 1 { -1 } else { (slot - 1) / 2 }
+      // The neutral kind enumeration numbers `WeightBlock` 0; R1's internal `3` distinguished the
+      // output block's member set, which the plan now carries explicitly.
+      block_kind_column.push(if kind == 3 { 0 } else { kind })
+      block_layer_column.push(layer)
+      block_expert_column.push(-1)
+      block_member_start_column.push(plan_members)
+      mut member_slot := 0
+      loop {
+        role := block_role_at(kind, member_slot, layer >= 0 && (layer + 1) % full_interval == 0)
+        if role < 0 { break }
+        label := role_label(role)
+        member_roles.push(label.clone())
+
+        wanted := role_tensor_name(role, layer)
+        wanted_view: str := wanted
+        // Tied embeddings: an absent `output.weight` puts `token_embd.weight` in two blocks. The
+        // condition is visible in the document as two blocks naming the same tensor, so `model`
+        // gains no field for it, and the coverage accounting counts its bytes once.
+        resolved := if role == 22 && gguf.find_tensor(table, wanted_view) < 0 {
+          "token_embd.weight".clone()
+        } else {
+          wanted.clone()
+        }
+        member_names.push(resolved)
+
+        want := expected_shape(role, hyper)
+        member_required_column.push(1)
+        member_n_dims_column.push(want.n_dims)
+        member_dim0_column.push(want.d0)
+        member_dim1_column.push(want.d1)
+        member_dim2_column.push(1)
+        member_dim3_column.push(1)
+        member_slice_index_column.push(-1)
+        member_slice_count_column.push(-1)
+        plan_members = plan_members + 1
+        member_slot = member_slot + 1
+      }
+      block_member_end_column.push(plan_members)
+      plan_blocks = plan_blocks + 1
+      slot = slot + 1
+    }
+    break
+  }
+
+  architecture_view: str := table.architecture
+  rms_eps_view: str := rms_eps_text
+  freq_base_view: str := freq_base_text
+  rope_dim_source_view: str := rope_dim_source
+  rope_scaling_view: str := rope_scaling_json
+
+  model := builder()
+  model.write("{\"arch\":")
+  model.write(model_ir.json_text_or_null(architecture_view, table.architecture_present))
+  model.write(",\"n_layer\":")
+  model.write_int(n_layer)
+  model.write(",\"n_embd\":")
+  model.write_int(n_embd)
+  model.write(",\"n_head\":")
+  model.write_int(n_head)
+  model.write(",\"n_head_kv\":")
+  model.write_int(n_head_kv)
+  model.write(",\"head_dim\":")
+  model.write_int(head_dim)
+  model.write(",\"n_ff\":")
+  model.write_int(n_ff)
+  model.write(",\"full_attention_interval\":")
+  model.write_int(full_interval)
+  model.write(",\"ssm_conv_kernel\":")
+  model.write_int(conv_kernel)
+  model.write(",\"ssm_state_size\":")
+  model.write_int(state_size)
+  model.write(",\"ssm_group_count\":")
+  model.write_int(group_count)
+  model.write(",\"ssm_time_step_rank\":")
+  model.write_int(time_step_rank)
+  model.write(",\"ssm_inner_size\":")
+  model.write_int(inner_size)
+  model.write(",\"n_vocab\":")
+  model.write_int(n_vocab)
+  model.write(",\"n_expert\":")
+  model.write_int(n_expert)
+  model.write(",\"context_length\":")
+  model.write_int(context_length)
+  model.write(",\"rms_eps\":")
+  model.write(rms_eps_view)
+  model.write(",\"rms_eps_bits\":")
+  rms_eps_hex := model_ir.hex32(rms_eps_bits)
+  rms_eps_hex_view: str := rms_eps_hex
+  model.write(model_ir.json_text_or_null(rms_eps_hex_view, rms_eps_bits >= 0))
+  model.write(",\"rope\":{\"type\":")
+  model.write_int(rope_type)
+  model.write(",\"type_name\":")
+  model.write(model_ir.json_text_or_null("imrope", rope_type >= 0))
+  // `rope.type` is architecture-owned. The source is stated explicitly in the model object.
+  model.write(",\"type_source\":")
+  model.write(model_ir.json_text_or_null("architecture", rope_type >= 0))
+  model.write(",\"freq_base\":")
+  model.write(freq_base_view)
+  model.write(",\"freq_base_bits\":")
+  freq_base_hex := model_ir.hex32(freq_base_bits)
+  freq_base_hex_view: str := freq_base_hex
+  model.write(model_ir.json_text_or_null(freq_base_hex_view, freq_base_bits >= 0))
+  model.write(",\"dim_count\":")
+  model.write_int(rope_dim_count)
+  model.write(",\"dim_count_source\":")
+  model.write(model_ir.json_text_or_null(rope_dim_source_view, rope_dim_source_view.len() > 0))
+  model.write(",\"scaling_type\":")
+  model.write(rope_scaling_view)
+  model.write("}}")
+
+  plan := model_ir.BlockPlan {
+    arch: architecture_view.clone(),
+    arch_present: table.architecture_present,
+    model_json: model.to_string(),
+    n_layer: n_layer,
+    n_embd: n_embd,
+    n_head: n_head,
+    n_head_kv: n_head_kv,
+    head_dim: head_dim,
+    n_ff: n_ff,
+    n_vocab: n_vocab,
+    n_expert: n_expert,
+    context_length: context_length,
+    rope_freq_base_bits: freq_base_bits,
+    rms_eps_bits: rms_eps_bits,
+    file_type: file_type,
+    file_type_present: file_type_present,
+    block_count: plan_blocks,
+    block_kind: block_kind_column.build(),
+    block_layer: block_layer_column.build(),
+    block_expert: block_expert_column.build(),
+    block_member_start: block_member_start_column.build(),
+    block_member_end: block_member_end_column.build(),
+    member_count: plan_members,
+    member_roles: member_roles.build(),
+    member_names: member_names.build(),
+    member_required: member_required_column.build(),
+    member_n_dims: member_n_dims_column.build(),
+    member_dim0: member_dim0_column.build(),
+    member_dim1: member_dim1_column.build(),
+    member_dim2: member_dim2_column.build(),
+    member_dim3: member_dim3_column.build(),
+    member_slice_index: member_slice_index_column.build(),
+    member_slice_count: member_slice_count_column.build(),
+  }
+
+  return model_ir.Prepared {
+    code: code.clone(),
+    detail: detail.clone(),
+    geometry: geometry,
+    plan: plan,
+  }
+}
