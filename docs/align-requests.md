@@ -646,8 +646,7 @@ Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: provider runtime, benchmarks
-Resume condition: provider admits the real block/unsafe/explicit-return `handle_absent` shape and
-  the same-source consumer census is repeated
+Resume condition: repin the policy-v3 provider correction and repeat the same-source consumer census
 Align commit or pull request: design [sanohiro/align#1139](https://github.com/sanohiro/align/pull/1139); implementation [sanohiro/align#1140](https://github.com/sanohiro/align/pull/1140), merge `854815acef2d7e2403532b40d7226aeb4fcbb66a`; provider follow-up [sanohiro/align#1163](https://github.com/sanohiro/align/pull/1163), merge `bc784654`; tracking issue [sanohiro/align#1066](https://github.com/sanohiro/align/issues/1066)
 align-llm verification: scripts/bench-runtime-sampler, scripts/bench-runtime-greedy, disassembly inspection
 
@@ -746,6 +745,19 @@ comment `5781323584`. Request 95 remains `ALIGN_MERGED` pending the provider
 correction and a new census. The greedy owner passed at 139 and 132 us/call;
 the sampler owner passed at 579 and 361 us/call. The spread and changed pin do
 not support a performance claim.
+
+### Align policy-v3 correction (2026-09-23)
+
+PR [#1165](https://github.com/sanohiro/align/pull/1165), merge `be76d7f8`,
+closes the reported provider residual. Policy version 3 admits the exact nested
+`unsafe { return ... }` terminal wrapper without widening the body budget,
+effect authority, extern closure, profile policy or LLVM representation.
+Direct-expression and terminal-wrapper spellings share one authenticated
+consumer body, while extra statements and nonterminal returns remain refused.
+The focused whole/per-unit interface owners, bounded gate, Clippy, and Linux
+x86_64, Linux ARM64 and macOS Apple Silicon CI passed. Request 95 remains
+`ALIGN_MERGED`; repinning and the fresh named call-site census are
+align-llm-owned verification.
 
 ### Request 96: fix invalid empty !dbg metadata attachment in align_codegen_llvm dropdeep loop (2026-09-17)
 
@@ -1370,8 +1382,8 @@ Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all other loop and kernel work; nothing in align-llm can express this fact from source
-Resume condition: provider correction for the borrowed-slice parameter residual in reopened issue #1080, followed by the named client remeasurement
-Align commit or pull request: [sanohiro/align#1111](https://github.com/sanohiro/align/pull/1111) (merge commit `e26a0f48f3b8eade2e5dd14c27f4c21a0e47985b`), closing [sanohiro/align#1080](https://github.com/sanohiro/align/issues/1080)
+Resume condition: repin the provider correction and repeat the named client remeasurement
+Align commit or pull request: [sanohiro/align#1111](https://github.com/sanohiro/align/pull/1111) (merge commit `e26a0f48f3b8eade2e5dd14c27f4c21a0e47985b`); residual correction [sanohiro/align#1166](https://github.com/sanohiro/align/pull/1166), merge `a6c8ce57`; closed issue [sanohiro/align#1080](https://github.com/sanohiro/align/issues/1080)
 align-llm verification: release-image `bic xD, xN, xN, asr #63` count 351 original baseline -> 13 at `d9b0df32`; original whole-program `llvm.smax.i64` baseline 536 not recounted because the current source/module population differs, with the named `kv_plane$all_zero` residual confirmed directly; current-pin greedy/sampler owners pass without a performance claim; scripts/run-tokenizer-smoke passes
 
 Discovered during the Mac-native binary optimization audit of length clamps (`src/kv_plane.align`, `src/tokenizer_qwen2.align`, `src/moe_decode_step.align`):
@@ -1411,6 +1423,17 @@ original 351 baseline. Changing only `view.u8(at)` to direct `view[at]` does
 not alter the missing metadata or clamp, so no application spelling consumes
 the promised fact. Evidence is posted in reopened Align issue #1080 comment
 `5782592151`. The source experiment was reverted.
+
+### Align residual correction (2026-09-23)
+
+PR [#1166](https://github.com/sanohiro/align/pull/1166), merge `a6c8ce57`,
+classifies inline `BytesRead` as the non-retaining element read it is for the
+borrowed-view header proof. The exact `kv_plane.all_zero` owner now has one
+borrowed length load with `!range`, no `llvm.smax`, and no AArch64 `bic` clamp;
+the ownership, mutation and raw/foreign-pointer negatives remain fail-closed.
+Focused owners, the bounded gate, Clippy, and Linux x86_64, Linux ARM64 and
+macOS Apple Silicon CI passed. Request 108 remains `ALIGN_MERGED` until the
+consumer repins and repeats the named release-image measurement.
 
 ### Request 109: fuse the bounds check into one unsigned compare and eliminate monotone-induction in-loop checks (2026-09-18)
 
@@ -1559,8 +1582,8 @@ Priority: high
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all scan, digest and tokenizer work; the lowering cannot be influenced from source, so no application workaround competes with it
-Resume condition: provider correction in reopened issue #1084, followed by the named client remeasurement
-Align commit or pull request: implementation [sanohiro/align#1127](https://github.com/sanohiro/align/pull/1127), merge `5868ed8d`; tracking issue [sanohiro/align#1084](https://github.com/sanohiro/align/issues/1084)
+Resume condition: repin the provider correction and repeat the named client remeasurement
+Align commit or pull request: implementation [sanohiro/align#1127](https://github.com/sanohiro/align/pull/1127), merge `5868ed8d`; residual correction [sanohiro/align#1168](https://github.com/sanohiro/align/pull/1168), merge `8e0e5aae`; closed issue [sanohiro/align#1084](https://github.com/sanohiro/align/issues/1084)
 align-llm verification: `alignc explain-opt` `Cannot vectorize early exit loop` remark counts on the hot modules (191 remarks at 140 sites across 18 source files today), `kv_plane$all_zero` throughput on a 1 MiB buffer (3.12 GB/s today), plus scripts/run-tokenizer-smoke and scripts/run-alignpack-smoke
 
 Discovered during the Mac-native binary optimization audit of loop control shape (`src/kv_plane.align`, `src/layer_forward.align`, `src/moe_layer_forward.align`, `src/model_forward.align`):
@@ -1598,6 +1621,21 @@ only `view.u8(at)` with direct `view[at]` still emits scalar optimized IR with
 Request 108 residual may be causal. Evidence is posted in reopened Align issue
 #1084 comment `5782592441`. `scripts/run-tokenizer-smoke` and
 `scripts/run-alignpack-smoke` pass; no Linux or real-ggml measurement was run.
+
+### Align residual correction (2026-09-23)
+
+PR [#1168](https://github.com/sanohiro/align/pull/1168), merge `8e0e5aae`,
+passes committed Plan 64 width-one byte-guard proofs directly into the
+immediately following loop-facts pass and independently authenticates live
+signed guards. The exact `kv_plane.all_zero` spelling now retains the Request
+108 length fact, reaches the counted-loop rotation, and emits a `<16 x i8>`
+vector body in AArch64-baseline and x86-64-v2 owners. Wider, missing and
+field-mismatched proofs remain fail-closed; zero/one/first/last/no-match
+execution and the original slow trap path are pinned. The MIR unit owners,
+loop/byte/vectorization owners, bounded gate, Clippy, and Linux x86_64, Linux
+ARM64 and macOS Apple Silicon CI passed. Request 112 remains `ALIGN_MERGED`;
+the whole-client remark census, release-image inspection, real-ggml run and 1
+MiB throughput measurement remain align-llm-owned verification.
 
 ### Request 113: add `str` literal patterns to `match`, completing the value-pattern family (2026-09-18)
 
