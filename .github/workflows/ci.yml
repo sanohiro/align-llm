@@ -253,7 +253,7 @@ jobs:
 
       - name: Run supported project checks
         id: supported-checks
-        if: (steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true') || (steps.reuse.outputs.reused == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.align-bundle-cache.outputs.cache-hit != 'true')
+        if: ((steps.reuse.outputs.reused != 'true' && steps.scope.outputs.hosted == 'true') || (steps.reuse.outputs.reused == 'true' && github.event_name == 'push' && github.ref == 'refs/heads/main' && steps.align-bundle-cache.outputs.cache-hit != 'true')) && !(github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/agent/prompt-verifier-hosted-diagnostic')
         env:
           ALIGN_LLM_OUTPUT_DIRECTORY: ${{ runner.temp }}/align-llm-output
           ALIGNC_CACHE: ${{ runner.temp }}/alignc-unit-cache
@@ -267,6 +267,15 @@ jobs:
           export ALIGN_LLM_HOSTED_ALIGNC="$ALIGNC"
           python3 scripts/run-output-summary --phase hosted-checks -- \
             make -j8 ALIGNC="$GITHUB_WORKSPACE/scripts/alignc-hosted-test" hosted-checks
+
+      # One-off #287 diagnosis on this unmerged branch; it gets the job budget without the routine graph.
+      - name: Diagnose focused prompt verifier wall time (issue 287)
+        if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/agent/prompt-verifier-hosted-diagnostic'
+        env:
+          ALIGN_REPO: ${{ github.workspace }}/align
+        run: |
+          test -x "$ALIGNC"
+          time -p scripts/run-prompt-verifier-smoke
 
       - name: Retain supported-check logs
         if: always() && steps.supported-checks.outcome != 'skipped'
