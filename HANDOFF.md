@@ -4,7 +4,7 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Qwen3.5 text capability checkpoint (2026-09-24)
 
-Branch: `agent/qwen35-tokenizer`, based on merged PR #294 (`8e2649e4`). Active user priority is
+Branch: `agent/qwen35-native-text`, based on merged PR #295 (`ea0fb956`). Active user priority is
 staged Qwen3.5 text support before a Qwen3.8-27B attempt. `docs/specs/qwen35-text.md` owns the
 contract.
 
@@ -15,14 +15,13 @@ frontdoor owner passes positive IR/pack/verify and missing-key, wrong-shape, and
 refusals. Existing model IR and alignpack smoke owners pass. One comprehensive Codex review found
 missing tokenizer-vocabulary validation; the full tokenizer metadata class was repaired and its
 focused owners passed again. Final-head preflight and all three hosted checks passed for #294.
-The Qwen3.5 tokenizer CLI is now an independently useful candidate on this branch. Native
-`align-runtime` generation remains the next boundary.
+The Qwen3.5 tokenizer CLI merged in #295 with eight paired real-file cases against pinned
+llama.cpp and all three hosted checks. Native `align-runtime` generation is the active boundary.
 
 Next actions in priority order:
-1. Publish the reviewed tokenizer CLI candidate after exact-head preflight and checks.
-2. Implement the text-only native Qwen3.5 hybrid recurrent/attention session with the
+1. Implement the text-only native Qwen3.5 hybrid recurrent/attention session with the
    recurrent-state closure matrix and pinned llama.cpp oracle in `docs/specs/qwen35-text.md`.
-3. Qualify 0.8B prefill, multistep decode, and provider output; then select a middle-size Qwen3.5
+2. Qualify 0.8B prefill, multistep decode, and provider output; then select a middle-size Qwen3.5
    model before Qwen3.8-27B. No speed claim is active.
 
 Latest local verification: `gmake build` PASS with the documented Homebrew `LIBRARY_PATH`;
@@ -33,12 +32,20 @@ real-model `--model-ir`/`--pack`/`--pack-verify` PASS after review repair;
 `docs/align-requests.md` modification is intentional and
 untouched; this branch is in a separate worktree.
 
-Tokenizer candidate verification: `gmake fmt` and `gmake build` PASS (Homebrew
+Tokenizer merged verification: `gmake fmt` and `gmake build` PASS (Homebrew
 `LIBRARY_PATH` for the latter); `scripts/run-tokenizer-smoke` PASS; real 0.8B
 `scripts/run-qwen35-tokenizer-smoke` PASS on eight paired cases against pinned
 llama.cpp `bb4caa7`; `python3 scripts/check-python-boundary` PASS. One independent
 Codex review found the reverse architecture/profile mismatch; the accepted finding
 was repaired with two synthetic refusals and the affected owners passed again.
+
+Native text investigation: the pinned `qwen35.cpp` and `delta-net-base.cpp` graph confirms six
+full-attention and 18 recurrent layers with a shared post-attention norm/FFN residual order.
+The current shim has no `ggml_rope_multi`, `ggml_ssm_conv`, or `ggml_gated_delta_net` wrappers;
+the existing session graph supports only Qwen2 or OLMoE and has no recurrent state ownership.
+`docs/specs/qwen35-text.md` records the exact 0.8B state geometry and next acceptance oracle.
+No native graph or provider result is claimed yet. This plan and handoff are a local checkpoint;
+the branch is not a publication candidate until the native consumer and its owner tests exist.
 
 ## Codex binary audit checkpoint (2026-09-23)
 

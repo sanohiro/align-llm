@@ -80,6 +80,31 @@ as interchangeable.
 | Cleanup | `runtime_generation` and `runtime_session_io` release session KV, recurrent state, graph, and device allocations on every terminal path; `provider_runtime` closes the request. | The same owner runs two consecutive requests and checks state isolation and allocation counts. |
 | Reused modules | `ggml_ffi` exposes only thin wrappers for shipped pinned ggml operations, with owner state and shapes in Align; existing Qwen2/OLMoE dispatch remains explicit. | `scripts/run-layer-forward-smoke`, `scripts/run-tokenizer-smoke`, and `scripts/run-runtime-provider-smoke` remain regression owners. |
 
+### Pinned reference mapping for the native boundary
+
+The exact `.llama-revision` `bb4caa7540188872173c44d161602d9271386413` has the reference
+in `src/models/qwen35.cpp` and `src/models/delta-net-base.cpp`. Its 0.8B GGUF interleaves six full
+attention layers with 18 recurrent layers. Both start with `attn_norm`, add the attention result to
+the residual, apply `attn_post_norm`, then add the dense SwiGLU FFN result to that residual. The
+full-attention path projects joint Q and gate, normalizes Q and K, applies interleaved M-RoPE with
+four declared sections, computes attention, multiplies by sigmoid(gate), and projects the output.
+The recurrent path projects mixed Q/K/V and z, sigmoid(beta), softplus(alpha + dt) multiplied by
+the stored `ssm_a`, applies causal SSM convolution, L2-normalizes Q and K, runs Gated DeltaNet,
+applies gated RMS norm with z, and projects the output. The native graph must preserve these
+orders; substituting the Qwen2 head or plain RoPE changes the model.
+
+For the first real 0.8B geometry, `ssm_inner_size=2048`, `ssm_group_count=16`,
+`ssm_state_size=128`, `ssm_time_step_rank=16`, and `ssm_conv_kernel=4`. Each recurrent layer has
+`conv_channels=2048+2*16*128=6144`, a three-position convolution history (18,432 elements), and
+a `128*128*16=262,144` element DeltaNet state. These are per-session state, not model weights.
+The plan must validate the four rope sections from source GGUF, model/pack identity, block roles,
+all state extents and the selected ggml op shapes before graph creation. `ggml_rope_multi`,
+`ggml_ssm_conv`, and `ggml_gated_delta_net` exist at the pin but have no align-llm shim symbols;
+adding thin checked ABI wrappers and Align-owned state is implementation work, not an upstream
+Align language request. A same-pin reference transcript should use the 0.8B model and at least
+one prompt that crosses prefill and two decode steps. No performance result is inferred from the
+tokenizer or Model IR checks.
+
 ## First-boundary implementation map
 
 `src/main.align` dispatches all three architecture-sensitive frontdoor verbs to
