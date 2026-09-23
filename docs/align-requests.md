@@ -678,7 +678,7 @@ Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: provider runtime, benchmarks
-Resume condition: repin the policy-v3 provider correction and repeat the same-source consumer census
+Resume condition: disposition the remaining policy exclusions against the recorded aggregate call-count target; the named policy-v3 defect is verified repaired
 Align commit or pull request: design [sanohiro/align#1139](https://github.com/sanohiro/align/pull/1139); implementation [sanohiro/align#1140](https://github.com/sanohiro/align/pull/1140), merge `854815acef2d7e2403532b40d7226aeb4fcbb66a`; provider follow-up [sanohiro/align#1163](https://github.com/sanohiro/align/pull/1163), merge `bc784654`; tracking issue [sanohiro/align#1066](https://github.com/sanohiro/align/issues/1066)
 align-llm verification: scripts/bench-runtime-sampler, scripts/bench-runtime-greedy, disassembly inspection
 
@@ -790,6 +790,33 @@ The focused whole/per-unit interface owners, bounded gate, Clippy, and Linux
 x86_64, Linux ARM64 and macOS Apple Silicon CI passed. Request 95 remains
 `ALIGN_MERGED`; repinning and the fresh named call-site census are
 align-llm-owned verification.
+
+### Codex consumer audit (2026-09-23)
+
+At managed Align `5c7af9e54108fbe3a7b3d698c96a6dbc2da3e9c3`, the same-source
+release/no-ThinLTO image has 283 calls to Align bodies of at most eight
+instructions, down from 544 at `d9b0df32`. All 118 `handle_absent` calls
+disappear; `fused` and `cached_f16` remain absent. Both benchmark owners pass.
+The policy-v3 named defect is repaired, but the recorded aggregate target of
+fewer than 100 short calls is not met, so this request stays `ALIGN_MERGED`.
+
+Several remaining classes are explicit Plan 74 exclusions: guarded bodies,
+aggregate constructors and same-unit constant references. A minimal borrowed
+slice extern wrapper also carries `parallel_transfer=Roots { params: [0],
+captures: [] }`, which the current admission policy excludes; the equivalent
+raw-pointer wrapper inlines. Short final machine code is not proof of
+eligibility, and the remaining 283 sites are not 283 established defects.
+Record the useful non-blocking scope gap here: authenticated transport of
+constant dependencies and eligible borrowed-wrapper transfer summaries is
+compiler-owned. A future extension needs an agreed admission contract,
+positive and refusal compiler owners, and this same-source client census;
+no proposed surface is consumed. Other application work may continue.
+
+The paired greedy and sampler medians are 51 -> 50 and 234 -> 238 us/call;
+their corresponding old/new benchmark binaries are byte-identical and the
+samples drift, so no performance change is claimed. The
+[audit report](../eval/benchmarks/codex-binary-audit-2026-09-23/README.md)
+contains exact identities, the census tool, all samples and scope limits.
 
 ### Request 96: fix invalid empty !dbg metadata attachment in align_codegen_llvm dropdeep loop (2026-09-17)
 
@@ -1442,14 +1469,14 @@ reload. Acceptance is IR shape, closed by a new arch-neutral owner
 
 ### Request 108: attach `!range` to slice/array length loads so a length is known non-negative (2026-09-18)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED not met by the named client witness
+Status: ALIGN_MERGED; named scan repaired, uncached borrowed-header residual remains
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all other loop and kernel work; nothing in align-llm can express this fact from source
-Resume condition: repin the provider correction and repeat the named client remeasurement
+Resume condition: preserve the length fact on uncached borrowed-header loads, then repeat the residual and consumer measurements
 Align commit or pull request: [sanohiro/align#1111](https://github.com/sanohiro/align/pull/1111) (merge commit `e26a0f48f3b8eade2e5dd14c27f4c21a0e47985b`); residual correction [sanohiro/align#1166](https://github.com/sanohiro/align/pull/1166), merge `a6c8ce57`; closed issue [sanohiro/align#1080](https://github.com/sanohiro/align/issues/1080)
-align-llm verification: release-image `bic xD, xN, xN, asr #63` count 351 original baseline -> 13 at `d9b0df32`; original whole-program `llvm.smax.i64` baseline 536 not recounted because the current source/module population differs, with the named `kv_plane$all_zero` residual confirmed directly; current-pin greedy/sampler owners pass without a performance claim; scripts/run-tokenizer-smoke passes
+align-llm verification: same-source syntactic clamp census 50 at `d9b0df32` -> 45 at `5c7af9e5`, superseding the earlier unreproduced count of 13; named `kv_plane$all_zero` is vectorized without a clamp, but the uncached-header residual below remains; greedy/sampler owners and scripts/run-tokenizer-smoke pass
 
 Discovered during the Mac-native binary optimization audit of length clamps (`src/kv_plane.align`, `src/tokenizer_qwen2.align`, `src/moe_decode_step.align`):
 1. A slice or array `len` field is non-negative by construction, but the load that materializes it carries no metadata, so LLVM must assume it can be negative. Every loop bounded by `len` pays an `llvm.smax(len, 0)` clamp, every two-length loop additionally pays `llvm.umin`, and the vectorizer picks a narrower width because the trip count is not provably positive.
@@ -1499,6 +1526,48 @@ the ownership, mutation and raw/foreign-pointer negatives remain fail-closed.
 Focused owners, the bounded gate, Clippy, and Linux x86_64, Linux ARM64 and
 macOS Apple Silicon CI passed. Request 108 remains `ALIGN_MERGED` until the
 consumer repins and repeats the named release-image measurement.
+
+### Codex uncached-header residual (2026-09-23)
+
+At managed Align `5c7af9e54108fbe3a7b3d698c96a6dbc2da3e9c3`, the unchanged
+`kv_plane.all_zero` witness now has one borrowed length load with `!range`,
+no `llvm.smax`, and a `<16 x i8>` vector body. A separate minimal consumer
+still loses the invariant: adding `scratch := [0].to_array()` before the
+same scan and returning `scratch.len() == 1` after it produces an unannotated
+length load and `llvm.smax.i64(len, 0)`. It reproduces in release with default
+runtime LTO and with `--no-rt-lto`, and the raw dev IR has the same omission.
+The real `runtime_sampler.select_values` vocabulary loop likewise reloads
+its borrowed `slice<f32>` header without the range fact.
+
+This is a compiler-owned residual of #1080, not a new source API request.
+Plan 69 I7 and `ViewFactsPlan` state that nonnegative length metadata is
+independent of the whole-body alias/caching gate. At this exact sibling
+revision, `Rvalue::Load` in `align_codegen_llvm/src/lib.rs:13885` falls back
+to a whole aggregate load when `cached_view_header` is absent; the later
+`SliceLen(Value)` extracts the length without passing through the tagged
+`load_view_part` path. The local allocation exposes that fallback. The
+conservative omission of `noalias` and caching is separately allowed by
+Plan 69's whole-body proof; fixing range metadata alone is not claimed to
+guarantee SIMD or remove every sampler reload.
+
+Proposed implementation surface: preserve the independently justified
+nonnegative fact when materializing a typed borrowed view header, including
+the uncached aggregate path, while retaining alias/provenance refusals.
+Acceptance: raw and optimized IR cover the allocation-plus-scan example and
+the real sampler; borrowed length loads keep the fact, and non-length
+layouts and foreign-provenance negatives remain unchanged. This request
+remains non-blocking; all independent application work may continue. No
+application spelling workaround is adopted. The
+[audit report](../eval/benchmarks/codex-binary-audit-2026-09-23/README.md)
+records the reproducer and binary evidence.
+
+The reproducible full-image predicate counts 50 nonnegative clamps in the
+exact identified `d9b0df32` reference image and 45 at `5c7af9e5`; the earlier
+count of 13 does not reproduce and is superseded for this comparison. The
+historic 351 baseline was not revalidated. These syntactic counts do not
+attribute every remaining clamp to a view length; the named residual has
+direct IR evidence. The new finding is recorded locally with an upstream
+comment draft; it has not been posted to #1080 during this audit.
 
 ### Request 109: fuse the bounds check into one unsigned compare and eliminate monotone-induction in-loop checks (2026-09-18)
 
@@ -1642,12 +1711,12 @@ not unconditionally exact, since the index lanes are `i32`.
 
 ### Request 112: lower a counted loop with its trip-count exit at the latch, not the header (2026-09-18)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED not met by the named client witness
+Status: ALIGN_MERGED; named client witness verified, wider consumer census remains
 Priority: high
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all scan, digest and tokenizer work; the lowering cannot be influenced from source, so no application workaround competes with it
-Resume condition: repin the provider correction and repeat the named client remeasurement
+Resume condition: complete the wider remark-census disposition and separately owned real-ggml verification; named scan throughput and smoke owners now pass
 Align commit or pull request: implementation [sanohiro/align#1127](https://github.com/sanohiro/align/pull/1127), merge `5868ed8d`; residual correction [sanohiro/align#1168](https://github.com/sanohiro/align/pull/1168), merge `8e0e5aae`; closed issue [sanohiro/align#1084](https://github.com/sanohiro/align/issues/1084)
 align-llm verification: `alignc explain-opt` `Cannot vectorize early exit loop` remark counts on the hot modules (191 remarks at 140 sites across 18 source files today), `kv_plane$all_zero` throughput on a 1 MiB buffer (3.12 GB/s today), plus scripts/run-tokenizer-smoke and scripts/run-alignpack-smoke
 
@@ -1701,6 +1770,26 @@ loop/byte/vectorization owners, bounded gate, Clippy, and Linux x86_64, Linux
 ARM64 and macOS Apple Silicon CI passed. Request 112 remains `ALIGN_MERGED`;
 the whole-client remark census, release-image inspection, real-ggml run and 1
 MiB throughput measurement remain align-llm-owned verification.
+
+### Codex named consumer verification (2026-09-23)
+
+At managed Align `5c7af9e54108fbe3a7b3d698c96a6dbc2da3e9c3`, the unchanged
+`kv_plane.all_zero` emits a `<16 x i8>` vector body, no `llvm.smax`, and a
+corresponding vector scan in the complete release image. Function-scoped
+`explain-opt` reports vectorization. The unmodified emitted module, lowered
+with LLVM 22 `llc -O2` and linked to an independent C ABI measurement harness,
+scans a 1 MiB zero buffer at median 38.6365 GB/s versus 3.1014 GB/s for the
+old compiler: 12.46x across seven alternating pairs. Every candidate sample
+exceeds the pre-existing 25 GB/s floor. Both arms pass 33,153 zero/nonzero
+cases with an inaccessible page after each view.
+
+`scripts/run-tokenizer-smoke` and `scripts/run-alignpack-smoke` pass (the
+latter: 20,541 assertions; existing window-unavailable injection is N/A).
+The wider historical 18-file remark census is not repeated, and the Linux
+real-ggml owners remain separately assigned. This verifies the named scan
+repair, not full request closure or end-to-end inference performance. Exact
+samples, identities, harness and reproduction commands are in the
+[audit report](../eval/benchmarks/codex-binary-audit-2026-09-23/README.md).
 
 ### Request 113: add `str` literal patterns to `match`, completing the value-pattern family (2026-09-18)
 

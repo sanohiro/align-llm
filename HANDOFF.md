@@ -2,6 +2,47 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Codex binary audit checkpoint (2026-09-23)
+
+Branch: `agent/adopt-align-5c7af9e5`, based on merged PR #292 (`98bbfff1`).
+Both repositories were pulled. The managed pin is now Align
+`5c7af9e54108fbe3a7b3d698c96a6dbc2da3e9c3`, including #1165/#1166/#1168.
+The requested independent macOS audit is complete for its recorded scope:
+
+- Full-image short calls fall 544 -> 283; all 118 `handle_absent` calls vanish.
+  Remaining observed classes include explicit Plan 74 exclusions; the broader
+  Request 95 target of fewer than 100 is not met.
+- `kv_plane.all_zero` now vectorizes. Seven alternating pairs give median
+  3.1014 -> 38.6365 GB/s, exceeding the existing 25 GB/s scan floor. Both
+  kernels pass 33,153 guard-page cases; this is a kernel-only measurement.
+- Request 108 still has a reproduced compiler gap: local allocation disables
+  cached headers and its aggregate-load fallback loses the nonnegative length
+  fact. The real sampler has the same missing range fact. No source workaround
+  is adopted. An upstream comment draft is prepared but not posted.
+- The exact old image has 50 syntactic clamps under the reproducible census,
+  not the previously recorded 13; the new image has 45. This supersedes the
+  earlier count for this comparison. Greedy/sampler binaries are unchanged
+  across these pins; their timings establish no improvement.
+
+Evidence and reproducible fixtures:
+`eval/benchmarks/codex-binary-audit-2026-09-23/README.md` and `results.json`.
+Durable verification: managed-toolchain verification PASS; `gmake check`
+155 units PASS; `gmake build` PASS; tokenizer smoke PASS; alignpack smoke
+20,541 assertions PASS (existing window-unavailable injection N/A); both
+benchmark owners PASS and all 42 paired measurement invocations PASS.
+
+Next actions in priority order:
+1. Coordinate the Request 108 uncached-header correction with Align using the
+   prepared reproducer; repeat its IR owners after a merged correction.
+2. Disposition Request 95's aggregate target against the explicit exclusions,
+   and complete Request 112's wider remark-census qualification when resuming
+   full request closure. Both remain `ALIGN_MERGED`.
+3. Keep Linux real-ggml diagnosis with its separate checkpoint below. The audit
+   supplies no Linux, Metal, CUDA or end-to-end inference performance claim.
+
+The older macOS checkpoint below is historical and superseded by this section;
+its outstanding Linux owners remain active.
+
 ## Linux real-ggml qualification checkpoint
 
 Branch: `agent/linux-real-ggml-qualifications`, based on `main` `6149e993`.

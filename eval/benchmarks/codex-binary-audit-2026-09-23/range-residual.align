@@ -1,0 +1,22 @@
+module range_residual
+
+pub fn plain(borrow view: slice<u8>) -> bool {
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    if view.u8(at) as i64 != 0 { return false }
+    at = at + 1
+  }
+  return true
+}
+
+pub fn allocated(borrow view: slice<u8>) -> bool {
+  scratch := [0].to_array()
+  mut at := 0
+  loop {
+    if at >= view.len() { break }
+    if view.u8(at) as i64 != 0 { return false }
+    at = at + 1
+  }
+  return scratch.len() == 1
+}

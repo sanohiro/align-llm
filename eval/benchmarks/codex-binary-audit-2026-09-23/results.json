@@ -1,0 +1,1209 @@
+{
+  "date": "2026-09-23",
+  "clientRevision": "98bbfff16c94b55e593e01a507612329bdc7c656",
+  "compilerRevisions": {
+    "old": "d9b0df32a831c165b9b070242e168b3f10c721c7",
+    "new": "5c7af9e54108fbe3a7b3d698c96a6dbc2da3e9c3"
+  },
+  "host": {
+    "cpu": "Apple M1",
+    "os": "macOS 27.0",
+    "build": "26A428",
+    "llvm": "22.1.8"
+  },
+  "sha256": {
+    "preexisting-main": "87da7e83c997d3d25a54878e2c1ed39fe258967214fb11ffe7b3156aed5338ec",
+    "new-main": "a08af151893efb0171b48dcd434b6aa6a8f2d5db75c49d78b7d2c004adffcf6a",
+    "kv-old-unit.ll": "3b6420f077037ceb289a28634c86d8ac53037a60a1e034c22707005b3ea91eab",
+    "kv-new-unit.ll": "c204398b3a320adc44a0ff005a2eb8495f43fa03f9f8fc387751de009d8cb345",
+    "kv-old.o": "00b73b268df8488a0f049d7529e3689b83ed2d4e49c2375cb7d4483ecca4a219",
+    "kv-new.o": "5e645c25371150665e555d4761795685b8ce0db24ff45fc906874f9e612cd5ae",
+    "scan-old": "d2165fb8ce41b032f925a4781ab42d95d1572e41f544a490615bce6f674651b4",
+    "scan-new": "953d77cc5c8f577ab514cc6295841d3e79dbf6e58288513785043b10dbf5fc02",
+    "old-bench/runtime_greedy_bench": "158b7d5bb750a2fce109b8ed7ae333b3a159a2fc8c3f584f37a45f91488605c7",
+    "new-bench/runtime_greedy_bench": "158b7d5bb750a2fce109b8ed7ae333b3a159a2fc8c3f584f37a45f91488605c7",
+    "old-bench/runtime_sampler_bench": "07c317135763b55c52b5d770927ca965c9de3e7157ac864a021b58d13e1ddf0a",
+    "new-bench/runtime_sampler_bench": "07c317135763b55c52b5d770927ca965c9de3e7157ac864a021b58d13e1ddf0a"
+  },
+  "census": {
+    "old": {
+      "definitions": 1433,
+      "smallDefinitions": 90,
+      "shortDirectCalls": 544,
+      "shortTargets": [
+        {
+          "name": "ggml_ffi$handle_absent",
+          "count": 118,
+          "instructions": 3
+        },
+        {
+          "name": "ggml_ffi$graph_node_count",
+          "count": 40,
+          "instructions": 5
+        },
+        {
+          "name": "ggml_ffi$slot_ne",
+          "count": 25,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$slot_nbytes",
+          "count": 24,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$graph_compute",
+          "count": 23,
+          "instructions": 5
+        },
+        {
+          "name": "alignpack_read$new_counters",
+          "count": 21,
+          "instructions": 4
+        },
+        {
+          "name": "ggml_ffi$graph_select_slot_range",
+          "count": 21,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$gpu_attention_policy",
+          "count": 16,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$graph_new",
+          "count": 14,
+          "instructions": 1
+        },
+        {
+          "name": "ggml_ffi$gpu_observation_state",
+          "count": 13,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$context_open",
+          "count": 12,
+          "instructions": 1
+        },
+        {
+          "name": "ggml_ffi$graph_context_bytes",
+          "count": 9,
+          "instructions": 1
+        },
+        {
+          "name": "layer_olmoe$claim_ne0",
+          "count": 8,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$buffer_from_host",
+          "count": 7,
+          "instructions": 2
+        },
+        {
+          "name": "prompt_validation_budget$defaults",
+          "count": 7,
+          "instructions": 5
+        },
+        {
+          "name": "ggml_ffi$align_mod",
+          "count": 6,
+          "instructions": 2
+        },
+        {
+          "name": "layer_qwen2$mf_head_output_slot",
+          "count": 6,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$gpu_memory_allocated_bytes",
+          "count": 6,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$slot_data_offset",
+          "count": 5,
+          "instructions": 3
+        },
+        {
+          "name": "layer_olmoe$claim_ne1",
+          "count": 5,
+          "instructions": 6
+        },
+        {
+          "name": "layer_olmoe$mm_head_output_slot",
+          "count": 5,
+          "instructions": 2
+        },
+        {
+          "name": "moe_model_forward$larger",
+          "count": 5,
+          "instructions": 3
+        },
+        {
+          "name": "layer_olmoe$mm_decode_b_output_slot",
+          "count": 5,
+          "instructions": 3
+        },
+        {
+          "name": "layer_olmoe$mm_b_output_slot",
+          "count": 5,
+          "instructions": 3
+        },
+        {
+          "name": "ggml_ffi$gallocr_bytes",
+          "count": 4,
+          "instructions": 1
+        },
+        {
+          "name": "ggml_ffi$gallocr_new",
+          "count": 4,
+          "instructions": 1
+        },
+        {
+          "name": "model_forward$fill_zero",
+          "count": 4,
+          "instructions": 3
+        },
+        {
+          "name": "layer_qwen2$mf_embed_output_slot",
+          "count": 4,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$device_props",
+          "count": 4,
+          "instructions": 5
+        },
+        {
+          "name": "model_forward$printed_count",
+          "count": 4,
+          "instructions": 4
+        },
+        {
+          "name": "moe_model_forward$fill_zero",
+          "count": 4,
+          "instructions": 3
+        },
+        {
+          "name": "moe_model_forward$printed_count",
+          "count": 4,
+          "instructions": 4
+        },
+        {
+          "name": "ggml_ffi$gpu_weight_state",
+          "count": 4,
+          "instructions": 6
+        },
+        {
+          "name": "runtime_qwen$kv_count",
+          "count": 4,
+          "instructions": 6
+        },
+        {
+          "name": "runtime_olmoe$kv_count",
+          "count": 4,
+          "instructions": 6
+        },
+        {
+          "name": "prompt_score$probe_matches_environment",
+          "count": 4,
+          "instructions": 1
+        },
+        {
+          "name": "prompt_artifact_io$read_prompt_activation_result_source",
+          "count": 4,
+          "instructions": 2
+        },
+        {
+          "name": "layer_qwen2$mf_oracle_head_base",
+          "count": 3,
+          "instructions": 4
+        },
+        {
+          "name": "ggml_ffi$slots_high_water",
+          "count": 3,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$alloc_remaining",
+          "count": 3,
+          "instructions": 1
+        },
+        {
+          "name": "layer_qwen2$mf_decode_layer_output_slot",
+          "count": 3,
+          "instructions": 2
+        },
+        {
+          "name": "layer_qwen2$mf_layer_output_slot",
+          "count": 3,
+          "instructions": 2
+        },
+        {
+          "name": "layer_olmoe$mm_oracle_head_base",
+          "count": 3,
+          "instructions": 3
+        },
+        {
+          "name": "layer_olmoe$mm_embed_output_slot",
+          "count": 3,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$gpu_note_failure",
+          "count": 3,
+          "instructions": 6
+        },
+        {
+          "name": "model_ir$find_indexed",
+          "count": 2,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$backend_open",
+          "count": 2,
+          "instructions": 1
+        },
+        {
+          "name": "ggml_ffi$slots_capacity",
+          "count": 2,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$slots_ok",
+          "count": 2,
+          "instructions": 7
+        },
+        {
+          "name": "layer_qwen2$mf_oracle_layer_base",
+          "count": 2,
+          "instructions": 4
+        },
+        {
+          "name": "ggml_ffi$fp_contract_off",
+          "count": 2,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$available",
+          "count": 2,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$table_drift",
+          "count": 2,
+          "instructions": 5
+        },
+        {
+          "name": "layer_olmoe$claim_role",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "moe_model_forward$mm_claim_slot",
+          "count": 2,
+          "instructions": 7
+        },
+        {
+          "name": "ggml_ffi$graph_partition",
+          "count": 2,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$gpu_graph_state",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "ggml_ffi$gpu_host_reserved",
+          "count": 2,
+          "instructions": 2
+        },
+        {
+          "name": "runtime_numeric_stream$reservation",
+          "count": 2,
+          "instructions": 6
+        },
+        {
+          "name": "runtime_qwen$weight_count",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "runtime_olmoe$weight_count",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "ggml_ffi$gpu_graph_lookup",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "ggml_ffi$gpu_graph_context_lookup",
+          "count": 2,
+          "instructions": 6
+        },
+        {
+          "name": "prompt_capture$cursor",
+          "count": 2,
+          "instructions": 4
+        },
+        {
+          "name": "prompt_diagnostic_decode$decode",
+          "count": 2,
+          "instructions": 5
+        },
+        {
+          "name": "alignpack$default_limits",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "ggml_ffi$device_by_kind",
+          "count": 1,
+          "instructions": 5
+        },
+        {
+          "name": "layer_olmoe$mm_oracle_layer_base",
+          "count": 1,
+          "instructions": 3
+        },
+        {
+          "name": "layer_olmoe$mm_oracle_compared_count",
+          "count": 1,
+          "instructions": 4
+        },
+        {
+          "name": "ggml_ffi$device_open",
+          "count": 1,
+          "instructions": 1
+        },
+        {
+          "name": "ggml_ffi$tensor_alignment",
+          "count": 1,
+          "instructions": 5
+        },
+        {
+          "name": "layer_olmoe$mm_decode_a_output_slot",
+          "count": 1,
+          "instructions": 2
+        },
+        {
+          "name": "layer_olmoe$mm_a_output_slot",
+          "count": 1,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$gpu_failure_activity",
+          "count": 1,
+          "instructions": 5
+        },
+        {
+          "name": "ggml_ffi$gpu_core_required",
+          "count": 1,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$gpu_device_staging_consumed",
+          "count": 1,
+          "instructions": 7
+        },
+        {
+          "name": "ggml_ffi$gpu_staging_owned",
+          "count": 1,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$gpu_device_handle",
+          "count": 1,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$gpu_kv_state",
+          "count": 1,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$gpu_input_state",
+          "count": 1,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$gpu_kv_prefill_indexed",
+          "count": 1,
+          "instructions": 7
+        },
+        {
+          "name": "ggml_ffi$gpu_weight_metadata_bytes",
+          "count": 1,
+          "instructions": 1
+        },
+        {
+          "name": "repo_index$select_tests_for_evaluation",
+          "count": 1,
+          "instructions": 8
+        },
+        {
+          "name": "prompt_artifact_io$read_prompt_text_artifact_source",
+          "count": 1,
+          "instructions": 2
+        },
+        {
+          "name": "prompt_artifact_io$read_prompt_evaluation_result_source",
+          "count": 1,
+          "instructions": 2
+        },
+        {
+          "name": "prompt_artifact_io$read_prompt_evaluation_evidence_source",
+          "count": 1,
+          "instructions": 2
+        }
+      ],
+      "syntacticNonnegativeClamps": 50,
+      "floatingSimdInstructions": 4,
+      "floatingSimdFunctions": [
+        "model_forward$compare_transcript_graph",
+        "runtime_generation$greedy_values"
+      ],
+      "named": {
+        "ggml_ffi$handle_absent": {
+          "calls": 118,
+          "instructions": 3
+        },
+        "runtime_attention$fused": {
+          "calls": 0,
+          "instructions": 0
+        },
+        "runtime_attention$cached_f16": {
+          "calls": 0,
+          "instructions": 0
+        },
+        "kv_plane$all_zero": {
+          "calls": 1,
+          "instructions": 12
+        }
+      }
+    },
+    "new": {
+      "definitions": 1406,
+      "smallDefinitions": 67,
+      "shortDirectCalls": 283,
+      "shortTargets": [
+        {
+          "name": "ggml_ffi$slot_ne",
+          "count": 25,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$slot_nbytes",
+          "count": 24,
+          "instructions": 2
+        },
+        {
+          "name": "alignpack_read$new_counters",
+          "count": 21,
+          "instructions": 4
+        },
+        {
+          "name": "ggml_ffi$graph_select_slot_range",
+          "count": 21,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$gpu_observation_state",
+          "count": 13,
+          "instructions": 6
+        },
+        {
+          "name": "layer_olmoe$claim_ne0",
+          "count": 8,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$buffer_from_host",
+          "count": 7,
+          "instructions": 2
+        },
+        {
+          "name": "prompt_validation_budget$defaults",
+          "count": 7,
+          "instructions": 5
+        },
+        {
+          "name": "ggml_ffi$align_mod",
+          "count": 6,
+          "instructions": 2
+        },
+        {
+          "name": "layer_qwen2$mf_head_output_slot",
+          "count": 6,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$gpu_memory_allocated_bytes",
+          "count": 6,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$slot_data_offset",
+          "count": 5,
+          "instructions": 3
+        },
+        {
+          "name": "layer_olmoe$claim_ne1",
+          "count": 5,
+          "instructions": 6
+        },
+        {
+          "name": "layer_olmoe$mm_decode_b_output_slot",
+          "count": 5,
+          "instructions": 3
+        },
+        {
+          "name": "layer_olmoe$mm_b_output_slot",
+          "count": 5,
+          "instructions": 3
+        },
+        {
+          "name": "layer_olmoe$mm_head_output_slot",
+          "count": 5,
+          "instructions": 2
+        },
+        {
+          "name": "moe_model_forward$larger",
+          "count": 5,
+          "instructions": 3
+        },
+        {
+          "name": "model_forward$printed_count",
+          "count": 4,
+          "instructions": 4
+        },
+        {
+          "name": "model_forward$fill_zero",
+          "count": 4,
+          "instructions": 3
+        },
+        {
+          "name": "ggml_ffi$device_props",
+          "count": 4,
+          "instructions": 5
+        },
+        {
+          "name": "layer_qwen2$mf_embed_output_slot",
+          "count": 4,
+          "instructions": 2
+        },
+        {
+          "name": "moe_model_forward$printed_count",
+          "count": 4,
+          "instructions": 4
+        },
+        {
+          "name": "moe_model_forward$fill_zero",
+          "count": 4,
+          "instructions": 3
+        },
+        {
+          "name": "ggml_ffi$gpu_weight_state",
+          "count": 4,
+          "instructions": 6
+        },
+        {
+          "name": "runtime_qwen$kv_count",
+          "count": 4,
+          "instructions": 6
+        },
+        {
+          "name": "runtime_olmoe$kv_count",
+          "count": 4,
+          "instructions": 6
+        },
+        {
+          "name": "prompt_score$probe_matches_environment",
+          "count": 4,
+          "instructions": 1
+        },
+        {
+          "name": "prompt_artifact_io$read_prompt_activation_result_source",
+          "count": 4,
+          "instructions": 2
+        },
+        {
+          "name": "layer_qwen2$mf_oracle_head_base",
+          "count": 3,
+          "instructions": 4
+        },
+        {
+          "name": "ggml_ffi$slots_high_water",
+          "count": 3,
+          "instructions": 2
+        },
+        {
+          "name": "layer_qwen2$mf_decode_layer_output_slot",
+          "count": 3,
+          "instructions": 2
+        },
+        {
+          "name": "layer_qwen2$mf_layer_output_slot",
+          "count": 3,
+          "instructions": 2
+        },
+        {
+          "name": "layer_olmoe$mm_oracle_head_base",
+          "count": 3,
+          "instructions": 3
+        },
+        {
+          "name": "layer_olmoe$mm_embed_output_slot",
+          "count": 3,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$gpu_note_failure",
+          "count": 3,
+          "instructions": 6
+        },
+        {
+          "name": "model_ir$find_indexed",
+          "count": 2,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$slots_capacity",
+          "count": 2,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$slots_ok",
+          "count": 2,
+          "instructions": 7
+        },
+        {
+          "name": "layer_qwen2$mf_oracle_layer_base",
+          "count": 2,
+          "instructions": 4
+        },
+        {
+          "name": "layer_olmoe$claim_role",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "moe_model_forward$mm_claim_slot",
+          "count": 2,
+          "instructions": 7
+        },
+        {
+          "name": "ggml_ffi$graph_partition",
+          "count": 2,
+          "instructions": 2
+        },
+        {
+          "name": "ggml_ffi$gpu_graph_state",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "runtime_numeric_stream$reservation",
+          "count": 2,
+          "instructions": 6
+        },
+        {
+          "name": "runtime_qwen$weight_count",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "runtime_olmoe$weight_count",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "ggml_ffi$gpu_graph_lookup",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "ggml_ffi$gpu_graph_context_lookup",
+          "count": 2,
+          "instructions": 6
+        },
+        {
+          "name": "prompt_capture$cursor",
+          "count": 2,
+          "instructions": 4
+        },
+        {
+          "name": "prompt_diagnostic_decode$decode",
+          "count": 2,
+          "instructions": 5
+        },
+        {
+          "name": "alignpack$default_limits",
+          "count": 2,
+          "instructions": 8
+        },
+        {
+          "name": "ggml_ffi$device_by_kind",
+          "count": 1,
+          "instructions": 5
+        },
+        {
+          "name": "layer_olmoe$mm_oracle_layer_base",
+          "count": 1,
+          "instructions": 3
+        },
+        {
+          "name": "layer_olmoe$mm_decode_a_output_slot",
+          "count": 1,
+          "instructions": 2
+        },
+        {
+          "name": "layer_olmoe$mm_a_output_slot",
+          "count": 1,
+          "instructions": 2
+        },
+        {
+          "name": "layer_olmoe$mm_oracle_compared_count",
+          "count": 1,
+          "instructions": 4
+        },
+        {
+          "name": "ggml_ffi$gpu_failure_activity",
+          "count": 1,
+          "instructions": 5
+        },
+        {
+          "name": "ggml_ffi$gpu_kv_state",
+          "count": 1,
+          "instructions": 6
+        },
+        {
+          "name": "ggml_ffi$gpu_input_state",
+          "count": 1,
+          "instructions": 6
+        },
+        {
+          "name": "repo_index$select_tests_for_evaluation",
+          "count": 1,
+          "instructions": 8
+        },
+        {
+          "name": "prompt_artifact_io$read_prompt_text_artifact_source",
+          "count": 1,
+          "instructions": 2
+        },
+        {
+          "name": "prompt_artifact_io$read_prompt_evaluation_result_source",
+          "count": 1,
+          "instructions": 2
+        },
+        {
+          "name": "prompt_artifact_io$read_prompt_evaluation_evidence_source",
+          "count": 1,
+          "instructions": 2
+        }
+      ],
+      "syntacticNonnegativeClamps": 45,
+      "floatingSimdInstructions": 4,
+      "floatingSimdFunctions": [
+        "model_forward$compare_transcript_graph",
+        "runtime_generation$greedy_values"
+      ],
+      "named": {
+        "ggml_ffi$handle_absent": {
+          "calls": 0,
+          "instructions": 0
+        },
+        "runtime_attention$fused": {
+          "calls": 0,
+          "instructions": 0
+        },
+        "runtime_attention$cached_f16": {
+          "calls": 0,
+          "instructions": 0
+        },
+        "kv_plane$all_zero": {
+          "calls": 1,
+          "instructions": 44
+        }
+      }
+    }
+  },
+  "measurement": {
+    "pairs": 7,
+    "samples": [
+      {
+        "benchmark": "scan",
+        "pair": 0,
+        "position": 0,
+        "arm": "old",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 678034000,
+        "gb_per_s": 3.092989437,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 0,
+        "position": 1,
+        "arm": "new",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 54119000,
+        "gb_per_s": 38.75075297,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 1,
+        "position": 0,
+        "arm": "new",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 54498000,
+        "gb_per_s": 38.481265368,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 1,
+        "position": 1,
+        "arm": "old",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 676613000,
+        "gb_per_s": 3.09948523,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 2,
+        "position": 0,
+        "arm": "old",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 676431000,
+        "gb_per_s": 3.100319175,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 2,
+        "position": 1,
+        "arm": "new",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 54455000,
+        "gb_per_s": 38.511651823,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 3,
+        "position": 0,
+        "arm": "new",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 54279000,
+        "gb_per_s": 38.636526097,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 3,
+        "position": 1,
+        "arm": "old",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 674412000,
+        "gb_per_s": 3.10960066,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 4,
+        "position": 0,
+        "arm": "old",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 673673000,
+        "gb_per_s": 3.113011802,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 4,
+        "position": 1,
+        "arm": "new",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 54384000,
+        "gb_per_s": 38.561929979,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 5,
+        "position": 0,
+        "arm": "new",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 54275000,
+        "gb_per_s": 38.639373561,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 5,
+        "position": 1,
+        "arm": "old",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 673903000,
+        "gb_per_s": 3.111949346,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 6,
+        "position": 0,
+        "arm": "old",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 676194000,
+        "gb_per_s": 3.10140581,
+        "observed": 2020
+      },
+      {
+        "benchmark": "scan",
+        "pair": 6,
+        "position": 1,
+        "arm": "new",
+        "bytes": 1048576,
+        "iterations": 2000,
+        "elapsed_ns": 54245000,
+        "gb_per_s": 38.660742926,
+        "observed": 2020
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 0,
+        "position": 0,
+        "arm": "old",
+        "us_per_call": 88
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 0,
+        "position": 1,
+        "arm": "new",
+        "us_per_call": 84
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 1,
+        "position": 0,
+        "arm": "new",
+        "us_per_call": 71
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 1,
+        "position": 1,
+        "arm": "old",
+        "us_per_call": 64
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 2,
+        "position": 0,
+        "arm": "old",
+        "us_per_call": 58
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 2,
+        "position": 1,
+        "arm": "new",
+        "us_per_call": 54
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 3,
+        "position": 0,
+        "arm": "new",
+        "us_per_call": 50
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 3,
+        "position": 1,
+        "arm": "old",
+        "us_per_call": 50
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 4,
+        "position": 0,
+        "arm": "old",
+        "us_per_call": 48
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 4,
+        "position": 1,
+        "arm": "new",
+        "us_per_call": 49
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 5,
+        "position": 0,
+        "arm": "new",
+        "us_per_call": 48
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 5,
+        "position": 1,
+        "arm": "old",
+        "us_per_call": 48
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 6,
+        "position": 0,
+        "arm": "old",
+        "us_per_call": 51
+      },
+      {
+        "benchmark": "greedy",
+        "pair": 6,
+        "position": 1,
+        "arm": "new",
+        "us_per_call": 49
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 0,
+        "position": 0,
+        "arm": "old",
+        "us_per_call": 361
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 0,
+        "position": 1,
+        "arm": "new",
+        "us_per_call": 303
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 1,
+        "position": 0,
+        "arm": "new",
+        "us_per_call": 256
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 1,
+        "position": 1,
+        "arm": "old",
+        "us_per_call": 238
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 2,
+        "position": 0,
+        "arm": "old",
+        "us_per_call": 234
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 2,
+        "position": 1,
+        "arm": "new",
+        "us_per_call": 234
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 3,
+        "position": 0,
+        "arm": "new",
+        "us_per_call": 238
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 3,
+        "position": 1,
+        "arm": "old",
+        "us_per_call": 234
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 4,
+        "position": 0,
+        "arm": "old",
+        "us_per_call": 235
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 4,
+        "position": 1,
+        "arm": "new",
+        "us_per_call": 234
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 5,
+        "position": 0,
+        "arm": "new",
+        "us_per_call": 233
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 5,
+        "position": 1,
+        "arm": "old",
+        "us_per_call": 233
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 6,
+        "position": 0,
+        "arm": "old",
+        "us_per_call": 232
+      },
+      {
+        "benchmark": "sampler",
+        "pair": 6,
+        "position": 1,
+        "arm": "new",
+        "us_per_call": 238
+      }
+    ],
+    "summaries": {
+      "scan": {
+        "metric": "gb_per_s",
+        "old": 3.10140581,
+        "new": 38.636526097
+      },
+      "greedy": {
+        "metric": "us_per_call",
+        "old": 51,
+        "new": 50
+      },
+      "sampler": {
+        "metric": "us_per_call",
+        "old": 234,
+        "new": 238
+      }
+    }
+  }
+}
