@@ -4,10 +4,10 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current checkpoint
 
-Branch: `agent/align-loop-drop-consumer-verification`, based on merged PR #288
-at `b31bec4c`. Active capability: finish the remaining macOS-only Align
-consumer qualifications without taking the separately owned Linux/real-ggml
-measurements.
+Branch: `agent/record-align-residual-corrections`, based on merged PR #289 at
+`d2dab0b6`. Active capability: adopt the merged Align residual corrections and
+repeat the remaining macOS-only consumer qualifications without taking the
+separately owned Linux/real-ggml measurements.
 
 Completed work:
 - PR #288 merged the managed `d9b0df32` pin and request reconciliation; all
@@ -21,11 +21,15 @@ Completed work:
 - Replacing only `view.u8(at)` with direct `view[at]` leaves the same residual,
   so the experiment was reverted. Exact evidence is posted to reopened Align
   #1080 (comment `5782592151`) and #1084 (comment `5782592441`).
+- Align PRs #1165, #1166 and #1168 merged the provider corrections for #1066,
+  #1080 and #1084. They are recorded in `docs/align-requests.md` but are not yet
+  adopted by the managed align-llm toolchain.
 
 Next actions in priority order:
-1. Await provider corrections for #1080 and #1084, then repeat the function-
-   scoped IR and release-image checks.
-2. Await the provider correction for #1066, then repeat its same-source census.
+1. Repin the managed toolchain to a single Align revision containing PRs #1165,
+   #1166 and #1168, then materialize and verify it.
+2. Repeat the #1066 same-source call-site census and the #1080/#1084 function-
+   scoped IR, release-image and throughput checks.
 3. Leave Linux/real-ggml owners, including #1065/#1075 and the decode owners of
    Requests 106/109, to the separately assigned capable environment.
 
@@ -36,8 +40,9 @@ Latest durable verification:
   --no-rt-lto --export all_zero`: residual reproduced at exact `d9b0df32`.
 
 Blockers and decisions:
-- Requests 108 and 112 remain `ALIGN_MERGED`; their named client acceptance is
-  not met. Do not adopt a source-style workaround.
+- Requests 95, 108 and 112 remain `ALIGN_MERGED`; their provider corrections
+  are available, but named client acceptance still requires a managed repin and
+  remeasurement. Do not adopt a source-style workaround.
 - Whole-program verbose remark counts use a different source/module population
   from the original eight-module baseline and are not a valid performance
   comparison. No performance claim is made.
