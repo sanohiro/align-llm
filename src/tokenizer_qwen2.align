@@ -1868,6 +1868,27 @@ fn prompt_size_detail(system_bytes: i64, user_bytes: i64, attempted: i64) -> str
   return detail.to_string()
 }
 
+// The pinned llama.cpp Jinja `trim` aliases `strip`, whose default uses byte `isspace` in the
+// C locale. Unlike Align's core trim, it includes vertical tab; UTF-8 whitespace stays intact.
+fn qwen35_chat_space(value: u8) -> bool {
+  return value == 9 || value == 10 || value == 11 || value == 12 || value == 13 || value == 32
+}
+
+fn qwen35_chat_trim(value: str) -> str {
+  bytes := value.bytes()
+  mut begin := 0
+  mut end := bytes.len()
+  loop {
+    if begin >= end || !qwen35_chat_space(bytes[begin]) { break }
+    begin = begin + 1
+  }
+  loop {
+    if end <= begin || !qwen35_chat_space(bytes[end - 1]) { break }
+    end = end - 1
+  }
+  return value[begin..end]
+}
+
 fn render_prompt(system: str, user: str, olmo: bool, qwen35: bool, bos_token: str) -> string {
   output := builder()
   if olmo {
@@ -1879,10 +1900,10 @@ fn render_prompt(system: str, user: str, olmo: bool, qwen35: bool, bos_token: st
     output.write("\n<|assistant|>\n")
   } else if qwen35 {
     output.write("<|im_start|>system\n")
-    output.write(system.trim())
+    output.write(qwen35_chat_trim(system))
     output.write("<|im_end|>\n")
     output.write("<|im_start|>user\n")
-    output.write(user.trim())
+    output.write(qwen35_chat_trim(user))
     output.write("<|im_end|>\n")
     output.write("<|im_start|>assistant\n<think>\n\n</think>\n\n")
   } else {
@@ -1971,8 +1992,8 @@ fn prepare_snapshot(
   }
 
   mut attempted := -1
-  prompt_system_bytes := if template_qwen35 { system.trim().len() } else { system_bytes }
-  prompt_user_bytes := if template_qwen35 { user.trim().len() } else { user_bytes }
+  prompt_system_bytes := if template_qwen35 { qwen35_chat_trim(system).len() } else { system_bytes }
+  prompt_user_bytes := if template_qwen35 { qwen35_chat_trim(user).len() } else { user_bytes }
   fixed_bytes := if template_qwen35 { QWEN35_PROMPT_FIXED_BYTES } else { PROMPT_FIXED_BYTES }
   if !template_olmo && prompt_system_bytes <= I64_MAX - prompt_user_bytes {
     combined := prompt_system_bytes + prompt_user_bytes
@@ -2342,8 +2363,12 @@ pub fn prepare_retained(borrow session: GenerationTokenizer, system: str, user: 
   fixed := if session.loaded.tokenizer.olmo {
     OLMO_PROMPT_FIXED_BYTES + session.bos_token.len()
   } else if session.loaded.tokenizer.qwen35 { QWEN35_PROMPT_FIXED_BYTES } else { PROMPT_FIXED_BYTES }
-  prompt_system_bytes := if session.loaded.tokenizer.qwen35 { system.trim().len() } else { system.len() }
-  prompt_user_bytes := if session.loaded.tokenizer.qwen35 { user.trim().len() } else { user.len() }
+  prompt_system_bytes := if session.loaded.tokenizer.qwen35 {
+    qwen35_chat_trim(system).len()
+  } else { system.len() }
+  prompt_user_bytes := if session.loaded.tokenizer.qwen35 {
+    qwen35_chat_trim(user).len()
+  } else { user.len() }
   if system.len() > MAX_PROMPT_BYTES || user.len() > MAX_PROMPT_BYTES
     || prompt_system_bytes + prompt_user_bytes + fixed > MAX_PROMPT_BYTES {
     return Err(Error.Invalid)

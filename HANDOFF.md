@@ -17,7 +17,7 @@ missing tokenizer-vocabulary validation; the full tokenizer metadata class was r
 focused owners passed again. Final-head preflight and all three hosted checks passed for #294.
 The Qwen3.5 tokenizer CLI merged in #295 with eight paired real-file cases against pinned
 llama.cpp and all three hosted checks. This branch also implements the existing
-`--prepare-prompt` command for the 0.8B text-only chat template, with three paired prompt cases.
+`--prepare-prompt` command for the 0.8B text-only chat template, with five paired prompt cases.
 Native `align-runtime` generation is the active boundary after this independently useful input
 capability is published.
 
@@ -63,11 +63,15 @@ align-llm bottleneck fix or optimization claim.
 Prompt checkpoint verification: `gmake fmt` PASS; `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib
 gmake build` PASS; `scripts/run-tokenizer-smoke` PASS with the same library path;
 `scripts/run-qwen35-tokenizer-smoke` PASS with the recorded real GGUF and pinned `llama-tokenize`
-(eight token and three prompt cases); `python3 scripts/check-python-boundary` PASS;
+(eight token and five prompt cases); `python3 scripts/check-python-boundary` PASS;
 `git diff --check` PASS. A plain `gmake build` and plain tokenizer smoke failed only because this
 host's Homebrew `libcrypto` is outside the default linker search path; both passed with the
 documented library path. The prompt capability is a candidate for review and publication; the
 native graph remains pending.
+The pinned llama.cpp Jinja renderer was invoked directly with a vocabulary-only model load:
+it removes vertical tab and retains U+3000. The review's claim that it trims Unicode whitespace
+is rejected on that source and execution evidence; the valid vertical-tab mismatch was repaired
+and added to the owner cases. No new native graph result is claimed.
 
 ## Codex binary audit checkpoint (2026-09-23)
 

@@ -55,13 +55,18 @@ intermediate tokenizer boundary only; the native text matrix remains open.
 The existing `--prepare-prompt GGUF SYSTEM USER` command accepts the exact 0.8B GGUF chat
 template SHA-256 `273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80`.
 It renders one leading system message, one user message, and an assistant generation prefix with
-thinking disabled. Both contents are trimmed as the template specifies. Tools, images, message
+thinking disabled. Both contents use the pinned llama.cpp Jinja `strip` behavior: C-locale byte
+`isspace` removes ASCII space, tab, line breaks, form feed, and vertical tab at the ends; UTF-8
+whitespace such as U+3000 remains. Tools, images, message
 history, and thinking-enabled prompts remain outside this command's two-message text contract.
+The pinned `common_chat_templates_apply` Jinja renderer was also invoked directly with a
+vocabulary-only load: it removed U+000B vertical tabs and retained leading/trailing U+3000 in
+both message contents, confirming the actual implementation rather than generic Jinja behavior.
 The full source template is 7,755 bytes, so metadata admission permits 8,192 bytes but still
 requires its exact hash and the `gpt2/qwen35` profile. This boundary retains the command arity,
 JSON token result, existing `R7` errors, and tokenizer ownership. The rendered fixed length is
 99 bytes before trimmed content; input files remain bounded independently and the final prompt
-retains the existing 1 MiB ceiling. `scripts/run-qwen35-tokenizer-smoke` pairs three real-file
+retains the existing 1 MiB ceiling. `scripts/run-qwen35-tokenizer-smoke` pairs five real-file
 system/user cases with pinned llama.cpp tokenization of the template's text-only branch;
 `scripts/run-tokenizer-smoke` retains Qwen2/OLMoE prompt and error coverage. This supplies a
 stable prompt oracle for the native graph; it makes no inference or speed claim.

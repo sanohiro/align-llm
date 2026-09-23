@@ -27,6 +27,8 @@ PROMPT_CASES = (
     ("plain", "System note", "Say hi"),
     ("trimmed", "  System note  \n", "  Say hi  \n"),
     ("empty-system", "", "日本語で答えて"),
+    ("vertical-tab", "\vSystem note\v", "\vSay hi\v"),
+    ("unicode-space", "\u3000System note\u3000", "\u3000Say hi\u3000"),
 )
 
 
@@ -77,10 +79,12 @@ def main() -> None:
             prompt_path = work / f"{label}-prompt.txt"
             system_path.write_text(system, encoding="utf-8")
             user_path.write_text(user, encoding="utf-8")
-            # The pinned GGUF template's text-only, tools-absent, thinking-disabled branch.
+            # The pinned llama.cpp Jinja `strip` uses byte isspace, including vertical tab.
+            # It preserves UTF-8 whitespace such as U+3000.
+            strip_chars = " \t\n\v\f\r"
             rendered = (
-                "<|im_start|>system\n" + system.strip() + "<|im_end|>\n"
-                "<|im_start|>user\n" + user.strip() + "<|im_end|>\n"
+                "<|im_start|>system\n" + system.strip(strip_chars) + "<|im_end|>\n"
+                "<|im_start|>user\n" + user.strip(strip_chars) + "<|im_end|>\n"
                 "<|im_start|>assistant\n<think>\n\n</think>\n\n"
             )
             prompt_path.write_text(rendered, encoding="utf-8")
