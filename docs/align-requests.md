@@ -657,6 +657,20 @@ correctness gate prevents an accepted performance claim. Request 94 remains
 `ALIGN_MERGED`; the Linux C' discrepancy needs bounded diagnosis before this
 owner can verify it.
 
+### Align-side local triage (2026-09-23)
+
+On macOS arm64, the same Qwen GGUF and managed Align `d9b0df32` reproduce a
+C' byte mismatch for prompt 1 at k=1; the other three prompts are byte-identical
+at k=1. The decode and single-shot prefill hashes are each identical across
+`dev` and `release`. A copy of align-llm source immediately before the fixed-
+array migration, built with that same Align pin and run against the same pack,
+transcript, and ggml object, produces exactly the same decode and prefill hashes
+as the migrated source. The tested C' mismatch therefore predates the fixed-
+array conversion. A separate 38/72-element, 13/14-column Align program matched
+fixed-array indexed stores to dynamic builder results in release single-unit
+and per-unit execution; its LLVM records contain inline `[38 x i64]` and
+`[72 x i64]` fields. These results do not turn the failed Linux owner into PASS.
+
 ### Request 95: default ThinLTO on --profile release or cross-module function inlining (2026-09-17)
 
 Status: ALIGN_MERGED
@@ -1214,6 +1228,19 @@ in the measurement branch; a focused one-prompt, 16-step rerun passes the
 shared-object check and the full resident-dense measurement owner. The four-prompt
 runtime acceptance remains blocked by prompt 3's C' result; it does not
 contradict the completed static scalar-ABI comparison.
+
+### Align-side local triage (2026-09-23)
+
+On macOS arm64 with the same OLMoE GGUF and managed Align `d9b0df32`, the
+three-prompt, 16-step capable owner passes its gates. Prompt 3 at k=16 has
+prefill/decode argmax 4149/4149, whereas the Linux x86_64 report has
+15741/4149. The exact GGUF SHA-256 matches the Linux record. This isolates a
+platform-dependent prefill result; it does not negate the controlled scalar-
+ABI call-boundary A/B already recorded above. The pre-ABI compiler pin could
+not provide a comparable current-client run on this host (early exit 133), so
+no numerical attribution to that compiler change is claimed. The Linux owner
+remains failed pending an exact-platform cause, with no accepted performance
+claim.
 
 ### Request 104: lay out every sum type as a tagged union, including `Option` and `Result` (2026-09-18)
 
