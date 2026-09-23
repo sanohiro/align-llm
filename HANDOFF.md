@@ -4,9 +4,10 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Qwen3.5 text capability checkpoint (2026-09-24)
 
-Branch: `agent/qwen35-native-text`, based on merged PR #295 (`ea0fb956`). Active user priority is
-staged Qwen3.5 text support before a Qwen3.8-27B attempt. `docs/specs/qwen35-text.md` owns the
-contract.
+Branch: `agent/qwen35-next`, based on merged PR #296 (`53d5a183`). Active user priority is
+staged Qwen3.5 native text correctness and measured optimization, then a normally usable
+OpenAI-compatible local endpoint before a Qwen3.8-27B attempt. `docs/specs/qwen35-text.md`
+owns the model contract; `docs/specs/roadmap.md` owns the delivery order.
 
 The first independently usable boundary is merged: `--model-ir`, `--pack`, and
 `--pack-verify` accept a real Qwen3.5-0.8B Q4_0 GGUF. Its SHA-256 is recorded in the plan;
@@ -16,10 +17,9 @@ refusals. Existing model IR and alignpack smoke owners pass. One comprehensive C
 missing tokenizer-vocabulary validation; the full tokenizer metadata class was repaired and its
 focused owners passed again. Final-head preflight and all three hosted checks passed for #294.
 The Qwen3.5 tokenizer CLI merged in #295 with eight paired real-file cases against pinned
-llama.cpp and all three hosted checks. This branch also implements the existing
-`--prepare-prompt` command for the 0.8B text-only chat template, with five paired prompt cases.
-Native `align-runtime` generation is the active boundary after this independently useful input
-capability is published.
+llama.cpp and all three hosted checks. Text-only `--prepare-prompt` merged in #296 with five
+paired prompt cases, reference bottleneck diagnostics, review disposition, final-head preflight
+and all three hosted checks. Native `align-runtime` generation is the active boundary.
 
 Next actions in priority order:
 1. Implement the text-only native Qwen3.5 hybrid recurrent/attention session with the
@@ -27,7 +27,10 @@ Next actions in priority order:
 2. Qualify 0.8B prefill, multistep decode, and provider output. Profile the passing native session
    against the reference bottleneck checkpoint, then select and measure one optimization under
    its declared paired floor. GPU kernel attribution needs a separate trace with shader rows.
-3. Select a middle-size Qwen3.5 model before Qwen3.8-27B. No speed claim is active.
+3. Settle and implement an Align-owned OpenAI-compatible local HTTP endpoint on the passing 0.8B
+   runtime, beginning with a real `POST /v1/chat/completions` request. The existing OpenAI provider
+   is a client. `docs/specs/roadmap.md` owns this new delivery order.
+4. Select a middle-size Qwen3.5 model before Qwen3.8-27B. No speed claim is active.
 
 Latest local verification: `gmake build` PASS with the documented Homebrew `LIBRARY_PATH`;
 `python3 scripts/qwen35_frontdoor_smoke.py` PASS; `scripts/run-model-ir-smoke` PASS;
@@ -60,22 +63,14 @@ quantized GEMV as the dominant active stack, while the Metal trace did not provi
 `docs/backend-parity.md` records backend coverage. The native path remains prerequisite to any
 align-llm bottleneck fix or optimization claim.
 
-Prompt checkpoint verification: `gmake fmt` PASS; `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib
-gmake build` PASS; `scripts/run-tokenizer-smoke` PASS with the same library path;
-`scripts/run-qwen35-tokenizer-smoke` PASS with the recorded real GGUF and pinned `llama-tokenize`
-(eight token and five prompt cases); `python3 scripts/check-python-boundary` PASS;
-`git diff --check` PASS. A plain `gmake build` and plain tokenizer smoke failed only because this
-host's Homebrew `libcrypto` is outside the default linker search path; both passed with the
-documented library path. The prompt capability is a candidate for review and publication; the
-native graph remains pending.
-The pinned llama.cpp Jinja renderer was invoked directly with a vocabulary-only model load:
-it removes vertical tab and retains U+3000. The review's claim that it trims Unicode whitespace
-is rejected on that source and execution evidence; the valid vertical-tab mismatch was repaired
-and added to the owner cases. No new native graph result is claimed.
-The first full preflight failed during a temporary Git pack copy in an unrelated source-bundle
-smoke; rerun passed that phase but exposed the prompt fixture's former 4,096-byte template-size
-boundary. The fixture now checks exactly 8,192 and 8,193 bytes, and `scripts/run-prompt-smoke`
-passes. Final-head preflight remains to be rerun after this repair.
+Prompt verification at final head `ae68abc6`: `gmake fmt`, managed build with the documented
+Homebrew library path, `scripts/run-tokenizer-smoke`, `scripts/run-prompt-smoke`, the real-model
+`scripts/run-qwen35-tokenizer-smoke` (eight token and five prompt cases), Python boundary check,
+and exact-head `scripts/pre-pr --owner-test qwen35-prompt` all passed. All three hosted checks
+passed and #296 merged as `53d5a183`. The pinned llama.cpp Jinja renderer was called directly:
+it removes vertical tab and retains U+3000; the review's Unicode-trimming assertion was rejected
+and the actual vertical-tab mismatch repaired. No Qwen3.5 native inference or align-llm speed
+result is claimed by #296.
 
 ## Codex binary audit checkpoint (2026-09-23)
 

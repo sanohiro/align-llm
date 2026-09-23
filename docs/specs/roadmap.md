@@ -22,14 +22,20 @@ align-runtimeは、重要な技術spikeと小さな実装を並行して進め�
 
 ### Active Qwen3.5 text lane (2026-09-24)
 
-The user prioritized staged Qwen3.5 support over another pinned-ggml speed intervention. The
-authoritative contract is [Qwen3.5 text support](qwen35-text.md). Real GGUF Model IR and alignpack
-merged in #294 as an independently usable validation/layout consumer. Next deliver the existing
-tokenize/detokenize CLI for the same real GGUF with pinned-reference parity. Then deliver native text
-prefill and decode through `align-runtime`, starting with 0.8B and verifying against the pinned
-llama.cpp reference. Scale to a Qwen3.5 middle size before attempting Qwen3.8-27B. Vision, MTP,
-and MoE remain outside the first text boundary. This priority does not relax the Align product
-ownership and Python boundary rules below.
+The user prioritized staged Qwen3.5 support and a normally usable local endpoint before a
+Qwen3.8-27B attempt. The authoritative model contract is [Qwen3.5 text support](qwen35-text.md).
+Real GGUF Model IR/alignpack merged in #294 and tokenizer CLI parity merged in #295. The existing
+`--prepare-prompt` command gains the pinned 0.8B text chat template in the next consumer boundary.
+Then deliver native `align-runtime` prefill and multistep decode for 0.8B with pinned llama.cpp
+parity, locate its actual bottleneck, and attempt only measured optimizations that meet the
+declared floor. Once that path is stable, expose it for normal local use through an Align-owned
+OpenAI-compatible HTTP server, beginning with `POST /v1/chat/completions` and a real Qwen3.5
+request. Settle the endpoint contract and its lifecycle/security/error/streaming closure before
+coding; the existing `ModelProvider` OpenAI adapter is a client, not this server. Prefer the
+shipped Align `std.http` server and the existing native provider/session; do not delegate normal
+serving to Python or a C++ product wrapper. Scale to a Qwen3.5 middle size after the usable 0.8B
+path, then consider Qwen3.8-27B. Vision, MTP, and MoE remain later consumers. This priority does
+not relax the Align product ownership and Python boundary rules below.
 
 ### Active priority override: Align product ownership (2026-09-09)
 
