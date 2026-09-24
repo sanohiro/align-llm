@@ -3292,6 +3292,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/run-qwen35-generation-smoke",
+      "classification": "INDEPENDENT_ORACLE",
+      "behavior": "Compare real Qwen3.5 Align provider output and token counts with pinned llama.cpp greedy output.",
+      "reachability": "Focused developer qualification only; never part of normal product execution.",
+      "substitution": "Invokes the product and an independent llama.cpp oracle; does not implement shipping inference.",
+      "python_reason": "Independent paired model output comparison remains outside Align product execution.",
+      "target": "Retain as a real-model Qwen3.5 generation qualification oracle.",
+      "migration": "N/A",
+      "acceptance": "QWEN35_GGUF=... QWEN35_ALIGNPACK=... QWEN35_MODEL_IR=... QWEN35_RUNTIME_OPTIONS=... QWEN35_LLAMA_ORACLE=... QWEN35_LLAMA_TOKENIZE=... QWEN35_LIB_PATH=... python3 scripts/run-qwen35-generation-smoke; python3 scripts/check-python-boundary",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/run-qwen35-tokenizer-smoke",
       "classification": "INDEPENDENT_ORACLE",
       "behavior": "Compare Qwen3.5 Align tokenizer CLI with the pinned llama.cpp tokenizer on a local real GGUF.",

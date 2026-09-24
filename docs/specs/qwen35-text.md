@@ -297,6 +297,16 @@ sampler, logits readback, provider startup, and a complete request. Its candidat
 improvement is below the 15% material floor and supports no faster-than-llama
 claim. CPU and CUDA remain unmeasured pending native session qualification.
 
+The local one-shot `--provider align-runtime` Metal path now loads the source-bound
+pack, allocates fresh attention and recurrent state, runs 128-token prompt chunks,
+and greedily decodes with two parity graphs. `scripts/run-qwen35-generation-smoke`
+compares its output and token counts with the pinned Metal llama.cpp oracle for
+31-, 200-, and 330-token prompts, each with three generated tokens; all pass.
+The latter two cases cross a chunk boundary and a 256-to-512 attention-width
+boundary. This verifies a single request at a time. `--runtime-session`, state
+isolation across requests, failure injection, a complete-request speed comparison,
+and contemporary llama.cpp comparison remain open before native text publication.
+
 Align-owned full-model graph construction remains implementation work, not an
 upstream Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the

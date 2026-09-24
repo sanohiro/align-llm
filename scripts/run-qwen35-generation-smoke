@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Compare the real Qwen3.5 provider with pinned Metal llama.cpp greedy output."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_SHA256 = "57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf"
+SYSTEM = "You are a coding assistant. Return a concise patch-oriented answer."
+CASES = (("short", "Hello", 31), ("chunked", "hello " * 170, 200),
+         ("wider-attention", "hello " * 300, 330))
+
+
+def run(args: list[str], *, env: dict[str, str] | None = None) -> bytes:
+    completed = subprocess.run(args, cwd=ROOT, env=env, capture_output=True,
+                               timeout=180, check=False)
+    if completed.returncode:
+        raise RuntimeError(f"{args[0]} exited {completed.returncode}: {completed.stderr[-1000:]!r}")
+    return completed.stdout
+
+
+def main() -> None:
+    model = Path(os.environ["QWEN35_GGUF"]).resolve()
+    pack = Path(os.environ["QWEN35_ALIGNPACK"]).resolve()
+    geometry = Path(os.environ["QWEN35_MODEL_IR"]).resolve()
+    options = Path(os.environ["QWEN35_RUNTIME_OPTIONS"]).resolve()
+    oracle = Path(os.environ["QWEN35_LLAMA_ORACLE"]).resolve()
+    reference = Path(os.environ["QWEN35_LLAMA_TOKENIZE"]).resolve()
+    probe = subprocess.run([str(reference), "--version"], capture_output=True,
+                           timeout=30, check=False)
+    version = (probe.stdout + probe.stderr).decode("utf-8")
+    if probe.returncode or "commit bb4caa7" not in version:
+        raise RuntimeError("llama.cpp reference is not the pinned revision")
+    digest = hashlib.sha256()
+    with model.open("rb") as source:
+        for part in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(part)
+    if digest.hexdigest() != MODEL_SHA256:
+        raise RuntimeError("GGUF differs from the recorded 0.8B Q4_0 file")
+    environment = os.environ.copy()
+    environment["DYLD_LIBRARY_PATH"] = os.environ["QWEN35_LIB_PATH"]
+    reference_environment = environment.copy()
+    reference_environment.pop("DYLD_LIBRARY_PATH", None)
+    with tempfile.TemporaryDirectory(prefix="qwen35-generation-") as temporary:
+        work = Path(temporary)
+        system_path = work / "system.txt"
+        system_path.write_text(SYSTEM, encoding="utf-8")
+        for label, user, prompt_length in CASES:
+            user_path = work / f"{label}-user.txt"
+            user_path.write_text(user, encoding="utf-8")
+            prompt_path = work / f"{label}-prompt.json"
+            prompt = json.loads(run([str(ROOT / "main"), "--prepare-prompt",
+                                     str(model), str(system_path), str(user_path)]))
+            if len(prompt) != prompt_length:
+                raise RuntimeError(f"{label}: unexpected prompt length {len(prompt)}")
+            prompt_path.write_text(json.dumps(prompt, separators=(",", ":")) + "\n",
+                                   encoding="utf-8")
+            expected = json.loads(run([str(oracle), str(model), "--greedy-ids",
+                                       str(prompt_path), "3"], env=reference_environment))
+            expected_path = work / f"{label}-expected.json"
+            expected_path.write_text(json.dumps(expected), encoding="utf-8")
+            expected_text = run([str(ROOT / "main"), "--detokenize", str(model),
+                                 str(expected_path), "render-control"]).decode("utf-8")
+            result_path = work / f"{label}-result.json"
+            run([str(ROOT / "main"), "--provider", "align-runtime", str(model), str(pack),
+                 str(geometry), user, str(result_path), "3", "--runtime-options", str(options)],
+                env=environment)
+            actual = json.loads(result_path.read_text(encoding="utf-8"))
+            if (actual["status"] != "ok" or actual["output"] != expected_text
+                    or actual["prompt_tokens"] != prompt_length
+                    or actual["completion_tokens"] != 3
+                    or actual["total_tokens"] != prompt_length + 3):
+                raise RuntimeError(f"{label}: provider result differs from pinned llama.cpp: {actual!r}")
+            print(f"{label}: {prompt_length} prompt tokens, 3 matching greedy tokens")
+
+
+if __name__ == "__main__":
+    main()

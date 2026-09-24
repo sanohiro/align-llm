@@ -4,6 +4,7 @@
 #include <cmath>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <string>
 #include <vector>
@@ -42,16 +43,45 @@ static bool compare(const char * path, const float * reference, int32_t count,
     return max_abs <= 0.01 && actual_top == reference_top;
 }
 
+static bool read_ids(const char * path, std::vector<llama_token> & ids) {
+    std::ifstream input(path, std::ios::binary);
+    if (!input) return false;
+    const std::string json((std::istreambuf_iterator<char>(input)), std::istreambuf_iterator<char>());
+    const char * cursor = json.c_str();
+    if (*cursor++ != '[') return false;
+    while (*cursor != ']') {
+        char * end = nullptr;
+        const long value = std::strtol(cursor, &end, 10);
+        if (end == cursor || value < 0 || value > 2147483647 || ids.size() >= 512) return false;
+        ids.push_back(static_cast<llama_token>(value));
+        cursor = end;
+        if (*cursor == ',') ++cursor;
+        else if (*cursor != ']') return false;
+    }
+    return !ids.empty() && cursor[1] == '\n' && cursor[2] == '\0';
+}
+
 int main(int argc, char ** argv) {
     const bool benchmark = (argc == 3 || argc == 4) && std::string(argv[2]) == "--decode-bench";
     const bool prefill = (argc == 4 || argc == 5) &&
         std::string(argv[2]) == "--prefill-128";
-    if (argc != 4 && argc != 6 && !benchmark && !prefill) {
+    const bool greedy = argc == 5 && std::string(argv[2]) == "--greedy-ids";
+    if (argc != 4 && argc != 6 && !benchmark && !prefill && !greedy) {
         std::fprintf(stderr,
                      "usage: qwen35_llama_logits_oracle GGUF ALIGN_FIRST ALIGN_SECOND "
                      "[ALIGN_THIRD ALIGN_FOURTH] | GGUF --decode-bench [ALIGN_FINAL] "
-                     "| GGUF --prefill-128 ALIGN_FINAL [ALIGN_DECODE]\n");
+                     "| GGUF --prefill-128 ALIGN_FINAL [ALIGN_DECODE] "
+                     "| GGUF --greedy-ids PROMPT_IDS COUNT\n");
         return 2;
+    }
+    std::vector<llama_token> prompt;
+    int32_t greedy_count = 0;
+    if (greedy) {
+        if (!read_ids(argv[3], prompt)) return 2;
+        char * end = nullptr;
+        const long parsed = std::strtol(argv[4], &end, 10);
+        if (*end != '\0' || parsed < 1 || parsed > 128) return 2;
+        greedy_count = static_cast<int32_t>(parsed);
     }
     llama_backend_init();
     if (!ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU)) {
@@ -63,9 +93,9 @@ int main(int argc, char ** argv) {
     llama_model * model = llama_model_load_from_file(argv[1], model_params);
     if (!model) return 3;
     llama_context_params context_params = llama_context_default_params();
-    context_params.n_ctx = 512;
-    context_params.n_batch = 512;
-    context_params.n_ubatch = 512;
+    context_params.n_ctx = greedy ? 1024 : 512;
+    context_params.n_batch = greedy ? 1024 : 512;
+    context_params.n_ubatch = greedy ? 1024 : 512;
     context_params.n_threads = 4;
     context_params.n_threads_batch = 4;
     context_params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
@@ -77,6 +107,27 @@ int main(int argc, char ** argv) {
     const int32_t vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
     const llama_token tokens[4] = {0, 23066, 0, 0};
     bool passed = vocab == 248320;
+    if (passed && greedy) {
+        passed = llama_decode(context, llama_batch_get_one(prompt.data(),
+            static_cast<int32_t>(prompt.size()))) == 0;
+        std::printf("[");
+        for (int32_t step = 0; passed && step < greedy_count; ++step) {
+            const float * logits = llama_get_logits(context);
+            if (!logits || !std::isfinite(logits[0])) { passed = false; break; }
+            int32_t top = 0;
+            for (int32_t i = 1; i < vocab; ++i) {
+                if (!std::isfinite(logits[i])) { passed = false; break; }
+                if (logits[i] > logits[top]) top = i;
+            }
+            if (!passed) break;
+            std::printf("%s%d", step == 0 ? "" : ",", top);
+            if (step + 1 < greedy_count) {
+                llama_token next = top;
+                passed = llama_decode(context, llama_batch_get_one(&next, 1)) == 0;
+            }
+        }
+        std::printf("]\n");
+    }
     if (passed && prefill) {
         std::vector<llama_token> prompt(128, 0);
         prompt[1] = 23066;
@@ -100,7 +151,7 @@ int main(int argc, char ** argv) {
             passed = logits && compare(argv[4], logits, vocab, 128);
         }
     }
-    for (int32_t step = 0; passed && !prefill && step < (benchmark ? 4 : argc - 2); ++step) {
+    for (int32_t step = 0; passed && !prefill && !greedy && step < (benchmark ? 4 : argc - 2); ++step) {
         llama_token token = tokens[step];
         if (llama_decode(context, llama_batch_get_one(&token, 1)) != 0) {
             passed = false;

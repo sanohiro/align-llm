@@ -4,6 +4,7 @@ import alignpack
 import decode_step
 import moe_decode_step
 import frontend_qwen
+import frontend_qwen35
 import frontend_olmoe
 import gguf
 import model
@@ -14,6 +15,8 @@ import runtime_observation
 import runtime_generation
 import runtime_options
 import runtime_pack_identity
+import runtime_qwen35_generation
+import runtime_qwen35_geometry
 import tokenizer_qwen2
 import core.json
 import std.fs
@@ -196,8 +199,12 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
   architecture: str := snapshot.table.architecture
   olmoe := snapshot.table.architecture_present && architecture == "olmoe"
   qwen := snapshot.table.architecture_present && architecture == "qwen2"
-  if (!olmoe && !qwen) || (qwen && config.runtime_cache_budget_bytes != 0)
-    || (qwen && request.temperature != 0.0)
+  qwen35 := snapshot.table.architecture_present && architecture == "qwen35"
+  seeded := match request.seed { Some(_) => true, None => false }
+  if (!olmoe && !qwen && !qwen35)
+    || (qwen35 && mode == 2)
+    || ((qwen || qwen35) && config.runtime_cache_budget_bytes != 0)
+    || ((qwen || qwen35) && (request.temperature != 0.0 || seeded))
     || (olmoe && config.runtime_cache_budget_bytes <= 0) {
     return Err(Error.Invalid)
   }
@@ -207,6 +214,8 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
   if !valid_path(recorded.path) { return Err(Error.Invalid) }
   ir := if olmoe {
     frontend_olmoe.build_model_ir(snapshot.table, recorded.path)
+  } else if qwen35 {
+    frontend_qwen35.build_model_ir(snapshot.table, recorded.path)
   } else {
     frontend_qwen.build_model_ir(snapshot.table, recorded.path)
   }
@@ -224,6 +233,12 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
     alignment: source_identity.alignment,
     total_tensor_bytes: source_identity.total_tensor_bytes,
     header_region_sha256: source_identity.header_region_sha256.clone(),
+  }
+  qwen35_sections := if qwen35 {
+    gguf.snapshot_i32_array(snapshot, "qwen35.rope.dimension_sections")?
+  } else {
+    mut empty: array_builder<i64> := array_builder()
+    empty.build()
   }
   prepared := tokenizer_qwen2.prepare_generation_snapshot(snapshot, request.system, request.user)?
   if !tokenizer_ok(prepared.status) { return Err(Error.Invalid) }
@@ -250,7 +265,13 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
         prefetch: options.prefetch.clone(),
       }
       device := runtime_device.open(options)?
-      ids := if mode == 2 {
+      ids := if qwen35 {
+        g := runtime_qwen35_geometry.parse(geometry_view, qwen35_sections)?
+        runtime_qwen35_generation.generate(device, generation_options,
+          config.runtime_pack_path, runtime_source_identity, geometry_view, g,
+          prepared.token_ids, prepared.eog_token_ids,
+          if forced { forced_ids.len() + 1 } else { request.max_tokens }, forced_ids)?
+      } else if mode == 2 {
         if olmoe {
           runtime_generation.generate_olmoe_diagnostic(
             device, generation_options, config.runtime_pack_path, runtime_source_identity,
@@ -294,6 +315,7 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
       ids
     }
     None => {
+      if qwen35 { return Err(Error.Invalid) }
       generated := if mode != 0 {
         if olmoe {
           sampled := match request.seed { Some(_) => true, None => false }

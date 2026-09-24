@@ -153,6 +153,20 @@ It remains slower in all five pairs and misses the 15% material floor. The full 
 sampler, contemporary reference, and request latency remain open. Next: check batch shape and
 failure cases, finish the native provider session, then profile and compare complete requests.
 The branch remains an unpublished implementation checkpoint.
+The local one-shot Qwen3.5 Metal provider now produces text and exact token counts.
+`scripts/run-qwen35-generation-smoke` passes three generated tokens for 31-, 200-,
+and 330-token prompts against a same-pin Metal llama.cpp greedy oracle. The latter
+two cover multiple prefill chunks and the 256-to-512 attention-width transition.
+`provider_runtime` refuses Qwen3.5 numeric trace mode until that stream is supported.
+Next: refactor the native path into a retained `--runtime-session` with fresh state
+per request; test two requests, early EOG, malformed input and failure recovery;
+then measure paired complete requests and profile any remaining speed gap.
+Checkpoint verification: `./scripts/alignc check src/provider_runtime.align`,
+`gmake fmt`, `./scripts/check-format`, the real-shim `./scripts/alignc build
+src/main.align`, `python3 scripts/check-python-boundary`, and
+`scripts/run-qwen35-generation-smoke` with the pinned Metal oracle all pass;
+`git diff --check` passes. The provider remains Metal-only and has no
+complete-request performance claim.
 The callback's CPU and Metal builds produce materially different logits, so the Metal oracle is
 the valid comparison for this Metal owner. Remaining: longer-prompt output parity,
 session/provider routing, then paired speed
