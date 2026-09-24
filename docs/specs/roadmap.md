@@ -22,8 +22,9 @@ align-runtimeは、重要な技術spikeと小さな実装を並行して進め�
 
 ### Active Qwen3.5 text lane (2026-09-24)
 
-The user prioritized staged Qwen3.5 support and a normally usable local endpoint before a
-Qwen3.8-27B attempt. The authoritative model contract is [Qwen3.5 text support](qwen35-text.md).
+The user prioritized very fast local inference on small and middle-size Qwen3.5 models, with a
+normally usable local endpoint. Large models are deferred. The authoritative model contract is
+[Qwen3.5 text support](qwen35-text.md).
 Real GGUF Model IR/alignpack merged in #294, tokenizer CLI parity in #295, and the pinned
 0.8B text chat template for `--prepare-prompt` in #296. Deliver native `align-runtime` prefill
 and multistep decode for 0.8B with pinned llama.cpp
@@ -33,8 +34,12 @@ OpenAI-compatible HTTP server, beginning with `POST /v1/chat/completions` and a 
 request. The endpoint contract and closure are in [local OpenAI-compatible serving](openai-local-serving.md);
 the existing `ModelProvider` OpenAI adapter is a client, not this server. Prefer the
 shipped Align `std.http` server and the existing native provider/session; do not delegate normal
-serving to Python or a C++ product wrapper. Scale to a Qwen3.5 middle size after the usable 0.8B
-path, then consider Qwen3.8-27B. Vision, MTP, and MoE remain later consumers. This priority does
+serving to Python or a C++ product wrapper. After the usable 0.8B path, select a Qwen3.5 dense
+2B or 4B checkpoint that fits the local host and repeat correctness, profiling, and measured
+optimization at that size. A 9B checkpoint is conditional on memory and observed speed. Do not
+schedule Qwen3.5-35B-A3B or Qwen3.8-27B while the small and middle-size speed objective is
+active. Vision, MTP, and Qwen3.5 MoE remain later consumers. Existing OLMoE qualifications can
+regress the generic MoE path but do not establish Qwen3.5 MoE correctness. This priority does
 not relax the Align product ownership and Python boundary rules below.
 
 ### Active priority override: Align product ownership (2026-09-09)

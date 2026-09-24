@@ -5,8 +5,9 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 ## Qwen3.5 text capability checkpoint (2026-09-24)
 
 Branch: `agent/qwen35-next`, based on merged PR #296 (`53d5a183`). Active user priority is
-staged Qwen3.5 native text correctness and measured optimization, then a normally usable
-OpenAI-compatible local endpoint before a Qwen3.8-27B attempt. `docs/specs/qwen35-text.md`
+staged Qwen3.5 native text correctness and measured optimization on small and middle-size models,
+then a normally usable OpenAI-compatible local endpoint. Large models, including Qwen3.8-27B and
+Qwen3.5-35B-A3B, are deferred. `docs/specs/qwen35-text.md`
 owns the model contract; `docs/specs/roadmap.md` owns the delivery order. This branch has
 unpublished local geometry-admission and HTTP-contract checkpoints; neither is a standalone
 publication candidate.
@@ -37,7 +38,9 @@ Next actions in priority order:
    `std.http` already sends SSE with one-write `send_event` and outbound providers already
    consume SSE; `pkg.web` also has fast stream routes but no handler application-state argument.
    The missing piece is a native per-token yield (`provider_runtime.stream` currently refuses).
-4. Select a middle-size Qwen3.5 model before Qwen3.8-27B. No speed claim is active.
+4. Select a locally viable Qwen3.5 dense 2B or 4B checkpoint and repeat parity, profiling, and
+   measured optimization. Treat 9B as conditional on local memory and speed; defer 27B and 35B
+   MoE. Existing small OLMoE checks cover generic MoE only. No speed claim is active.
 
 Latest local verification: `gmake build` PASS with the documented Homebrew `LIBRARY_PATH`;
 `python3 scripts/qwen35_frontdoor_smoke.py` PASS; `scripts/run-model-ir-smoke` PASS;
