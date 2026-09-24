@@ -41,7 +41,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     return Err(Error.Invalid)
   }
   embedding := member(pack, index, embed_block, 0, counters)?
-  if embedding.role_id != 12 { return Err(Error.Invalid) }
+  if embedding.role_id != 12 || !runtime_qwen35_roles.member_shape_matches(geometry, embedding) {
+    return Err(Error.Invalid)
+  }
   mut next_slot := 1
   mut layer := 0
   loop {
@@ -63,6 +65,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       within := if row < attention_count { row } else { row - attention_count }
       record := member(pack, index, selected, within, counters)?
       if record.role_id != runtime_qwen35_roles.role_id(geometry, layer, row)?
+        || !runtime_qwen35_roles.member_shape_matches(geometry, record)
         || selected.kind != runtime_qwen35_roles.block_kind(geometry, layer, row)?
         || runtime_qwen35_roles.layer_slot(geometry, layer, row)? != next_slot {
         return Err(Error.Invalid)
@@ -79,7 +82,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   }
   norm := member(pack, index, head, 0, counters)?
   mut output := member(pack, index, head, 1, counters)?
-  if !runtime_qwen35_roles.tied_output_matches(geometry, embedding, norm, output) {
+  if !runtime_qwen35_roles.member_shape_matches(geometry, norm)
+    || !runtime_qwen35_roles.member_shape_matches(geometry, output)
+    || !runtime_qwen35_roles.tied_output_matches(geometry, embedding, norm, output) {
     return Err(Error.Invalid)
   }
   output.source_offset = output.source_offset + 32

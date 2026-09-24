@@ -89,8 +89,15 @@ The real 0.8B alignpack has 321 member records but 320 unique source tensors: it
 member aliases the embedding's source range. `runtime_qwen35_roles` now maps each layer's 11 or
 14 members to consecutive device slots, shares the embedding slot for output, and checks the
 alias source offset/type/shape/size. Its real-pack smoke passes every role/block and slot,
-including an injected alias mismatch. Next, build the validated load plan and resident
-allocation from this map, then construct the recurrent and full-attention graphs.
+including an injected alias mismatch. The validated load plan and resident allocation now
+follow this map; graph construction remains next.
+The next local checkpoint validates every real-pack member shape, builds a 320-weight and
+84-resident-tensor Metal allocation plan, and uploads all unique 0.8B weights with the pinned
+ggml bundle. `runtime_qwen35_load_smoke` passes on the real Model IR, GGUF, pack, and pinned
+Metal bundle: 320 weights uploaded, 84 resident tensors defined, and the tied output omitted
+from the upload byte count. The stub GPU cannot define quantized tensors, so this owner uses
+the real backend. Native Qwen3.5 graph execution, oracle parity, and any speed claim remain
+open. Next implement the recurrent and full-attention graphs and connect state publication.
 The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
 src/main.align` (3,134 functions), `gmake build` with the documented Homebrew
 `LIBRARY_PATH`, `./scripts/check-format`, `git diff --check`, C syntax

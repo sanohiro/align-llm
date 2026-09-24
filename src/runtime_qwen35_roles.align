@@ -6,6 +6,8 @@ import runtime_qwen35_geometry
 pub KIND_ATTENTION := 1
 pub KIND_MLP := 2
 
+pub Shape { n_dims: i64, ne0: i64, ne1: i64 }
+
 fn valid(borrow g: runtime_qwen35_geometry.Geometry) -> bool =
 runtime_qwen35_geometry.valid_layer_pattern(g)
 
@@ -92,3 +94,50 @@ valid(g) && embedding.role_id == 12 && norm.role_id == 13 && output.role_id == 1
   && output.dim0 == embedding.dim0 && output.dim1 == embedding.dim1
   && output.dim2 == 1 && output.dim3 == 1
   && output.nbytes == embedding.nbytes
+
+pub fn expected_shape(
+  borrow g: runtime_qwen35_geometry.Geometry, role: i64,
+) -> Result<Shape, Error> {
+  if !valid(g) { return Err(Error.Invalid) }
+  if role == 12 || role == 14 {
+    return Ok(Shape { n_dims: 2, ne0: g.n_embd, ne1: g.n_vocab })
+  }
+  if role == 0 || role == 29 || role == 13 {
+    return Ok(Shape { n_dims: 1, ne0: g.n_embd, ne1: 1 })
+  }
+  if role == 1 {
+    return Ok(Shape { n_dims: 2, ne0: g.n_embd, ne1: 2 * g.n_head * g.head_dim })
+  }
+  if role == 27 || role == 28 {
+    return Ok(Shape { n_dims: 1, ne0: g.head_dim, ne1: 1 })
+  }
+  if role == 3 || role == 5 {
+    return Ok(Shape { n_dims: 2, ne0: g.n_embd, ne1: g.n_head_kv * g.head_dim })
+  }
+  if role == 7 {
+    return Ok(Shape { n_dims: 2, ne0: g.n_head * g.head_dim, ne1: g.n_embd })
+  }
+  channels := g.ssm_inner_size + 2 * g.ssm_group_count * g.ssm_state_size
+  if role == 30 { return Ok(Shape { n_dims: 2, ne0: g.n_embd, ne1: channels }) }
+  if role == 31 { return Ok(Shape { n_dims: 2, ne0: g.n_embd, ne1: g.ssm_inner_size }) }
+  if role == 32 { return Ok(Shape { n_dims: 2, ne0: g.ssm_conv_kernel, ne1: channels }) }
+  if role == 33 || role == 34 {
+    return Ok(Shape { n_dims: 1, ne0: g.ssm_time_step_rank, ne1: 1 })
+  }
+  if role == 35 || role == 36 {
+    return Ok(Shape { n_dims: 2, ne0: g.n_embd, ne1: g.ssm_time_step_rank })
+  }
+  if role == 37 { return Ok(Shape { n_dims: 1, ne0: g.ssm_state_size, ne1: 1 }) }
+  if role == 38 { return Ok(Shape { n_dims: 2, ne0: g.ssm_inner_size, ne1: g.n_embd }) }
+  if role == 9 || role == 10 { return Ok(Shape { n_dims: 2, ne0: g.n_embd, ne1: g.n_ff }) }
+  if role == 11 { return Ok(Shape { n_dims: 2, ne0: g.n_ff, ne1: g.n_embd }) }
+  return Err(Error.Invalid)
+}
+
+pub fn member_shape_matches(
+  borrow g: runtime_qwen35_geometry.Geometry, borrow record: alignpack_read.PackMember,
+) -> bool {
+  shape := expected_shape(g, record.role_id) else { return false }
+  return record.n_dims == shape.n_dims && record.dim0 == shape.ne0
+    && record.dim1 == shape.ne1 && record.dim2 == 1 && record.dim3 == 1
+}

@@ -128,6 +128,8 @@ For the first real 0.8B geometry, `ssm_inner_size=2048`, `ssm_group_count=16`,
 `ssm_state_size=128`, `ssm_time_step_rank=16`, and `ssm_conv_kernel=4`. Each recurrent layer has
 `conv_channels=2048+2*16*128=6144`, a three-position convolution history (18,432 elements), and
 a `128*128*16=262,144` element DeltaNet state. These are per-session state, not model weights.
+The native admission requires `ssm_inner_size / ssm_time_step_rank == ssm_state_size`, so the
+declared state tensor shape and computed state extent cannot diverge.
 For the first one-sequence text session, retain six attention KV pairs and two copies each of
 the 18 recurrent layers' convolution history and DeltaNet state: 12 + 18 * 4 = 84 resident
 F32 tensors. A recurrent layer's convolution state has shape `[3, 6144, 1]` and its DeltaNet
@@ -149,8 +151,12 @@ copy of the tied embedding; it is a loader ownership rule, not a measured speed 
 `runtime_qwen35_roles` now numbers the 320 unique loaded weights in graph order: embedding at
 zero, 14 recurrent or 11 full-attention members per layer, and output norm last. Its owning
 real-pack smoke compares all 321 member role ids and block kinds, checks consecutive weight
-slots, and refuses an altered tied-output source offset. Device allocation and upload are the
-next part of this boundary; role admission alone is not a runnable model.
+slots and shapes, and refuses an altered tied-output source offset.
+`runtime_qwen35_load` validates the real pack order, role, source alias, shape, and logical byte
+count before planning 320 backend-aligned weights and 84 resident F32 tensors. Its focused 0.8B
+Metal owner at the exact pinned ggml commit uploads all 320 unique weights, defines all resident
+tensors, and confirms the uploaded byte count excludes the repeated output member. This verifies
+load ownership and allocation only; graph execution and numeric parity remain open.
 The plan must validate the four rope sections from source GGUF, model/pack identity, block roles,
 all state extents and the selected ggml op shapes before graph creation. `ggml_rope_multi`,
 `ggml_ssm_conv`, and `ggml_gated_delta_net` exist at the pin and now have checked shim symbols.

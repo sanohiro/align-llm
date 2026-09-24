@@ -80,6 +80,7 @@ pub fn parse(text: str, borrow sections: array<i64>) -> Result<Geometry, Error> 
       || !bounded(state_size, 1, 4096) || !bounded(groups, 1, 4096)
       || !bounded(dt_rank, 1, 4096) || !bounded(inner, 1, 16777216)
       || n_head % n_head_kv != 0 || inner % dt_rank != 0
+      || inner / dt_rank != state_size
       || rope_dims < 2 || rope_dims > head_dim || rope_dims % 2 != 0 {
       return Err(Error.Invalid)
     }

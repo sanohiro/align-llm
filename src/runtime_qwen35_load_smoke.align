@@ -1,0 +1,54 @@
+module runtime_qwen35_load_smoke
+
+import ggml_ffi
+import gguf
+import runtime_qwen35_geometry
+import runtime_qwen35_load
+import runtime_qwen_load
+import runtime_memory
+import runtime_kv
+import runtime_weights
+import std.fs
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 6 { return Err(Error.Invalid) }
+  source := fs.read_file(args[1])?
+  snapshot := gguf.open_snapshot(args[2])?
+  g := runtime_qwen35_geometry.parse_snapshot(source, snapshot)?
+  pack := fs.open_rw(args[3])?
+  owner := ggml_ffi.gpu_device_open(
+    "metal", "MTL0", args[4], args[5], 2147483648, 2147483648,
+  ) else { return Err(Error.Invalid) }
+  plan := runtime_qwen35_load.build_plan_file_capacity_bounded(owner, pack, g, 512)?
+  if plan.count != 320 || plan.ggml_type.len() != 320
+    || plan.nbytes.len() != 320 || plan.pack_offset.len() != 320
+    || plan.ne0[0] != g.n_embd || plan.ne1[0] != g.n_vocab
+    || plan.ne0[319] != g.n_embd || plan.ne1[319] != 1
+    || plan.weights_bytes < 0 || plan.kv_bytes < 0 {
+    return Err(Error.Invalid)
+  }
+  mut payload_bytes := 0
+  mut at := 0
+  loop {
+    if at >= plan.count { break }
+    payload_bytes = payload_bytes + plan.nbytes[at]
+    at = at + 1
+  }
+  runtime_memory.admit(owner, runtime_memory.MemoryPlan {
+      weights_bytes: plan.weights_bytes, kv_bytes: plan.kv_bytes,
+      workspace_bytes: 1048576, metadata_bytes: 1048576,
+      staging_bytes: 1048576, legacy_cache_bytes: 0,
+    })?
+  runtime_memory.allocate(owner)?
+  runtime_qwen_load.load_file(owner, pack, plan, 1048576)?
+  runtime_qwen35_load.define_resident(owner, g, 512)?
+  if runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_CREATED) != 320
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED) != 320
+    || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED_BYTES) != payload_bytes
+    || runtime_kv.state(owner, ggml_ffi.GPU_KV_CREATED) != 84
+    || runtime_kv.state(owner, ggml_ffi.GPU_KV_FINISHED) != 1 {
+    return Err(Error.Invalid)
+  }
+  print("qwen35 load: PASS")
+  return Ok(())
+}
