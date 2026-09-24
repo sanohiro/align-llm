@@ -4,15 +4,13 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Qwen3.5 text capability checkpoint (2026-09-24)
 
-Branch: `agent/qwen35-next`, current local checkpoint `6486a6e3` after merged PR #296
-(`53d5a183`). Active user priority is
+Branch: `agent/qwen35-prefill-next`, based on merged PR #297 (`8080f542`). Active user priority is
 staged Qwen3.5 native text correctness and measured optimization on small and middle-size models,
 then a normally usable OpenAI-compatible local endpoint. Large models, including Qwen3.8-27B and
 Qwen3.5-35B-A3B, are deferred. `docs/specs/qwen35-text.md`
-owns the model contract; `docs/specs/roadmap.md` owns the delivery order. This branch has
-unpublished local geometry-admission and HTTP-contract checkpoints; neither is a standalone
-publication candidate. The current uncommitted retained-session batch is the active executable
-candidate; its final preflight, comprehensive review, and publication remain open.
+owns the model contract; `docs/specs/roadmap.md` owns the delivery order. The next active work is
+the Qwen3.5-0.8B prefill speed diagnosis against the same-pin llama.cpp reference. The local HTTP
+contract is settled but serving implementation has not started.
 
 The first independently usable boundary is merged: `--model-ir`, `--pack`, and
 `--pack-verify` accept a real Qwen3.5-0.8B Q4_0 GGUF. Its SHA-256 is recorded in the plan;
@@ -26,22 +24,84 @@ llama.cpp and all three hosted checks. Text-only `--prepare-prompt` merged in #2
 paired prompt cases, reference bottleneck diagnostics, review disposition, final-head preflight
 and all three hosted checks. Native `align-runtime` generation is the active boundary.
 
+Retained Qwen3.5 sessions merged in #297. The batch reuses decode graphs and clears resident KV
+in one backend call while preserving full-vector finite-logit validation. The six-request real
+smoke passes against pinned llama.cpp, including malformed-input recovery and max-one early exit.
+Final-head local preflight and all three hosted checks passed. One comprehensive review found
+that GPU argmax lost nonfinite-logit refusal; the path was removed. A later preflight caught
+stale stub ABI context-size goldens from batched prefill; all seven corpora changed only those
+sizes and the normal layer-forward owner passed before merge.
+
 Next actions in priority order:
-1. Finish the retained Qwen3.5 session candidate: format, run the real generation and GPU KV
-   owners plus Python boundary guard, complete one comprehensive review, run executable preflight,
-   and publish after checks pass. Hosted preflight exposed stale stub graph-context golden values
-   from the preceding batched-prefill commit; the regenerated corpus changed only those ABI size
-   fields and awaits the normal owner and preflight run. The batch reuses decode graphs and clears resident KV in one backend
-   call while retaining full-vector finite-logit validation. The six-request real smoke passes against pinned
-   llama.cpp, including malformed-input recovery and max-one early exit.
-2. Continue the 0.8B prefill bottleneck investigation and perform a strict same-pin and
-   contemporary llama.cpp complete-request comparison with identical prompt IDs, generation
-   length, warmup, and outputs. A five-pair 256-token chunk trial and a five-pair state-only
-   intermediate prefill trial both missed the 15% floor and were reverted. The latter measured
+1. Continue the 0.8B prefill bottleneck investigation. A same-pin diagnostic on Apple M1 used
+   identical 200 prompt IDs, 16 greedy tokens, matching output, and five samples after two warm
+   requests: retained align-llm median 519.44 ms and llama.cpp median 478.13 ms. These were
+   sequential runs, not five alternating pairs, and do not support a shipping speed claim.
+   Align host sampling during repeated requests placed about 84% of main-thread samples in
+   Metal command-buffer completion waits; GPU kernel attribution remains unresolved. A separate
+   five-pair alternating 200-prompt/32-output diagnostic used identical input IDs and output
+   text after two warm requests per process: align-llm/llama.cpp medians were 851.45/805.13 ms,
+   with align-llm slower in all five pairs. An earlier sequential 32-output run misleadingly
+   favored align-llm, so do not use that run for a speed claim. Metal graph logs showed 187
+   matrix multiplications and 18 Gated DeltaNet operations in each decode graph for both
+   implementations; raw node counts alone do not identify the cost. The contemporary llama.cpp
+   HEAD `53ed051c` accepted the same GGUF, prompt IDs, and 32-token output. Five alternating
+   pairs measured align-llm/current llama.cpp medians of 841.30/748.39 ms, with align-llm slower
+   in all pairs. A scratch current-ggml bundle and shim built, but the old shim's private Metal
+   graph-optimization call hits a new allocation-dependency callback assertion. Skipping that
+   optimization for a diagnostic produced correct text at a warmed 845.24 ms median, not a
+   speed gain. The optimization really registers dependencies for this Qwen3.5 graph, so a pin
+   bump requires an allocator/scheduler integration that preserves those dependencies and full
+   backend parity work; do not ship the no-optimization probe. The current scheduler appends
+   dependency nodes to its allocation graph after Metal optimization; the shim's private ABI and
+   direct `gallocr` path have no equivalent. Next, obtain a trace with shader rows or a graph-level
+   operation timing breakdown before choosing another kernel or graph optimization. A temporary
+   dyld interpose on the pinned shim measured four retained 200-prompt/32-output requests; after
+   the first, graph compute consumed about 791-804 ms of 845-859 ms wall, with prefill about
+   187-188 ms, decode about 603-617 ms, and full-logit reads about 3 ms. A follow-up
+   same-pin, same-output, five-pair alternating phase probe instrumented both paths after two
+   warm requests per process. Align/pinned llama.cpp medians were 762.73/710.02 ms wall,
+   743.41/687.10 ms graph execution, 196.48/178.23 ms prefill, and 546.73/508.76 ms decode;
+   Align was slower in all five pairs. The absolute wall times moved with host conditions, but
+   this paired phase result locates the same-pin gap mainly inside graph execution: about 18 ms
+   in prefill and 38 ms over 31 decode steps. Instrumentation includes scheduler and synchronization
+   calls and is not a per-kernel GPU profile. The first independent prefill chunk and the fixed
+   attention decode view are known graph differences, but neither is proven to explain the gap.
+   A rounded indexed-KV view candidate preserved the six-request real-model owner but measured
+   768.23/766.71 ms control/candidate request medians, three candidate wins, and
+   545.07/546.38 ms decode-graph medians in five alternating pairs. It missed the floor and was
+   reverted. Pinned Metal decode logs show equal 187 matrix multiplies, 18 Gated DeltaNet, and
+   six Flash Attention operations; Align has 18 `CONT` and 42 `CPY` versus llama.cpp's six and
+   36, but llama.cpp has more `GET_ROWS`. Optimized emitted LLVM IR confirms vectorized
+   four-lane greedy scanning and shows per-decode key builder/SHA-256/string clone calls;
+   the only reported 184-byte geometry copy is at session creation. Neither the extra graph
+   operations nor the host hash is individually timed. Next, compare the six full-attention
+   blocks and recurrent state operations at kernel level or with a bounded per-block ablation;
+   do not infer a speed fix from graph counts alone.
+   Matching llama.cpp's Q/V/K graph registration order passed the six-request real owner but
+   measured 784.79/788.69 ms control/candidate request medians and three candidate wins;
+   it was reverted. Align's decode graph has fewer nodes tagged concurrent (194 versus 286),
+   yet a five-pair concurrency-disabled toggle produced inconsistent performance and did not
+   establish causality. The generated LLVM IR shows the hot greedy scan is vectorized; the
+   observed structural differences include KV-cache views/conversions and state access,
+   which require operation-level timing before changing production code.
+   Five alternating pinned-ggml graph-optimizer default/disabled pairs measured
+   776.13/794.68 ms for Align (four default wins) and 737.93/751.05 ms for llama.cpp
+   (five default wins). The optimizer helps both and is not the cause of the gap.
+   The decode debug graph's only differing operation counts are Align/llama.cpp
+   `CONT` 18/6, `CPY` 42/36, `GET_ROWS` 1/37, and `MUL` 42/43; actual kernel
+   duration remains unavailable. Continue with operation-level GPU timing or a
+   tightly bounded attention/state ablation before another production optimization.
+   Five alternating
+   contemporary llama.cpp default/Metal-optimization-disabled pairs, using the third request
+   after two warm requests per process, had 747.07/754.01 ms medians and three default wins.
+   This does not explain the Align/current-reference gap. A five-pair
+   256-token chunk trial and a five-pair state-only intermediate prefill trial both missed the
+   15% floor and were reverted. The latter measured
    521.16/515.26 ms control/candidate medians and three candidate wins. Temporary timing placed
    retained prefill near 200 ms and decode near 300 ms. No faster-than-llama.cpp claim is active.
-   GPU kernel attribution still needs a trace with shader rows.
-3. Settle and implement an Align-owned OpenAI-compatible local HTTP endpoint on the passing 0.8B
+   The root `main` worktree's `docs/align-requests.md` edit remains untouched.
+2. Settle and implement an Align-owned OpenAI-compatible local HTTP endpoint on the passing 0.8B
    runtime, beginning with a real `POST /v1/chat/completions` request. The existing OpenAI provider
    is a client. `docs/specs/roadmap.md` owns this new delivery order and
    `docs/specs/openai-local-serving.md` now owns the initial endpoint contract. Extend the
@@ -49,7 +109,7 @@ Next actions in priority order:
    `std.http` already sends SSE with one-write `send_event` and outbound providers already
    consume SSE; `pkg.web` also has fast stream routes but no handler application-state argument.
    The missing piece is a native per-token yield (`provider_runtime.stream` currently refuses).
-4. Select a locally viable Qwen3.5 dense 2B or 4B checkpoint and repeat parity, profiling, and
+3. Select a locally viable Qwen3.5 dense 2B or 4B checkpoint and repeat parity, profiling, and
    measured optimization. Treat 9B as conditional on local memory and speed; defer 27B and 35B
    MoE. Existing small OLMoE checks cover generic MoE only. No speed claim is active.
 
