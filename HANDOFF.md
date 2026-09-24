@@ -7,7 +7,9 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 Branch: `agent/qwen35-next`, based on merged PR #296 (`53d5a183`). Active user priority is
 staged Qwen3.5 native text correctness and measured optimization, then a normally usable
 OpenAI-compatible local endpoint before a Qwen3.8-27B attempt. `docs/specs/qwen35-text.md`
-owns the model contract; `docs/specs/roadmap.md` owns the delivery order.
+owns the model contract; `docs/specs/roadmap.md` owns the delivery order. This branch has
+unpublished local geometry-admission and HTTP-contract checkpoints; neither is a standalone
+publication candidate.
 
 The first independently usable boundary is merged: `--model-ir`, `--pack`, and
 `--pack-verify` accept a real Qwen3.5-0.8B Q4_0 GGUF. Its SHA-256 is recorded in the plan;
@@ -29,7 +31,9 @@ Next actions in priority order:
    its declared paired floor. GPU kernel attribution needs a separate trace with shader rows.
 3. Settle and implement an Align-owned OpenAI-compatible local HTTP endpoint on the passing 0.8B
    runtime, beginning with a real `POST /v1/chat/completions` request. The existing OpenAI provider
-   is a client. `docs/specs/roadmap.md` owns this new delivery order.
+   is a client. `docs/specs/roadmap.md` owns this new delivery order and
+   `docs/specs/openai-local-serving.md` now owns the initial endpoint contract. Extend the
+   qualified prompt renderer to message history before multi-turn serving acceptance.
 4. Select a middle-size Qwen3.5 model before Qwen3.8-27B. No speed claim is active.
 
 Latest local verification: `gmake build` PASS with the documented Homebrew `LIBRARY_PATH`;
