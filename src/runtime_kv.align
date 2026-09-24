@@ -44,6 +44,11 @@ pub fn update(
   return Ok(())
 }
 
+pub fn zero_all(borrow owner: ggml_ffi.GpuDevice) -> Result<(), Error> {
+  ggml_ffi.gpu_kv_zero_all(owner) else { return Err(Error.Invalid) }
+  return Ok(())
+}
+
 pub fn prefix_slot(
   borrow owner: ggml_ffi.GpuDevice,
   index: i64,

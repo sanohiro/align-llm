@@ -1066,11 +1066,9 @@ typedef struct align_stub_tensor {
      * schedule the multiply before the ids it reads. */
     struct align_stub_tensor *src[3];
     int32_t ip[4];
-    /* Two, not three. The third slot has never had a user, and dropping it pays for `src`'s third
-     * entry exactly: `align_ggml_graph_context_bytes` is `node_capacity * sizeof(this struct)`, so
-     * growing the record by one pointer would move `abi.graph_context_bytes` in every R5A, R5B,
-     * and R5C golden document for a change that has nothing to do with those arms. */
-    int64_t lp[2];
+    /* The third stride is used by 3D views in batched Qwen3.5 prefill. This record's size feeds
+     * `align_ggml_graph_context_bytes`, so the golden ABI context sizes include that stride. */
+    int64_t lp[3];
     int32_t is_output;
     int32_t visited;
     int32_t context;
@@ -1493,8 +1491,12 @@ static void align_stub_run(align_stub_tensor *t) {
      * expose. */
     case ALIGN_STUB_OP_VIEW: {
         const unsigned char *from = (const unsigned char *) a->data + t->lp[1];
-        for (i1 = 0; i1 < t->ne[1]; i1++) {
-            memcpy(d + i1 * t->ne[0], from + i1 * t->lp[0], (size_t) t->ne[0] * 4);
+        for (i2 = 0; i2 < t->ne[2]; i2++) {
+            for (i1 = 0; i1 < t->ne[1]; i1++) {
+                memcpy(d + t->ne[0] * (i1 + t->ne[1] * i2),
+                       from + i1 * t->lp[0] + i2 * t->lp[2],
+                       (size_t) t->ne[0] * 4);
+            }
         }
     } break;
     /* R6 section 2.5. `ggml_concat` along `dim`: `a`'s elements keep their own coordinates and
@@ -1695,9 +1697,10 @@ void *align_ggml_device_by_kind(int32_t kind) {
 #define ALIGN_GPU_COMPUTE             (-9)
 #define ALIGN_GPU_UNSUPPORTED        (-10)
 #define ALIGN_GPU_TRANSFER           (-11)
-#define ALIGN_GPU_GRAPH_KINDS           2
+#define ALIGN_GPU_GRAPH_KINDS           3
 #define ALIGN_GPU_GRAPH_PREFILL         0
 #define ALIGN_GPU_GRAPH_DECODE          1
+#define ALIGN_GPU_GRAPH_DECODE_ALT      2
 
 void *align_ggml_context_open(int64_t mem_bytes);
 void align_ggml_context_close(void *ctx);
@@ -2708,6 +2711,18 @@ int32_t align_gpu_kv_update(
     return ALIGN_GPU_OK;
 }
 
+int32_t align_gpu_kv_zero_all(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->shape_planning || !state->kv_finished
+            || !state->memory_allocated || state->kv_buffer == NULL
+            || state->kv_bytes < 1 || state->kv_bytes > INT64_MAX - state->kv_updated_bytes) {
+        return ALIGN_GPU_CONFIG;
+    }
+    memset(state->kv_buffer, 0, (size_t) state->kv_bytes);
+    state->kv_updated_bytes += state->kv_bytes;
+    return ALIGN_GPU_OK;
+}
+
 int32_t align_gpu_kv_slot(void *owner, int64_t index, void *slots, int64_t out) {
     align_stub_tensor *tensor =
         align_gpu_stub_kv_at((struct align_gpu_device_state *) owner, index);
@@ -2719,7 +2734,8 @@ int32_t align_gpu_kv_slot(void *owner, int64_t index, void *slots, int64_t out) 
 }
 
 static int align_gpu_graph_kind_ok(int32_t kind) {
-    return kind == ALIGN_GPU_GRAPH_PREFILL || kind == ALIGN_GPU_GRAPH_DECODE;
+    return kind == ALIGN_GPU_GRAPH_PREFILL || kind == ALIGN_GPU_GRAPH_DECODE
+        || kind == ALIGN_GPU_GRAPH_DECODE_ALT;
 }
 
 static void *align_gpu_graph_context_at(
@@ -3028,7 +3044,8 @@ int32_t align_gpu_kv_write_indexed_prefix(
     int64_t lanes;
     int32_t status;
     if (state == NULL || plane == NULL || src == NULL || ids == NULL || ctx == NULL
-        || kind != ALIGN_GPU_GRAPH_DECODE || state->graph_prepared[kind]
+        || (kind != ALIGN_GPU_GRAPH_DECODE && kind != ALIGN_GPU_GRAPH_DECODE_ALT)
+        || state->graph_prepared[kind]
         || (layout != 0 && layout != 1) || width <= 0 || width > plane->ne[axis]
         || plane->type != ALIGN_STUB_TYPE_F32 || src->type != ALIGN_STUB_TYPE_F32
         || ids->type != ALIGN_STUB_TYPE_I32 || ids->ne[1] != 1 || ids->ne[2] != 1 || ids->ne[3] != 1
@@ -3363,9 +3380,10 @@ int32_t align_gpu_graph_compute(
         || memcmp(state->graph_keys[kind], key, 64) != 0) {
         return ALIGN_GPU_CONFIG;
     }
-    if (kind == ALIGN_GPU_GRAPH_DECODE
-        && ((state->row_registered[0] && !state->row_position_valid)
-            || (state->row_registered[1] && !state->row_values_valid))) { return ALIGN_GPU_CONFIG; }
+    if (kind == ALIGN_GPU_GRAPH_DECODE || kind == ALIGN_GPU_GRAPH_DECODE_ALT) {
+        if ((state->row_registered[0] && !state->row_position_valid)
+            || (state->row_registered[1] && !state->row_values_valid)) { return ALIGN_GPU_CONFIG; }
+    }
     if (kind == ALIGN_GPU_FORCE_COMPUTE_KIND) { state->workspace_failed = 1; return ALIGN_GPU_COMPUTE; }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     if (state->graph_execution_count[kind] == INT64_MAX
@@ -4374,6 +4392,42 @@ int32_t align_ggml_op_rms_norm(void *ctx, void *slots, int64_t out, int64_t a, i
     return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_RMS_NORM);
 }
 
+static int32_t align_stub_qwen35_unary(
+        void *ctx, void *slots, int64_t out, int64_t a, int32_t eps_bits, int require_eps) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    (void) out;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (sa == NULL) { return ALIGN_GGML_SLOT; }
+    if (sa->type != ALIGN_STUB_TYPE_F32 || align_stub_nbytes(sa) <= 0 ||
+        align_stub_nbytes(sa) > 134217728LL * (int64_t) sizeof(float) ||
+        (require_eps && !align_ggml_eps_ok(eps_bits))) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return ALIGN_GGML_UNAVAILABLE;
+}
+
+int32_t align_ggml_op_sigmoid(void *ctx, void *slots, int64_t out, int64_t a) {
+    return align_stub_qwen35_unary(ctx, slots, out, a, 0, 0);
+}
+
+int32_t align_ggml_op_softplus(void *ctx, void *slots, int64_t out, int64_t a) {
+    return align_stub_qwen35_unary(ctx, slots, out, a, 0, 0);
+}
+
+int32_t align_ggml_op_silu(void *ctx, void *slots, int64_t out, int64_t a) {
+    return align_stub_qwen35_unary(ctx, slots, out, a, 0, 0);
+}
+
+int32_t align_ggml_op_scale(
+        void *ctx, void *slots, int64_t out, int64_t a, int32_t factor_bits) {
+    if (!isfinite(align_ggml_bits_to_f32(factor_bits))) { return ALIGN_GGML_SHAPE; }
+    return align_stub_qwen35_unary(ctx, slots, out, a, 0, 0);
+}
+
+int32_t align_ggml_op_l2_norm(void *ctx, void *slots, int64_t out, int64_t a, int32_t eps_bits) {
+    return align_stub_qwen35_unary(ctx, slots, out, a, eps_bits, 1);
+}
+
 static int32_t align_stub_elementwise(
     void *ctx, void *slots, int64_t out, int64_t a, int64_t b, int32_t op) {
     align_stub_tensor *sa = align_stub_slot(slots, a);
@@ -4429,6 +4483,24 @@ int32_t align_ggml_op_reshape_3d(
     }
     return align_stub_bind(slots, out,
         align_stub_new(ctx, ALIGN_STUB_TYPE_F32, ne0, ne1, ne2, 1),
+        sa, NULL, ALIGN_STUB_OP_RESHAPE);
+}
+
+int32_t align_ggml_op_reshape_4d(
+    void *ctx, void *slots, int64_t out, int64_t a,
+    int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    int64_t remaining;
+    if (sa == NULL) { return ALIGN_GGML_SLOT; }
+    if (ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || ne3 <= 0) { return ALIGN_GGML_SHAPE; }
+    remaining = align_stub_nelements(sa);
+    if (remaining % ne0 != 0) { return ALIGN_GGML_SHAPE; }
+    remaining /= ne0;
+    if (remaining % ne1 != 0) { return ALIGN_GGML_SHAPE; }
+    remaining /= ne1;
+    if (remaining % ne2 != 0 || remaining / ne2 != ne3) { return ALIGN_GGML_SHAPE; }
+    return align_stub_bind(slots, out,
+        align_stub_new(ctx, sa->type, ne0, ne1, ne2, ne3),
         sa, NULL, ALIGN_STUB_OP_RESHAPE);
 }
 
@@ -4511,6 +4583,85 @@ int32_t align_ggml_op_rope_neox(
     t->ip[2] = n_ctx_orig;
     t->ip[3] = freq_base_bits;
     return align_stub_bind(slots, out, t, sa, sp, ALIGN_STUB_OP_ROPE);
+}
+
+/* Hosted builds can validate this new input shape. Qwen3.5 numeric parity runs
+ * against the pinned real ggml backend; the stub has no M-RoPE kernel.
+ */
+int32_t align_ggml_op_rope_imrope(
+    void *ctx, void *slots, int64_t out, int64_t a, int64_t pos,
+    int32_t n_dims, int32_t n_ctx_orig, int32_t freq_base_bits,
+    int32_t s0, int32_t s1, int32_t s2, int32_t s3) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    align_stub_tensor *sp = align_stub_slot(slots, pos);
+    float freq_base = align_ggml_bits_to_f32(freq_base_bits);
+    (void) out;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (sa == NULL || sp == NULL) { return ALIGN_GGML_SLOT; }
+    if (sa->ne[2] < 1 || sa->ne[2] > INT64_MAX / 4 ||
+        sp->ne[0] != sa->ne[2] * 4 || sp->ne[1] != 1 || sp->ne[2] != 1 || sp->ne[3] != 1 ||
+        sp->type != ALIGN_STUB_TYPE_I32 || n_dims < 2 || n_dims > sa->ne[0] ||
+        (n_dims & 1) != 0 || n_ctx_orig < 1 ||
+        s0 < 0 || s1 < 0 || s2 < 0 || s3 < 0 ||
+        (int64_t) s0 + s1 + s2 + s3 != n_dims / 2 ||
+        !isfinite(freq_base) || freq_base <= 0.0f) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return ALIGN_GGML_UNAVAILABLE;
+}
+
+int32_t align_ggml_op_ssm_conv(
+    void *ctx, void *slots, int64_t out, int64_t input, int64_t kernel) {
+    align_stub_tensor *sx = align_stub_slot(slots, input);
+    align_stub_tensor *weight = align_stub_slot(slots, kernel);
+    (void) out;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (sx == NULL || weight == NULL) { return ALIGN_GGML_SLOT; }
+    if (sx->type != ALIGN_STUB_TYPE_F32 || weight->type != ALIGN_STUB_TYPE_F32 ||
+        sx->ne[0] < weight->ne[0] || weight->ne[0] < 2 ||
+        sx->ne[0] > 65536 || sx->ne[1] > 65536 ||
+        sx->ne[0] * sx->ne[1] > 134217728 ||
+        sx->ne[1] != weight->ne[1] || sx->ne[2] != 1 || sx->ne[3] != 1 ||
+        weight->ne[2] != 1 || weight->ne[3] != 1) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return ALIGN_GGML_UNAVAILABLE;
+}
+
+int32_t align_ggml_op_gated_delta_net_final(
+    void *ctx, void *slots, int64_t out, int64_t q, int64_t k, int64_t v,
+    int64_t gate, int64_t beta, int64_t state) {
+    align_stub_tensor *sq = align_stub_slot(slots, q);
+    align_stub_tensor *sk = align_stub_slot(slots, k);
+    align_stub_tensor *sv = align_stub_slot(slots, v);
+    align_stub_tensor *sg = align_stub_slot(slots, gate);
+    align_stub_tensor *sb = align_stub_slot(slots, beta);
+    align_stub_tensor *ss = align_stub_slot(slots, state);
+    (void) out;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (sq == NULL || sk == NULL || sv == NULL || sg == NULL || sb == NULL || ss == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (sq->type != ALIGN_STUB_TYPE_F32 || sk->type != ALIGN_STUB_TYPE_F32 ||
+        sv->type != ALIGN_STUB_TYPE_F32 || sg->type != ALIGN_STUB_TYPE_F32 ||
+        sb->type != ALIGN_STUB_TYPE_F32 || ss->type != ALIGN_STUB_TYPE_F32 ||
+        sv->ne[0] < 1 || sv->ne[0] > 4096 || sv->ne[1] < 1 || sv->ne[1] > 4096 ||
+        sv->ne[2] < 1 || sv->ne[2] > 65536 || sv->ne[3] != 1 ||
+        sv->ne[0] * sv->ne[1] * (sv->ne[2] + sv->ne[0]) > 134217728 ||
+        sq->ne[0] != sv->ne[0] || sk->ne[0] != sv->ne[0] ||
+        sq->ne[1] < 1 || sk->ne[1] < 1 ||
+        sv->ne[1] % sq->ne[1] != 0 || sv->ne[1] % sk->ne[1] != 0 ||
+        sq->ne[2] != sv->ne[2] || sk->ne[2] != sv->ne[2] ||
+        sq->ne[3] != 1 || sk->ne[3] != 1 ||
+        sg->ne[0] != 1 || sb->ne[0] != 1 ||
+        sg->ne[1] != sv->ne[1] || sb->ne[1] != sv->ne[1] ||
+        sg->ne[2] != sv->ne[2] || sb->ne[2] != sv->ne[2] ||
+        sg->ne[3] != 1 || sb->ne[3] != 1 ||
+        ss->ne[0] != sv->ne[0] || ss->ne[1] != sv->ne[0] ||
+        ss->ne[2] != sv->ne[1] || ss->ne[3] != 1) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return ALIGN_GGML_UNAVAILABLE;
 }
 
 /* R5D section 3.5: the one **widened** symbol, answered identically here. `mask == -1` is the
@@ -4757,6 +4908,47 @@ int32_t align_ggml_op_view_2d(
     }
     t->lp[0] = nb1;
     t->lp[1] = offset;
+    return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_VIEW);
+}
+
+int32_t align_ggml_op_view_3d(
+    void *ctx, void *slots, int64_t out, int64_t a,
+    int64_t ne0, int64_t ne1, int64_t ne2,
+    int32_t nb1_dim, int32_t nb2_dim, int32_t offset_dim, int64_t offset_index) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    align_stub_tensor *t;
+    int64_t nb[4], nb1, nb2, offset, capacity, span;
+    int i;
+    if (sa == NULL) { return ALIGN_GGML_SLOT; }
+    if (nb1_dim < 0 || nb1_dim > 3 || nb2_dim < 0 || nb2_dim > 3
+        || offset_dim < 0 || offset_dim > 3) { return ALIGN_GGML_INIT; }
+    if (ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || offset_index < 0 || ne0 > sa->ne[0]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (sa->type != ALIGN_STUB_TYPE_F32 && sa->type != ALIGN_STUB_TYPE_I32) {
+        return ALIGN_GGML_TYPE;
+    }
+    nb[0] = 4;
+    for (i = 1; i < 4; i++) { nb[i] = nb[i - 1] * sa->ne[i - 1]; }
+    nb1 = nb[nb1_dim];
+    nb2 = nb[nb2_dim];
+    capacity = align_stub_nbytes(sa);
+    if (offset_index > capacity / nb[offset_dim]) { return ALIGN_GGML_BOUNDS; }
+    offset = offset_index * nb[offset_dim];
+    span = capacity - offset;
+    if (ne0 > span / 4) { return ALIGN_GGML_BOUNDS; }
+    if (ne1 > (span / 4) / ne0 || ne2 > ((span / 4) / ne0) / ne1) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    span -= ne0 * 4;
+    if (ne1 - 1 > span / nb1) { return ALIGN_GGML_BOUNDS; }
+    span -= (ne1 - 1) * nb1;
+    if (ne2 - 1 > span / nb2) { return ALIGN_GGML_BOUNDS; }
+    t = align_stub_new(ctx, sa->type, ne0, ne1, ne2, 1);
+    if (t == NULL) { return ALIGN_GGML_INIT; }
+    t->lp[0] = nb1;
+    t->lp[1] = offset;
+    t->lp[2] = nb2;
     return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_VIEW);
 }
 

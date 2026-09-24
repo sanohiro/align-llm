@@ -95,11 +95,11 @@ as interchangeable.
 
 | Phase | Implementation owner | Exact regression target |
 | --- | --- | --- |
-| Construction | `tokenizer_qwen2` supplies the already-qualified `qwen35` prompt identity; `runtime_bundle` and `runtime_generation` derive the hybrid geometry, role table, KV and recurrent state sizes before device allocation. | `scripts/run-qwen35-generation-smoke` compares real-file tokenizer metadata, prompt ids, and rejected geometry. |
-| Success | `runtime_qwen35` builds full-attention layers and Gated DeltaNet layers using the pinned ggml operations; `provider_runtime` routes the native request, and `runtime_generation` commits full-attention KV plus recurrent state after a successful step. | `scripts/run-qwen35-generation-smoke` compares real 0.8B prefill and at least two decode tokens with the pinned llama.cpp oracle and checks provider text and token counts. |
-| Failure and malformed input | `runtime_bundle` rejects missing roles, invalid rope sections, unsupported quantization, or state dimensions before graph allocation; `runtime_generation` propagates compute and state-update failures. | The same owner changes one role/section and injects one compute failure, asserting an error and no response. |
-| Early exit and rollback | The session retains its prior committed KV and recurrent state until a step succeeds; an EOG, cancellation, or error releases in-flight graph/input/output buffers without advancing either state. | The same owner compares a failed or early-ended session with a fresh session on the next request. |
-| Cleanup | `runtime_generation` and `runtime_session_io` release session KV, recurrent state, graph, and device allocations on every terminal path; `provider_runtime` closes the request. | The same owner runs two consecutive requests and checks state isolation and allocation counts. |
+| Construction | `tokenizer_qwen2` supplies the qualified `qwen35` prompt identity; `runtime_qwen35_geometry`, `runtime_qwen35_load`, and `runtime_qwen35_generation` validate geometry and allocate hybrid state before acknowledging the session. | `scripts/run-qwen35-generation-smoke` uses the source-bound real pack and model geometry; the geometry and load owners check invalid metadata and state sizing. |
+| Success | `runtime_qwen35_model` builds full-attention and Gated DeltaNet layers; `runtime_qwen35_generation` executes prompt chunks and retains decode parity graphs; `provider_runtime` routes one-shot and framed requests. | `scripts/run-qwen35-generation-smoke` compares three greedy tokens for 31-, 200-, and 330-token prompts with pinned llama.cpp and verifies six retained requests. |
+| Failure and malformed input | `provider_runtime` rejects malformed framing, unsupported sampling, and invalid prompt bounds before state mutation; `runtime_qwen35_generation` poisons a session after execution failure, and the worker terminates after a failed frame. | The real generation owner checks unsupported sampling followed by a valid request. A focused execution-failure injection remains deferred because no new failure mechanism is introduced by this session route; the existing GPU owner covers compute failure. |
+| Early exit and rollback | A completed request clears the resident KV before the next request; max-one and EOG exits end without further decode. Execution failure closes the session instead of promising rollback of in-flight GPU writes. | The real generation owner checks a max-one request followed by a full request with identical output to a fresh one-shot result. |
+| Cleanup | `runtime_qwen35_generation` invalidates the transient prefill graph; owned device and retained decode graphs release when the worker exits. | The same owner closes the six-request worker after exact output checks; the GPU attention owner checks KV reset and refusal. |
 | Reused modules | `ggml_ffi` exposes only thin wrappers for shipped pinned ggml operations, with owner state and shapes in Align; existing Qwen2/OLMoE dispatch remains explicit. | `scripts/run-layer-forward-smoke`, `scripts/run-tokenizer-smoke`, and `scripts/run-runtime-provider-smoke` remain regression owners. |
 
 ### Pinned reference mapping for the native boundary
@@ -115,17 +115,212 @@ the stored `ssm_a`, applies causal SSM convolution, L2-normalizes Q and K, runs 
 applies gated RMS norm with z, and projects the output. The native graph must preserve these
 orders; substituting the Qwen2 head or plain RoPE changes the model.
 
+The pinned text input constructor supplies `ggml_rope_multi` with four contiguous position
+planes, each `n_tokens` long. The first three planes contain the same token positions and the
+fourth is zero. A one-position-per-token Qwen2 input violates ggml's M-RoPE assertion.
+`runtime_qwen35_geometry.write_text_positions` produces this layout with bounded `i32`
+positions; its real-model smoke checks all four planes and rejects a short output buffer.
+`ggml_ffi.op_rope_imrope` exposes the pinned operation through a thin checked shim;
+the ggml-free stub refuses numeric M-RoPE execution explicitly. This is input and ABI
+preparation only; the native graph must still consume it and pass oracle parity.
+
 For the first real 0.8B geometry, `ssm_inner_size=2048`, `ssm_group_count=16`,
 `ssm_state_size=128`, `ssm_time_step_rank=16`, and `ssm_conv_kernel=4`. Each recurrent layer has
 `conv_channels=2048+2*16*128=6144`, a three-position convolution history (18,432 elements), and
 a `128*128*16=262,144` element DeltaNet state. These are per-session state, not model weights.
+The native admission requires `ssm_inner_size / ssm_time_step_rank == ssm_state_size`, so the
+declared state tensor shape and computed state extent cannot diverge.
+For the first one-sequence text session, retain six attention KV pairs and two copies each of
+the 18 recurrent layers' convolution history and DeltaNet state: 12 + 18 * 4 = 84 resident
+F32 tensors. A recurrent layer's convolution state has shape `[3, 6144, 1]` and its DeltaNet
+state has shape `[128, 128, 16, 1]`. `runtime_qwen35_state` owns one active parity for all
+recurrent layers. Each graph reads the active pair and writes the next pair. Only a successful
+full step flips parity and publishes the token prefix; a failed or cancelled step leaves the
+active pair and prefix unchanged. The inactive pair may contain partial results and is overwritten
+on the next attempted step. The first session does not retain extra DeltaNet snapshots (`K=1`).
+`runtime_qwen35_state_io` binds the active resident tensor and stages a same-shape graph copy into
+the inactive tensor through the existing GPU KV slot ABI; the graph caller must expand that
+copy node and advance parity only after complete execution and publication. The Metal load
+owner checks active resident bindings before and after a parity flip. Staged writes and rollback
+still require the native graph owner.
+The owning smoke must check layer-to-state indices across the 3/4 and 7/8 block boundaries,
+84 unique allocations, a successful flip, and unchanged active indices on failure before the
+full model oracle is attempted.
+The 0.8B pack has 321 member records but 320 distinct source tensors: its final `output`
+member repeats `token_embd.weight` (270,172,160 bytes). The native weight plan must validate
+that the `output` member has the embedding member's source offset, type, dimensions, and byte
+size before binding the output projection to the already loaded embedding tensor. It then loads
+one embedding, 18 recurrent layers with 14 members each, six attention layers with 11 members
+each, and one output norm: 320 device weight tensors. This avoids a second upload and resident
+copy of the tied embedding; it is a loader ownership rule, not a measured speed claim.
+`runtime_qwen35_roles` now numbers the 320 unique loaded weights in graph order: embedding at
+zero, 14 recurrent or 11 full-attention members per layer, and output norm last. Its owning
+real-pack smoke compares all 321 member role ids and block kinds, checks consecutive weight
+slots and shapes, and refuses an altered tied-output source offset.
+`runtime_qwen35_load` validates the real pack order, role, source alias, shape, and logical byte
+count before planning 320 backend-aligned weights and 84 resident F32 tensors. Its focused 0.8B
+Metal owner at the exact pinned ggml commit uploads all 320 unique weights, defines all resident
+tensors, and confirms the uploaded byte count excludes the repeated output member. This verifies
+load ownership and allocation only; whole-model graph execution and numeric parity remain open.
 The plan must validate the four rope sections from source GGUF, model/pack identity, block roles,
 all state extents and the selected ggml op shapes before graph creation. `ggml_rope_multi`,
-`ggml_ssm_conv`, and `ggml_gated_delta_net` exist at the pin but have no align-llm shim symbols;
-adding thin checked ABI wrappers and Align-owned state is implementation work, not an upstream
-Align language request. A same-pin reference transcript should use the 0.8B model and at least
+`ggml_ssm_conv`, and `ggml_gated_delta_net` exist at the pin and now have checked shim symbols.
+The one-token recurrent graph also needs direct `ggml_sigmoid`, `ggml_softplus`, `ggml_silu`,
+`ggml_scale`, and `ggml_l2_norm` unary calls. Their shim ABI takes a graph context, slot window,
+output and source slot; scale takes a finite F32 factor, and L2 normalization additionally takes
+finite positive F32 epsilon bits. The shim
+accepts bounded F32 input, checks slot/shape before calling the pinned ggml constructor,
+returns the existing `ALIGN_GGML_*` status, and owns no payload. Align owns the operation order,
+the source slot map, and graph lifetime. The ggml-free stub refuses numeric execution of these
+new operations, as it does for SSM convolution and Gated DeltaNet.
+The first text session retains only the final DeltaNet state, so its ABI fixes the snapshot
+count at one. The ggml-free stub refuses execution of these three numeric operations explicitly;
+passing the shim's shape checks does not establish the native model's numerical correctness.
+The first one-token recurrent-layer builder binds ten recurrent attention weights, forms the
+causal convolution and staged history write, applies Gated DeltaNet and its staged state write,
+then performs gated normalization and output projection. A real pinned-Metal 0.8B owner builds
+and executes layer 0 with a nonzero synthetic hidden vector and reads a nonzero output. This
+establishes a runnable layer path, not parity with llama.cpp or a full-model speed result.
+The common one-token block tail adds the attention result to the layer input, applies the
+post-attention RMS normalization and its weight, computes a parallel SiLU-gated FFN, and adds
+the FFN result to the first residual. The same Metal owner executes this complete recurrent
+block tail with the real layer-0 weights; numeric oracle parity remains a later gate.
+The one-token full-attention builder splits the joint query/gate projection by the pinned
+head-interleaved stride, normalizes Q and K per head, applies the four-plane text M-RoPE,
+and writes K and V into resident sequence-major tensors before masked Flash Attention.
+It applies the sigmoid gate and output projection; the common tail then completes the block.
+The real pinned-Metal owner executes layer 3 with a synthetic input and nonzero result. It
+selects Flash Attention before memory admission and uses a 256-wide masked first-token view.
+This is graph execution evidence, not numerical parity or a speed comparison. A decomposed
+attention path remains a separate implementation decision after the first Metal oracle.
+The first complete one-token graph now chains all 24 layers, applies the output RMS norm and
+tied embedding projection, and reads 248,320 logits. The recurrent loader zeroes the active
+state explicitly because backend allocation does not guarantee zero fill. The pinned fused
+Gated DeltaNet receives the L2-normalized Q directly; applying another inverse-square-root
+factor before it changes the layer output and is prohibited. Same-pin Metal callback comparison
+for token 0 matches the first and last logits within a bounded floating tolerance. A second
+sequential step with token 23066 from `! hello` matches the reference's displayed edge logits
+after resident recurrence and KV publication. These displayed samples alone do not establish
+full-vector or longer-prompt parity, a reusable decode session, or a speed result. The owner also
+accepts two optional output paths for complete F32 logits. The independent
+`scripts/qwen35_llama_logits_oracle.cpp`, compiled against the exact pinned llama.cpp headers and
+Metal build, loads the same GGUF with all layers offloaded, context 512, and Flash Attention on.
+It compares every logit in separate decode calls for token IDs 0 and 23066. The Apple M1 result
+is 248,320 finite values per step, maximum absolute differences 0.0004912 and 0.0002388,
+and matching argmax IDs 198 and 11. The oracle rejects an absent or wrong-size dump. This
+established two-step full-vector Metal parity; the next checkpoint below adds graph reuse.
+Longer prompts and provider behavior remain open. Build the oracle with the pinned source's `include` and `ggml/include`
+directories and the Metal build's `libllama`; invoke it with `GGUF ALIGN_FIRST ALIGN_SECOND`
+after the smoke writes both dumps. The oracle requires a GPU backend at runtime.
+
+### Reusable one-token decode graph contract
+
+The Qwen3.5 recurrent state has two resident copies. A successful token flips its active
+parity; the next decode graph must read the newly active copy and stage writes to the other.
+Retain one prepared graph for each decode parity while keeping the existing prefill graph.
+The shim's internal graph-kind ABI adds `GPU_GRAPH_DECODE_ALT = 2` with the same indexed KV,
+input validation, allocation, compute, and failure behavior as decode kind 1. Kinds 1 and 2
+have separate graph contexts, keys, preparation state, and execution counters. Existing Qwen2
+and OLMoE sessions continue to use kinds 0 and 1. A malformed kind fails before indexing any
+array. The Align FFI and `runtime_execution` admit kind 2 only where decode semantics apply.
+
+For one-token Qwen3.5 decode, graph identity includes recurrent parity and a fixed attention
+width bucket. Token ID, text position, indexed KV write position, and causal mask are inputs
+updated for each execution; they do not change graph identity within that bucket. The six
+attention layers share the same indexed position. A graph reads only committed recurrent
+state, stages the opposite parity, and advances parity only after complete compute and output
+readback. The prefill graph remains kind 0 with its existing prefix policy. When width changes,
+invalidate and rebuild the affected parity graph; a failed step cannot publish recurrent state.
+
+| Case | Implementation | Exact regression |
+| --- | --- | --- |
+| Construction and malformed kind | `ggml_ffi`, `runtime_execution`, and real/stub shims accept kind 2 as decode semantics with distinct context and key; reject all other new kinds before array access. | `runtime_device_smoke` plus C shim graph owner test exercise independent preparation, bad kind, and row index admission. |
+| Success and reuse | `runtime_qwen35_model` and `runtime_qwen35_attention` build fixed-width indexed decode graphs for both parities; `runtime_generation` selects parity and updates all inputs. | Real 0.8B Metal owner executes at least three sequential tokens, compares full logits with the pinned llama.cpp oracle, and observes reuse on a repeated parity. |
+| Failure, early exit, and cleanup | `runtime_generation` publishes state only after a successful graph and output read; graph invalidation releases one parity's transient context without touching resident state or the other graph. | The generation owner injects a failed step, checks unchanged parity, then closes and reopens a session without state leakage. |
+
+The focused real Metal smoke now prepares a prefill graph and both decode parity graphs under
+one 96 MiB metadata budget. Each decode graph has a fixed 256-token attention view, reads
+indexed write positions at execution, and uses a mask for future rows. The loader initializes
+the attention planes to zero because the full-width view can include unwritten rows. Four
+successive tokens `[0, 23066, 0, 0]` match the same-pin Metal llama.cpp full logits at all
+248,320 coordinates: maximum absolute differences are 0.0004912, 0.0002388, 0.0002618,
+and 0.0005222. The fourth step reuses decode parity 1's prepared graph once without
+invalidation. This is a local graph owner checkpoint. A provider session, longer input,
+request latency, and a faster-than-llama claim remain unverified.
+
+### Batched text prefill contract
+
+The next native consumer packs 1..128 prompt IDs in one prefill graph at a validated prefix
+position. Token, four-plane text position, and causal mask inputs have shapes `[T]`, `[4,T]`,
+and `[W,T]`; `W = attention_width(prefix + T, context)` and the mask excludes all keys after
+each query's absolute position. Recurrent convolution joins the committed `(kernel-1)` history
+with a contiguous `[T, channels, 1]` projected token block, retaining only its final
+`(kernel-1)` values. Gated DeltaNet receives Q/K `[state_size, groups, T]`, V/gate/beta
+`[state_size or 1, dt_rank, T]`, and one committed state, with pinned `K=1`; only the final
+state is staged. Full-attention layers write all T K/V rows to the retained-F16 cache before
+the Flash Attention node reads the valid prefix. Each layer's residual/FFN remains `[n_embd,T]`;
+the tied output projection reads only the final token's hidden vector. The graph publishes its
+recurrent parity and attention prefix only after a successful complete compute and logits
+readback. A failed chunk makes the session unusable until reset; it never advertises an
+advanced prefix. Chunk width, start position, attention width, final-output selection, and
+parity are part of topology identity. This implements the already-settled provider contract
+above, without a new public CLI or artifact format.
+The existing thin ggml boundary lacks a strided 3-D view and a 4-D reshape needed to split
+head-interleaved Q/gate and convolution Q/K/V across T tokens. Add only `op_view_3d`, with
+dimensions and selectors into the source's own strides, and `op_reshape_4d`, with a checked
+element product. C derives byte strides and offsets and rejects out-of-range spans before
+calling ggml; Align never supplies raw byte arithmetic. The real and stub shims share the
+same refusal statuses. These are existing pinned ggml operations, so they require no new
+Align language surface.
+
+| Case | Owner and acceptance |
+| --- | --- |
+| Construction | `runtime_qwen35_recurrent`, `runtime_qwen35_attention`, `runtime_qwen35_ffn`, and `runtime_qwen35_model` build one coherent T-token graph; the owner smoke checks shapes at T=1 and T=128 before compute. |
+| Success | A real 0.8B Metal prefill of `[0, 23066, 0, ...]` with T=128 compares all 248,320 last-token logits against one same-pin llama.cpp 128-token prefill and the qualified sequential oracle; a following decode checks state and KV publication. |
+| Malformed input and failure | The builder refuses T=0, T>128, prefix overflow, wrong input extents, or mismatched state geometry before ggml's asserts. The generation owner injects a compute failure and checks that no token is returned and no prefix/parity is published. |
+| Early exit and cleanup | A final prompt chunk selects one output token, and the session releases graph and buffers on cancellation, EOG, or error. The provider owner runs two requests to check no state leakage. |
+
+Local Metal checkpoint (Apple M1, pinned ggml and llama.cpp `bb4caa7`, 0.8B Q4_0,
+128 IDs `[0, 23066, 0, ...]`, 512 context, Flash Attention on): one warmed
+batched prefill and the following token-0 decode match the reference at all
+248,320 logits with maximum absolute difference zero. The prefill timing starts
+after graph preparation and one identical warm compute, and ends before logits
+readback. Five alternating align-llm/llama.cpp pairs after removing the extra
+recurrent QKV materialization measured 109.78/104.70, 109.87/105.88,
+109.27/105.81, 108.93/104.14, and 109.15/104.27 ms. Removing the prefill
+attention query materialization then measured 108.76/104.92, 107.80/104.44,
+108.08/104.43, 108.16/104.65, and 107.91/104.55 ms. The final medians are
+108.08 and 104.55 ms; align-llm remains slower in all five pairs. An initial
+three-pair control with the recurrent materialization measured about 122 ms
+against 104–106 ms. This focused graph measurement excludes load, tokenizer,
+sampler, logits readback, provider startup, and a complete request. Its candidate
+improvement is below the 15% material floor and supports no faster-than-llama
+claim. CPU and CUDA remain unmeasured pending native session qualification.
+
+The local one-shot `--provider align-runtime` Metal path now loads the source-bound
+pack, allocates fresh attention and recurrent state, runs 128-token prompt chunks,
+and greedily decodes with two parity graphs. `scripts/run-qwen35-generation-smoke`
+compares its output and token counts with the pinned Metal llama.cpp oracle for
+31-, 200-, and 330-token prompts, each with three generated tokens; all pass.
+The latter two cases cross a chunk boundary and a 256-to-512 attention-width
+boundary. The retained `--runtime-session` now uses one weight load and clears its resident
+state between requests. Six requests, including malformed-sampling recovery and max-one early
+exit, match the same-pin oracle. Execution-failure injection, a strict complete-request speed
+comparison, and a contemporary llama.cpp comparison remain open for later qualification; no
+faster-than-llama.cpp claim is active.
+
+Align-owned full-model graph construction remains implementation work, not an
+upstream Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the
 tokenizer or Model IR checks.
+
+The local native admission checkpoint `runtime_qwen35_geometry.parse_snapshot` consumes the verified
+Model IR document and reads four `snapshot_i32_array` values from the same GGUF snapshot. It checks
+the model dimensions, finite normalization epsilon and positive RoPE base bit patterns, and
+section sum before deriving the six full-attention layers, 18
+recurrent layers, and per-layer state extents. `runtime_qwen35_geometry_smoke` passes on the
+real 0.8B GGUF and rejects an altered section sum. Full-model graph execution, state commit,
+provider routing, and numeric parity are still open.
 
 ### 0.8B reference bottleneck checkpoint (2026-09-24)
 
@@ -158,6 +353,70 @@ separately. The material floor is at least 15% lower median paired generation la
 least four of five pairs faster, and no more than 5% prompt or startup regression. Preparation
 is capped at 3,600 seconds and the paired experiment at 900 seconds, with a 120-second request
 limit. A missing parity result or invalid receipt is an unmeasured outcome, not a speedup.
+An evaluated candidate was a GPU argmax node after the output projection. Its control reads and
+scans all 248,320 F32 logits after each step; the candidate reads one I32 token id. Keep the
+full-logit owner path for exact vector parity. Require identical generated ids and text on the
+31-, 200-, and 330-token real prompts, including retained requests. Use the same 3,600-second
+preparation and 900-second paired-measurement ceilings and the 15% generation-latency floor
+above before calling it a material optimization; record full-request latency separately.
+The candidate was reverted after review found that reading only an index drops the existing
+nonfinite-logit refusal. Its observed complete-request latency also did not meet the material
+floor. The retained session continues to read F32 logits and use the checked greedy selector.
+The following prefill experiment raised the native chunk ceiling from 128 to 256 tokens so a
+200-token coding prompt uses one graph. Its acceptance is exact 31-, 200-, and 330-token
+provider and retained-session token parity, a passing 128-token full-vector owner, and no
+unsupported Flash probe. Compare the 200-token/16-token request against the unchanged
+128-token-chunk control in five alternating pairs under the same preparation, measurement,
+15% material floor, and 5% regression limit. Revert the larger chunk if it fails parity or
+the paired floor.
+On Apple M1 with the same source/model and five alternating retained 200-prompt/16-generation
+requests after two warm requests per process, the 128/256 controls measured 496.70/495.02 ms
+median. The 256 graph won three of five pairs, missed the 15% floor, and was reverted. The
+generated text matched in all ten measured calls. This was an experiment, not a shipping speed
+claim or a same-pin llama.cpp comparison.
+The next prefill experiment omitted the output normalization, vocabulary projection, and argmax
+for every prompt chunk except the last. Intermediate chunks must still execute and commit all
+recurrent and attention state nodes. Its control is the owner-tested 128-token session above;
+the candidate must preserve exact generated IDs and text on the 31-, 200-, and 330-token
+prompts, including retained requests. Compare the 200-token/16-token request in five alternating
+pairs under the same 3,600-second preparation and 900-second measurement ceilings. Require the
+15% paired generation-latency floor, four of five wins, and at most 5% prompt or startup
+regression for a material speed claim. Record the same-pin llama.cpp result separately.
+On the Apple M1, the control/candidate 200-prompt/16-generation medians were 521.16/515.26 ms
+after two warm requests in each of five alternating pairs. The candidate won three of five
+pairs with exact generated text, missed the material floor, and was reverted. Temporary timing
+probes placed retained-session prefill near 200 ms and decode near 300 ms; the same-pin llama.cpp
+diagnostic placed its prefill and first token near 180 ms and remaining decode near 300 ms. These
+are one-host diagnostics, not a faster-than-llama.cpp claim.
+The first measured seam is retained F16 K/V for the six full-attention layers. The control
+retains F32 K/V and casts its fixed 256-token views to F16 before each Flash Attention call;
+the candidate uses the already-qualified cached-F16 policy at allocation and indexed-write
+boundaries. The experiment costs at most 3,600 seconds of preparation and 900 seconds for five
+alternating control/candidate pairs. It must retain four-step full-vector parity and clear the
+15% paired generation-latency floor above before it is called a material optimization. A
+separate same-pin llama.cpp comparison is required for a faster-than-llama claim.
+The focused owner and independent llama.cpp oracle expose `--decode-bench` for diagnosis:
+after four matching warm steps `[0, 23066, 0, 0]`, both execute 124 more token-0 steps and
+obtain full logits before every next step. The JSON result reports `tokens = 124` and
+`elapsed_ns`; it excludes load, prefill, sampling, and session startup. On one Apple M1,
+five alternating F32/F16/reference triples yielded median 2.375/2.307/2.188 seconds.
+F16 beat F32 in five of five pairs but beat the same-pin llama.cpp reference in zero of five.
+Its roughly 3% control improvement misses the 15% material floor. The retained-F16 work
+therefore remains a local candidate; this diagnostic does not support a full-request or
+faster-than-llama claim. The optional final-logits dump also compares the full 248,320-vector
+at step 127 after the same fixed-token sequence; the Metal result was bit-identical to
+the same-pin llama.cpp reference. This verifies long sequential state parity, not batched
+text prefill or generated-token sampling. An attempted removal of the attention Q/K/V `CONT` nodes kept
+four-step exact logits but improved only three of five pairs against F16 and one of five
+against llama.cpp, so that change was discarded.
+After parity, run a separate five-pair same-model comparison against `llama.cpp` at the pinned
+ggml revision and report a contemporary llama.cpp revision as a second, separately labeled
+reference. Fix the GGUF hash, token IDs, generated output, context, sampler, backend, GPU
+offload, Flash Attention setting, and warm/cold condition for each pair. Report prompt,
+generation, complete request, and startup results without combining them. A native-control
+versus candidate improvement does not establish a llama.cpp speedup; the real reference pairs
+must show it for the named case. Preserve the older Qwen2 campaign's distinction between
+same-ggml and current-reference results when interpreting Qwen3.5.
 
 ## First-boundary implementation map
 

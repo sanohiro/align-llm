@@ -1,0 +1,253 @@
+module runtime_qwen35_load
+
+import alignpack_read
+import ggml_ffi
+import runtime_attention
+import runtime_qwen35_geometry
+import runtime_qwen35_roles
+import runtime_qwen35_state
+import runtime_qwen_load
+import runtime_kv
+import runtime_weights
+
+MAX := 9223372036854775807
+
+fn add(a: i64, b: i64) -> Result<i64, Error> {
+  if a < 0 || b < 0 || a > MAX - b { return Err(Error.Invalid) }
+  return Ok(a + b)
+}
+
+fn mul(a: i64, b: i64) -> Result<i64, Error> {
+  if a < 0 || b < 0 || (b > 0 && a > MAX / b) { return Err(Error.Invalid) }
+  return Ok(a * b)
+}
+
+fn block(borrow index: alignpack_read.PackIndex, at: i64) -> Result<alignpack_read.PackBlock, Error> =
+match alignpack_read.block_at(index, at) {
+  Ok(value) => Ok(value),
+  Err(_) => Err(Error.Invalid),
+}
+
+fn member(
+  borrow pack: file, borrow index: alignpack_read.PackIndex,
+  borrow selected: alignpack_read.PackBlock, at: i64,
+  borrow mut counters: alignpack_read.Counters,
+) -> Result<alignpack_read.PackMember, Error> =
+match alignpack_read.member_at(pack, index, selected, at, counters) {
+  Ok(value) => Ok(value),
+  Err(_) => Err(Error.Invalid),
+}
+
+fn shape(borrow record: alignpack_read.PackMember) -> runtime_weights.Shape =
+runtime_weights.Shape {
+  ggml_type: record.ggml_type, n_dims: record.n_dims,
+  ne0: record.dim0, ne1: record.dim1, ne2: record.dim2, ne3: record.dim3,
+}
+
+fn logical_bytes(borrow record: alignpack_read.PackMember) -> Result<i64, Error> {
+  block_size := ggml_ffi.blck_size(record.ggml_type)
+  type_size := ggml_ffi.type_size(record.ggml_type)
+  if block_size < 1 || type_size < 1 || record.n_dims < 1 || record.n_dims > 2
+    || record.dim0 < 1 || record.dim0 % block_size != 0
+    || record.dim1 < 1 || record.dim2 != 1 || record.dim3 != 1 {
+    return Err(Error.Invalid)
+  }
+  return mul(mul(record.dim0 / block_size, type_size)?, record.dim1)
+}
+
+fn append(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  borrow record: alignpack_read.PackMember,
+  borrow mut kinds: array_builder<i64>, borrow mut dims: array_builder<i64>,
+  borrow mut d0: array_builder<i64>, borrow mut d1: array_builder<i64>,
+  borrow mut d2: array_builder<i64>, borrow mut d3: array_builder<i64>,
+  borrow mut sizes: array_builder<i64>, borrow mut offsets: array_builder<i64>,
+  total: i64,
+) -> Result<i64, Error> {
+  if !runtime_qwen35_roles.member_shape_matches(g, record)
+    || record.slice_index != -1 || record.slice_count != -1
+    || logical_bytes(record)? != record.nbytes {
+    return Err(Error.Invalid)
+  }
+  allocation := runtime_weights.allocation_bytes(owner, shape(record))?
+  kinds.push(record.ggml_type)
+  dims.push(record.n_dims)
+  d0.push(record.dim0)
+  d1.push(record.dim1)
+  d2.push(record.dim2)
+  d3.push(record.dim3)
+  sizes.push(record.nbytes)
+  offsets.push(record.pack_offset)
+  return add(total, allocation)
+}
+
+fn resident_bytes(
+  borrow owner: ggml_ffi.GpuDevice, borrow g: runtime_qwen35_geometry.Geometry,
+  kv_capacity: i64,
+) -> Result<i64, Error> {
+  if kv_capacity < 1 || kv_capacity > g.context_length
+    || runtime_qwen35_state.resident_count(g) < 1 { return Err(Error.Invalid) }
+  attention_type := if runtime_attention.cached_f16(owner) { 1 } else { 0 }
+  k := runtime_weights.allocation_bytes(owner, runtime_weights.Shape {
+      ggml_type: attention_type, n_dims: 3,
+      ne0: g.head_dim, ne1: kv_capacity, ne2: g.n_head_kv, ne3: 1,
+    })?
+  v := runtime_weights.allocation_bytes(owner, runtime_weights.Shape {
+      ggml_type: attention_type, n_dims: 3,
+      ne0: g.head_dim, ne1: kv_capacity, ne2: g.n_head_kv, ne3: 1,
+    })?
+  channels := add(g.ssm_inner_size, mul(2, mul(g.ssm_group_count, g.ssm_state_size)?)?)?
+  conv := runtime_weights.allocation_bytes(owner, runtime_weights.Shape {
+      ggml_type: 0, n_dims: 3,
+      ne0: g.ssm_conv_kernel - 1, ne1: channels, ne2: 1, ne3: 1,
+    })?
+  state := runtime_weights.allocation_bytes(owner, runtime_weights.Shape {
+      ggml_type: 0, n_dims: 4,
+      ne0: g.ssm_state_size, ne1: g.ssm_state_size,
+      ne2: g.ssm_time_step_rank, ne3: 1,
+    })?
+  attention := mul(g.attention_layers, add(k, v)?)?
+  recurrent := mul(mul(g.recurrent_layers, 2)?, add(conv, state)?)?
+  return add(attention, recurrent)
+}
+
+pub fn define_resident(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  kv_capacity: i64,
+) -> Result<(), Error> {
+  count := runtime_qwen35_state.resident_count(g)
+  if count < 1 || kv_capacity < 1 || kv_capacity > g.context_length {
+    return Err(Error.Invalid)
+  }
+  runtime_kv.begin(owner, count)?
+  attention_type := if runtime_attention.cached_f16(owner) { 1 } else { 0 }
+  mut at := 0
+  loop {
+    if at >= count { break }
+    mut n_dims := 3
+    mut ne0 := 0
+    mut ne1 := 0
+    mut ne2 := 0
+    if at < 2 * g.attention_layers {
+      ne0 = g.head_dim
+      ne1 = kv_capacity
+      ne2 = g.n_head_kv
+    } else if (at - 2 * g.attention_layers) % 4 < 2 {
+      ne0 = g.ssm_conv_kernel - 1
+      ne1 = add(g.ssm_inner_size, mul(2, mul(g.ssm_group_count, g.ssm_state_size)?)?)?
+      ne2 = 1
+    } else {
+      n_dims = 4
+      ne0 = g.ssm_state_size
+      ne1 = g.ssm_state_size
+      ne2 = g.ssm_time_step_rank
+    }
+    index := runtime_kv.add(owner, runtime_kv.Shape {
+        ggml_type: if at < 2 * g.attention_layers { attention_type } else { 0 }, n_dims: n_dims,
+        ne0: ne0, ne1: ne1, ne2: ne2, ne3: 1,
+      })?
+    if index != at { return Err(Error.Invalid) }
+    at = at + 1
+  }
+  runtime_kv.finish(owner)?
+  zero_resident(owner, g, kv_capacity)?
+  return Ok(())
+}
+
+pub fn zero_resident(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  kv_capacity: i64,
+) -> Result<(), Error> {
+  count := runtime_qwen35_state.resident_count(g)
+  if count < 1 || kv_capacity < 1 || kv_capacity > g.context_length {
+    return Err(Error.Invalid)
+  }
+  // The shim owns one KV buffer and clears it after synchronization.
+  runtime_kv.zero_all(owner)?
+  return Ok(())
+}
+
+pub fn build_plan_file_capacity_bounded(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow pack: file,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  kv_capacity: i64,
+) -> Result<runtime_qwen_load.Plan, Error> {
+  count := runtime_qwen35_roles.weight_count(g)
+  if count < 1 || count > 49155 { return Err(Error.Invalid) }
+  mut counters := alignpack_read.new_counters()
+  index := alignpack_read.open_pack_bounded(pack, counters, 2 * g.n_layer + 2) else {
+    return Err(Error.Invalid)
+  }
+  if index.block_count != 2 * g.n_layer + 2 || index.member_count != count + 1 {
+    return Err(Error.Invalid)
+  }
+  mut kinds: array_builder<i64> := array_builder()
+  mut dims: array_builder<i64> := array_builder()
+  mut d0: array_builder<i64> := array_builder()
+  mut d1: array_builder<i64> := array_builder()
+  mut d2: array_builder<i64> := array_builder()
+  mut d3: array_builder<i64> := array_builder()
+  mut sizes: array_builder<i64> := array_builder()
+  mut offsets: array_builder<i64> := array_builder()
+  mut weights_bytes := 0
+  embed_block := block(index, 0)?
+  if embed_block.kind != 0 || embed_block.layer != -1 || embed_block.member_count != 1 {
+    return Err(Error.Invalid)
+  }
+  embedding := member(pack, index, embed_block, 0, counters)?
+  if embedding.role_id != 12 { return Err(Error.Invalid) }
+  weights_bytes = append(owner, g, embedding, kinds, dims, d0, d1, d2, d3,
+    sizes, offsets, weights_bytes)?
+  mut layer := 0
+  loop {
+    if layer >= g.n_layer { break }
+    layer_count := runtime_qwen35_roles.layer_count(g, layer)
+    attention_count := layer_count - 3
+    attention := block(index, 1 + 2 * layer)?
+    mlp := block(index, 2 + 2 * layer)?
+    if attention.kind != runtime_qwen35_roles.KIND_ATTENTION || attention.layer != layer
+      || attention.member_count != attention_count
+      || mlp.kind != runtime_qwen35_roles.KIND_MLP || mlp.layer != layer
+      || mlp.member_count != 3 { return Err(Error.Invalid) }
+    mut row := 0
+    loop {
+      if row >= layer_count { break }
+      selected := if row < attention_count { attention } else { mlp }
+      within := if row < attention_count { row } else { row - attention_count }
+      record := member(pack, index, selected, within, counters)?
+      if record.role_id != runtime_qwen35_roles.role_id(g, layer, row)?
+        || selected.kind != runtime_qwen35_roles.block_kind(g, layer, row)? {
+        return Err(Error.Invalid)
+      }
+      weights_bytes = append(owner, g, record, kinds, dims, d0, d1, d2, d3,
+        sizes, offsets, weights_bytes)?
+      row = row + 1
+    }
+    layer = layer + 1
+  }
+  head := block(index, index.block_count - 1)?
+  if head.kind != 0 || head.layer != -1 || head.member_count != 2 {
+    return Err(Error.Invalid)
+  }
+  norm := member(pack, index, head, 0, counters)?
+  output := member(pack, index, head, 1, counters)?
+  if !runtime_qwen35_roles.tied_output_matches(g, embedding, norm, output)
+    || norm.slice_index != -1 || norm.slice_count != -1
+    || output.slice_index != -1 || output.slice_count != -1 {
+    return Err(Error.Invalid)
+  }
+  weights_bytes = append(owner, g, norm, kinds, dims, d0, d1, d2, d3,
+    sizes, offsets, weights_bytes)?
+  values := kinds.build()
+  if values.len() != count { return Err(Error.Invalid) }
+  return Ok(runtime_qwen_load.Plan {
+      count: count, ggml_type: values, n_dims: dims.build(),
+      ne0: d0.build(), ne1: d1.build(), ne2: d2.build(), ne3: d3.build(),
+      nbytes: sizes.build(), pack_offset: offsets.build(),
+      weights_bytes: weights_bytes, kv_bytes: resident_bytes(owner, g, kv_capacity)?,
+    })
+}

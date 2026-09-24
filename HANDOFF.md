@@ -4,9 +4,15 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Qwen3.5 text capability checkpoint (2026-09-24)
 
-Branch: `agent/qwen35-native-text`, based on merged PR #295 (`ea0fb956`). Active user priority is
-staged Qwen3.5 text support before a Qwen3.8-27B attempt. `docs/specs/qwen35-text.md` owns the
-contract.
+Branch: `agent/qwen35-next`, current local checkpoint `6486a6e3` after merged PR #296
+(`53d5a183`). Active user priority is
+staged Qwen3.5 native text correctness and measured optimization on small and middle-size models,
+then a normally usable OpenAI-compatible local endpoint. Large models, including Qwen3.8-27B and
+Qwen3.5-35B-A3B, are deferred. `docs/specs/qwen35-text.md`
+owns the model contract; `docs/specs/roadmap.md` owns the delivery order. This branch has
+unpublished local geometry-admission and HTTP-contract checkpoints; neither is a standalone
+publication candidate. The current uncommitted retained-session batch is the active executable
+candidate; its final preflight, comprehensive review, and publication remain open.
 
 The first independently usable boundary is merged: `--model-ir`, `--pack`, and
 `--pack-verify` accept a real Qwen3.5-0.8B Q4_0 GGUF. Its SHA-256 is recorded in the plan;
@@ -16,18 +22,36 @@ refusals. Existing model IR and alignpack smoke owners pass. One comprehensive C
 missing tokenizer-vocabulary validation; the full tokenizer metadata class was repaired and its
 focused owners passed again. Final-head preflight and all three hosted checks passed for #294.
 The Qwen3.5 tokenizer CLI merged in #295 with eight paired real-file cases against pinned
-llama.cpp and all three hosted checks. This branch also implements the existing
-`--prepare-prompt` command for the 0.8B text-only chat template, with five paired prompt cases.
-Native `align-runtime` generation is the active boundary after this independently useful input
-capability is published.
+llama.cpp and all three hosted checks. Text-only `--prepare-prompt` merged in #296 with five
+paired prompt cases, reference bottleneck diagnostics, review disposition, final-head preflight
+and all three hosted checks. Native `align-runtime` generation is the active boundary.
 
 Next actions in priority order:
-1. Implement the text-only native Qwen3.5 hybrid recurrent/attention session with the
-   recurrent-state closure matrix and pinned llama.cpp oracle in `docs/specs/qwen35-text.md`.
-2. Qualify 0.8B prefill, multistep decode, and provider output. Profile the passing native session
-   against the reference bottleneck checkpoint, then select and measure one optimization under
-   its declared paired floor. GPU kernel attribution needs a separate trace with shader rows.
-3. Select a middle-size Qwen3.5 model before Qwen3.8-27B. No speed claim is active.
+1. Finish the retained Qwen3.5 session candidate: format, run the real generation and GPU KV
+   owners plus Python boundary guard, complete one comprehensive review, run executable preflight,
+   and publish after checks pass. Hosted preflight exposed stale stub graph-context golden values
+   from the preceding batched-prefill commit; the regenerated corpus changed only those ABI size
+   fields and awaits the normal owner and preflight run. The batch reuses decode graphs and clears resident KV in one backend
+   call while retaining full-vector finite-logit validation. The six-request real smoke passes against pinned
+   llama.cpp, including malformed-input recovery and max-one early exit.
+2. Continue the 0.8B prefill bottleneck investigation and perform a strict same-pin and
+   contemporary llama.cpp complete-request comparison with identical prompt IDs, generation
+   length, warmup, and outputs. A five-pair 256-token chunk trial and a five-pair state-only
+   intermediate prefill trial both missed the 15% floor and were reverted. The latter measured
+   521.16/515.26 ms control/candidate medians and three candidate wins. Temporary timing placed
+   retained prefill near 200 ms and decode near 300 ms. No faster-than-llama.cpp claim is active.
+   GPU kernel attribution still needs a trace with shader rows.
+3. Settle and implement an Align-owned OpenAI-compatible local HTTP endpoint on the passing 0.8B
+   runtime, beginning with a real `POST /v1/chat/completions` request. The existing OpenAI provider
+   is a client. `docs/specs/roadmap.md` owns this new delivery order and
+   `docs/specs/openai-local-serving.md` now owns the initial endpoint contract. Extend the
+   qualified prompt renderer to message history before multi-turn serving acceptance. Pinned
+   `std.http` already sends SSE with one-write `send_event` and outbound providers already
+   consume SSE; `pkg.web` also has fast stream routes but no handler application-state argument.
+   The missing piece is a native per-token yield (`provider_runtime.stream` currently refuses).
+4. Select a locally viable Qwen3.5 dense 2B or 4B checkpoint and repeat parity, profiling, and
+   measured optimization. Treat 9B as conditional on local memory and speed; defer 27B and 35B
+   MoE. Existing small OLMoE checks cover generic MoE only. No speed claim is active.
 
 Latest local verification: `gmake build` PASS with the documented Homebrew `LIBRARY_PATH`;
 `python3 scripts/qwen35_frontdoor_smoke.py` PASS; `scripts/run-model-ir-smoke` PASS;
@@ -46,11 +70,123 @@ was repaired with two synthetic refusals and the affected owners passed again.
 
 Native text investigation: the pinned `qwen35.cpp` and `delta-net-base.cpp` graph confirms six
 full-attention and 18 recurrent layers with a shared post-attention norm/FFN residual order.
-The current shim has no `ggml_rope_multi`, `ggml_ssm_conv`, or `ggml_gated_delta_net` wrappers;
+The current shim has checked IMROPE, SSM convolution, and final-state DeltaNet wrappers;
 the existing session graph supports only Qwen2 or OLMoE and has no recurrent state ownership.
 `docs/specs/qwen35-text.md` records the exact 0.8B state geometry and next acceptance oracle.
-No native graph or provider result is claimed yet. The prompt command is an independently useful
-publication candidate; the native consumer and its owner tests remain next work.
+The local native admission checkpoint in `src/runtime_qwen35_geometry.align` reads the Model IR
+geometry and the four sections supplied from the same GGUF snapshot, checks bounded shapes, and
+derives six attention and 18 recurrent layers with 18,432 convolution and 262,144 DeltaNet state
+elements per recurrent layer. The same owner now writes the pinned four-plane text position
+layout and checks its values and bounds. The real C shim has a checked IMROPE call; the hosted
+stub explicitly refuses numeric M-RoPE. Its real-file geometry smoke passes. No native graph or provider result is
+claimed yet; this local checkpoint is not a publication candidate on its own.
+Local checkpoint verification: `gmake fmt`, `./scripts/check-format`, and
+`./scripts/alignc run src/runtime_qwen35_geometry_smoke.align
+/Users/hiro/models/qwen35-0.8b-model-ir.json
+/Users/hiro/models/Qwen3.5-0.8B-Q4_0.gguf` PASS; `git diff --check` PASS. The next native
+step is the hybrid role/load plan, graph construction, and explicit state commit. The new SSM
+and DeltaNet wrappers check pinned ggml operand shapes and types before its assert-based graph
+constructors; the hosted stub refuses their numeric execution.
+`runtime_qwen35_state` now maps the six attention KV pairs and both copies of each recurrent
+layer's convolution and DeltaNet state to 84 unique resident tensor indices. Its active parity
+changes only after a successful step; the real 0.8B geometry smoke covers all indices, boundary
+layers, an unsuccessful step, a successful flip, and malformed interval refusal. The next owner
+must allocate those shapes, load the role-specific weights, construct both graph paths, and
+compare prefill plus multistep decode against pinned llama.cpp before profiling. The focused
+geometry smoke, both C shim syntax checks, `ggml_ffi` check, format check, and the ggml-free
+`run-ggml-spike-smoke` pass with the documented Homebrew library path. No native Qwen3.5
+numeric result or speed claim is established by this checkpoint.
+The real 0.8B alignpack has 321 member records but 320 unique source tensors: its final output
+member aliases the embedding's source range. `runtime_qwen35_roles` now maps each layer's 11 or
+14 members to consecutive device slots, shares the embedding slot for output, and checks the
+alias source offset/type/shape/size. Its real-pack smoke passes every role/block and slot,
+including an injected alias mismatch. The validated load plan and resident allocation now
+follow this map; graph construction remains next.
+The next local checkpoint validates every real-pack member shape, builds a 320-weight and
+84-resident-tensor Metal allocation plan, and uploads all unique 0.8B weights with the pinned
+ggml bundle. `runtime_qwen35_load_smoke` passes on the real Model IR, GGUF, pack, and pinned
+Metal bundle: 320 weights uploaded, 84 resident tensors defined, and the tied output omitted
+from the upload byte count. The stub GPU cannot define quantized tensors, so this owner uses
+the real backend. Native Qwen3.5 graph execution, oracle parity, and any speed claim remain
+open. `runtime_qwen35_state_io` also binds the active resident tensor and exposes a staged
+same-shape copy into the inactive tensor via the existing KV slot ABI; the real Metal load owner
+checks active binding shapes across a parity flip. The graph must expand those copy nodes and
+test success-only publication. The one-token recurrent-layer builder now constructs layer 0
+from the real 0.8B weights and executes on pinned Metal with a nonzero synthetic hidden input;
+its output is nonzero and the convolution/DeltaNet copy nodes are included. This is a layer
+operation smoke, not a llama.cpp numeric comparison or full-model result.
+The same real Metal smoke now executes the layer-0 post-attention residual, normalization,
+SwiGLU FFN, and second residual with real weights. The synthetic block output is nonzero.
+The same owner now builds and executes full-attention layer 3 with interleaved Q/gate,
+four-plane M-RoPE, resident KV write, masked Flash Attention and the common FFN tail. Its
+synthetic output is nonzero. The Flash policy is selected before memory admission and both
+KV tensors use sequence-major storage.
+The unpublished full-model graph now joins all 24 layers and the tied output head. A same-pin
+Metal `llama-eval-callback` build identified a duplicated Q scaling in the fused Gated DeltaNet;
+removing it aligned the first recurrent layer and token-0 edge logits. A two-step real Metal
+smoke now matches displayed callback edge logits for token IDs 0 and 23066 (`! hello`) within
+0.03 per selected F32 value, with state parity flipped only after the first successful compute.
+The optional two output paths dump complete logits, and the independent same-pin Metal oracle
+`scripts/qwen35_llama_logits_oracle.cpp` compares all 248,320 values per step. Maximum absolute
+differences are 0.0004912 and 0.0002388, with matching argmax token IDs 198 and 11.
+The next local checkpoint adds a third internal graph kind for the alternate recurrent parity,
+fixed 256-token decode views with zero-initialized attention planes, and indexed writes for both
+decode graphs. A four-token real Metal smoke `[0, 23066, 0, 0]` passes same-pin full-vector
+comparison (maximum absolute differences 0.0004912, 0.0002388, 0.0002618, 0.0005222); the
+fourth token reuses a prepared decode graph. The real and stub shim now hold three isolated
+graph contexts. This remains unpublished local implementation work.
+`gmake fmt`, `./scripts/check-format`, `git diff --check`, real/stub shim C syntax,
+`scripts/run-gpu-generation-smoke`, `scripts/run-gpu-session-reuse-smoke`, and
+`scripts/run-gpu-device-smoke` with the required Homebrew `LIBRARY_PATH` pass. The post-format
+real Metal four-step owner and same-pin full-vector oracle also pass. The earlier
+`run-gpu-device-smoke` invocation without `LIBRARY_PATH` stopped at linker `-lcrypto`;
+the corrected invocation passed.
+An unpublished optimization candidate now uses pinned `ggml_swiglu_split` for the 24 FFNs
+and the existing cached-F16 policy for the six attention K/V pairs. The fused FFN made
+four-step full-vector Metal logits bit-identical to same-pin llama.cpp; retained F16 preserves
+that parity, including the full vector at step 127 in the fixed-token sequence. The focused
+`--decode-bench` reads full logits after each of 124 post-warm
+token-0 steps. Five alternating F32/F16/llama.cpp triples on Apple M1 measured median
+2.375/2.307/2.188 seconds: F16 beat F32 in all five, llama.cpp in none. The 15% material
+optimization floor was not met, and this excludes prompt, sampler, and request startup.
+Deleting attention Q/K/V `CONT` nodes did not win consistently and was reverted. Next:
+identify the remaining Metal decode cost, then complete longer-prompt/provider parity and
+the paired full-request comparison. No faster-than-llama claim exists.
+The next local checkpoint adds a 128-token batched prefill graph using checked 3-D views and
+4-D reshape, with a following decode graph on the staged state. The Apple M1 pinned Metal owner
+and same-pin llama.cpp oracle match all 248,320 logits exactly at the last prefill token and
+following token 128. Removing an unnecessary recurrent QKV materialization reduced the warmed
+prefill diagnostic from about 122 ms to about 109 ms; removing the attention query
+materialization brought its five-pair median to 108.08 ms, versus 104.55 ms for llama.cpp.
+It remains slower in all five pairs and misses the 15% material floor. The full provider path,
+sampler, contemporary reference, and request latency remain open. Next: check batch shape and
+failure cases, finish the native provider session, then profile and compare complete requests.
+The branch remains an unpublished implementation checkpoint.
+The local one-shot Qwen3.5 Metal provider now produces text and exact token counts.
+`scripts/run-qwen35-generation-smoke` passes three generated tokens for 31-, 200-,
+and 330-token prompts against a same-pin Metal llama.cpp greedy oracle. The latter
+two cover multiple prefill chunks and the 256-to-512 attention-width transition.
+`provider_runtime` refuses Qwen3.5 numeric trace mode until that stream is supported.
+Next: refactor the native path into a retained `--runtime-session` with fresh state
+per request; test two requests, early EOG, malformed input and failure recovery;
+then measure paired complete requests and profile any remaining speed gap.
+Checkpoint verification: `./scripts/alignc check src/provider_runtime.align`,
+`gmake fmt`, `./scripts/check-format`, the real-shim `./scripts/alignc build
+src/main.align`, `python3 scripts/check-python-boundary`, and
+`scripts/run-qwen35-generation-smoke` with the pinned Metal oracle all pass;
+`git diff --check` passes. The provider remains Metal-only and has no
+complete-request performance claim.
+The callback's CPU and Metal builds produce materially different logits, so the Metal oracle is
+the valid comparison for this Metal owner. Remaining: longer-prompt output parity,
+session/provider routing, then paired speed
+measurements against same-pin and contemporary llama.cpp. No faster-than-llama claim exists.
+The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
+src/main.align` (3,134 functions), `gmake build` with the documented Homebrew
+`LIBRARY_PATH`, `./scripts/check-format`, `git diff --check`, C syntax
+checks of the real shim against pinned ggml headers and of the standalone stub, and the
+ggml-free shim build. Numeric M-RoPE
+has not passed an isolated pinned reference comparison; two complete model steps have passed
+the full-vector reference comparison.
 
 Reference bottleneck diagnosis: pinned llama.cpp `bb4caa7` on Apple M1, Qwen3.5-0.8B Q4_0,
 three repetitions: CPU 464.98 prompt / 55.32 generation tok/s; Metal 1180.77 / 61.85 with
@@ -60,22 +196,14 @@ quantized GEMV as the dominant active stack, while the Metal trace did not provi
 `docs/backend-parity.md` records backend coverage. The native path remains prerequisite to any
 align-llm bottleneck fix or optimization claim.
 
-Prompt checkpoint verification: `gmake fmt` PASS; `LIBRARY_PATH=/opt/homebrew/lib:/opt/homebrew/opt/openssl@3/lib
-gmake build` PASS; `scripts/run-tokenizer-smoke` PASS with the same library path;
-`scripts/run-qwen35-tokenizer-smoke` PASS with the recorded real GGUF and pinned `llama-tokenize`
-(eight token and five prompt cases); `python3 scripts/check-python-boundary` PASS;
-`git diff --check` PASS. A plain `gmake build` and plain tokenizer smoke failed only because this
-host's Homebrew `libcrypto` is outside the default linker search path; both passed with the
-documented library path. The prompt capability is a candidate for review and publication; the
-native graph remains pending.
-The pinned llama.cpp Jinja renderer was invoked directly with a vocabulary-only model load:
-it removes vertical tab and retains U+3000. The review's claim that it trims Unicode whitespace
-is rejected on that source and execution evidence; the valid vertical-tab mismatch was repaired
-and added to the owner cases. No new native graph result is claimed.
-The first full preflight failed during a temporary Git pack copy in an unrelated source-bundle
-smoke; rerun passed that phase but exposed the prompt fixture's former 4,096-byte template-size
-boundary. The fixture now checks exactly 8,192 and 8,193 bytes, and `scripts/run-prompt-smoke`
-passes. Final-head preflight remains to be rerun after this repair.
+Prompt verification at final head `ae68abc6`: `gmake fmt`, managed build with the documented
+Homebrew library path, `scripts/run-tokenizer-smoke`, `scripts/run-prompt-smoke`, the real-model
+`scripts/run-qwen35-tokenizer-smoke` (eight token and five prompt cases), Python boundary check,
+and exact-head `scripts/pre-pr --owner-test qwen35-prompt` all passed. All three hosted checks
+passed and #296 merged as `53d5a183`. The pinned llama.cpp Jinja renderer was called directly:
+it removes vertical tab and retains U+3000; the review's Unicode-trimming assertion was rejected
+and the actual vertical-tab mismatch repaired. No Qwen3.5 native inference or align-llm speed
+result is claimed by #296.
 
 ## Codex binary audit checkpoint (2026-09-23)
 

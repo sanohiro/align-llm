@@ -1,0 +1,55 @@
+module runtime_qwen35_state
+
+import runtime_qwen35_geometry
+
+pub CONV := 0
+pub DELTA := 1
+pub KEY := 0
+pub VALUE := 1
+
+pub State { active: i64 }
+
+pub fn new() -> State = State { active: 0 }
+
+fn valid(borrow g: runtime_qwen35_geometry.Geometry) -> bool =
+runtime_qwen35_geometry.valid_layer_pattern(g)
+
+pub fn resident_count(borrow g: runtime_qwen35_geometry.Geometry) -> i64 =
+if valid(g) { 2 * g.attention_layers + 4 * g.recurrent_layers } else { -1 }
+
+pub fn is_attention(borrow g: runtime_qwen35_geometry.Geometry, layer: i64) -> bool =
+valid(g) && layer >= 0 && layer < g.n_layer && (layer + 1) % g.full_attention_interval == 0
+
+pub fn attention_index(
+  borrow g: runtime_qwen35_geometry.Geometry, layer: i64, part: i64,
+) -> Result<i64, Error> {
+  if !is_attention(g, layer) || part < KEY || part > VALUE { return Err(Error.Invalid) }
+  return Ok(2 * ((layer + 1) / g.full_attention_interval - 1) + part)
+}
+
+pub fn recurrent_index(
+  borrow g: runtime_qwen35_geometry.Geometry,
+  layer: i64,
+  part: i64,
+  parity: i64,
+) -> Result<i64, Error> {
+  if !valid(g) || layer < 0 || layer >= g.n_layer || is_attention(g, layer)
+    || part < CONV || part > DELTA || parity < 0 || parity > 1 {
+    return Err(Error.Invalid)
+  }
+  ordinal := layer - (layer + 1) / g.full_attention_interval
+  return Ok(2 * g.attention_layers + 4 * ordinal + 2 * part + parity)
+}
+
+pub fn read_index(
+  borrow g: runtime_qwen35_geometry.Geometry, borrow state: State, layer: i64, part: i64,
+) -> Result<i64, Error> = recurrent_index(g, layer, part, state.active)
+
+pub fn write_index(
+  borrow g: runtime_qwen35_geometry.Geometry, borrow state: State, layer: i64, part: i64,
+) -> Result<i64, Error> = recurrent_index(g, layer, part, 1 - state.active)
+
+// The caller invokes this only after a complete graph compute and KV publication.
+pub fn finish(borrow mut state: State, succeeded: bool) {
+  if succeeded { state.active = 1 - state.active }
+}

@@ -978,9 +978,10 @@ void *align_ggml_device_by_kind(int32_t kind) {
 #define ALIGN_GPU_COMPUTE             (-9)
 #define ALIGN_GPU_UNSUPPORTED        (-10)
 #define ALIGN_GPU_TRANSFER           (-11)
-#define ALIGN_GPU_GRAPH_KINDS           2
+#define ALIGN_GPU_GRAPH_KINDS           3
 #define ALIGN_GPU_GRAPH_PREFILL         0
 #define ALIGN_GPU_GRAPH_DECODE          1
+#define ALIGN_GPU_GRAPH_DECODE_ALT      2
 
 /* Private diagnostics contain no owner pointer and cannot extend native lifetimes. */
 static _Thread_local int32_t align_gpu_first_status;
@@ -2237,6 +2238,20 @@ int32_t align_gpu_kv_update(
     return ALIGN_GPU_OK;
 }
 
+int32_t align_gpu_kv_zero_all(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->shape_planning || !state->kv_finished
+            || !state->memory_allocated || state->kv_buffer == NULL
+            || state->kv_bytes < 1 || state->kv_bytes > INT64_MAX - state->kv_updated_bytes) {
+        return ALIGN_GPU_CONFIG;
+    }
+    align_gpu_synchronize(state);
+    ggml_backend_buffer_clear(state->kv_buffer, 0);
+    align_gpu_synchronize(state);
+    state->kv_updated_bytes += state->kv_bytes;
+    return ALIGN_GPU_OK;
+}
+
 int32_t align_gpu_kv_slot(void *owner, int64_t index, void *slots, int64_t out) {
     struct ggml_tensor *tensor = align_gpu_kv_at((struct align_gpu_device_state *) owner, index);
     if (tensor == NULL) {
@@ -2247,7 +2262,8 @@ int32_t align_gpu_kv_slot(void *owner, int64_t index, void *slots, int64_t out) 
 }
 
 static int align_gpu_graph_kind_ok(int32_t kind) {
-    return kind == ALIGN_GPU_GRAPH_PREFILL || kind == ALIGN_GPU_GRAPH_DECODE;
+    return kind == ALIGN_GPU_GRAPH_PREFILL || kind == ALIGN_GPU_GRAPH_DECODE
+        || kind == ALIGN_GPU_GRAPH_DECODE_ALT;
 }
 
 static struct ggml_context *align_gpu_graph_context_at(
@@ -2258,7 +2274,7 @@ static struct ggml_context *align_gpu_graph_context_at(
     return state->graph_contexts[kind];
 }
 
-/* Root tensor metadata is frozen once the first graph context opens.  Both request-local graph
+/* Root tensor metadata is frozen once the first graph context opens. Request-local graph
  * contexts then occupy fixed, disjoint slices of the already admitted metadata allocation. */
 void *align_gpu_graph_context_open(void *owner, int32_t kind, int64_t metadata_bytes) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
@@ -3133,9 +3149,10 @@ int32_t align_gpu_graph_compute(
         if (!state->prefill_rows_valid) { return ALIGN_GPU_CONFIG; }
         state->prefill_rows_valid = 0;
     }
-    if (kind == ALIGN_GPU_GRAPH_DECODE
-        && ((state->row_registered[0] && !state->row_position_valid)
-            || (state->row_registered[1] && !state->row_values_valid))) { return ALIGN_GPU_CONFIG; }
+    if (kind == ALIGN_GPU_GRAPH_DECODE || kind == ALIGN_GPU_GRAPH_DECODE_ALT) {
+        if ((state->row_registered[0] && !state->row_position_valid)
+            || (state->row_registered[1] && !state->row_values_valid)) { return ALIGN_GPU_CONFIG; }
+    }
     if (kind == ALIGN_GPU_FORCE_COMPUTE_KIND) { state->workspace_failed = 1; return ALIGN_GPU_COMPUTE; }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     if (state->graph_execution_count[kind] == INT64_MAX
@@ -4158,6 +4175,54 @@ int32_t align_ggml_op_rms_norm(void *ctx, void *slots, int64_t out, int64_t a, i
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 
+int32_t align_ggml_op_sigmoid(void *ctx, void *slots, int64_t out, int64_t a) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sa->type != GGML_TYPE_F32 || ggml_nelements(sa) > 134217728) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_sigmoid((struct ggml_context *) ctx, sa);
+    return result == NULL ? ALIGN_GGML_INIT : align_ggml_slot_store(slots, out, result);
+}
+
+int32_t align_ggml_op_softplus(void *ctx, void *slots, int64_t out, int64_t a) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sa->type != GGML_TYPE_F32 || ggml_nelements(sa) > 134217728) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_softplus((struct ggml_context *) ctx, sa);
+    return result == NULL ? ALIGN_GGML_INIT : align_ggml_slot_store(slots, out, result);
+}
+
+int32_t align_ggml_op_silu(void *ctx, void *slots, int64_t out, int64_t a) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sa->type != GGML_TYPE_F32 || ggml_nelements(sa) > 134217728) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_silu((struct ggml_context *) ctx, sa);
+    return result == NULL ? ALIGN_GGML_INIT : align_ggml_slot_store(slots, out, result);
+}
+
+int32_t align_ggml_op_scale(
+        void *ctx, void *slots, int64_t out, int64_t a, int32_t factor_bits) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    float factor = align_ggml_bits_to_f32(factor_bits);
+    if (sa->type != GGML_TYPE_F32 || ggml_nelements(sa) > 134217728 || !isfinite(factor)) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_scale((struct ggml_context *) ctx, sa, factor);
+    return result == NULL ? ALIGN_GGML_INIT : align_ggml_slot_store(slots, out, result);
+}
+
+int32_t align_ggml_op_l2_norm(void *ctx, void *slots, int64_t out, int64_t a, int32_t eps_bits) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sa->type != GGML_TYPE_F32 || ggml_nelements(sa) > 134217728 ||
+        !align_ggml_eps_ok(eps_bits)) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_l2_norm((struct ggml_context *) ctx, sa, align_ggml_bits_to_f32(eps_bits));
+    return result == NULL ? ALIGN_GGML_INIT : align_ggml_slot_store(slots, out, result);
+}
+
 int32_t align_ggml_op_mul(void *ctx, void *slots, int64_t out, int64_t a, int64_t b) {
     struct ggml_tensor *sb = align_ggml_slot_tensor(slots, b);
     ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
@@ -4277,6 +4342,25 @@ int32_t align_ggml_op_reshape_3d(
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 
+int32_t align_ggml_op_reshape_4d(
+    void *ctx, void *slots, int64_t out, int64_t a,
+    int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
+    int64_t remaining = 0;
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || ne3 <= 0 || !ggml_is_contiguous(sa)) {
+        return ALIGN_GGML_SHAPE;
+    }
+    remaining = ggml_nelements(sa);
+    if (remaining % ne0 != 0) { return ALIGN_GGML_SHAPE; }
+    remaining /= ne0;
+    if (remaining % ne1 != 0) { return ALIGN_GGML_SHAPE; }
+    remaining /= ne1;
+    if (remaining % ne2 != 0 || remaining / ne2 != ne3) { return ALIGN_GGML_SHAPE; }
+    result = ggml_reshape_4d((struct ggml_context *) ctx, sa, ne0, ne1, ne2, ne3);
+    if (result == NULL) { return ALIGN_GGML_INIT; }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
 int32_t align_ggml_op_permute(
     void *ctx, void *slots, int64_t out, int64_t a,
     int32_t p0, int32_t p1, int32_t p2, int32_t p3) {
@@ -4347,6 +4431,104 @@ int32_t align_ggml_op_rope_neox(
     if (result == NULL) {
         return ALIGN_GGML_INIT;
     }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* Qwen3.5 text uses interleaved M-RoPE. The position tensor has four contiguous
+ * planes, each with one entry per token; the fourth plane contains zeroes.
+ */
+int32_t align_ggml_op_rope_imrope(
+    void *ctx, void *slots, int64_t out, int64_t a, int64_t pos,
+    int32_t n_dims, int32_t n_ctx_orig, int32_t freq_base_bits,
+    int32_t s0, int32_t s1, int32_t s2, int32_t s3) {
+    struct ggml_tensor *sp = align_ggml_slot_tensor(slots, pos);
+    int sections[GGML_MROPE_SECTIONS] = {s0, s1, s2, s3};
+    float freq_base = align_ggml_bits_to_f32(freq_base_bits);
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sp == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (sa->ne[2] < 1 || sa->ne[2] > INT64_MAX / 4 ||
+        !ggml_is_vector(sp) || sp->type != GGML_TYPE_I32 || sp->ne[0] != sa->ne[2] * 4 ||
+        n_dims < 2 || n_dims > sa->ne[0] || (n_dims & 1) != 0 || n_ctx_orig < 1 ||
+        s0 < 0 || s1 < 0 || s2 < 0 || s3 < 0 ||
+        (int64_t) s0 + s1 + s2 + s3 != n_dims / 2 ||
+        !isfinite(freq_base) || freq_base <= 0.0f) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_rope_multi((struct ggml_context *) ctx, sa, sp, NULL, n_dims, sections,
+                             GGML_ROPE_TYPE_IMROPE, n_ctx_orig, freq_base,
+                             1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+    if (result == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+int32_t align_ggml_op_ssm_conv(
+    void *ctx, void *slots, int64_t out, int64_t input, int64_t kernel) {
+    struct ggml_tensor *weight = align_ggml_slot_tensor(slots, kernel);
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, input)
+    if (weight == NULL) { return ALIGN_GGML_SLOT; }
+    if (!ggml_is_3d(sa) || !ggml_is_matrix(weight) ||
+        sa->type != GGML_TYPE_F32 || weight->type != GGML_TYPE_F32 ||
+        sa->ne[0] < weight->ne[0] || weight->ne[0] < 2 ||
+        sa->ne[0] > 65536 || sa->ne[1] > 65536 ||
+        sa->ne[0] * sa->ne[1] > 134217728 ||
+        sa->ne[1] != weight->ne[1] || sa->ne[2] != 1 ||
+        sa->nb[0] != sizeof(float) || sa->nb[1] != (size_t) sa->ne[0] * sizeof(float) ||
+        weight->nb[0] != sizeof(float) ||
+        weight->nb[1] != (size_t) weight->ne[0] * sizeof(float)) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_ssm_conv((struct ggml_context *) ctx, sa, weight);
+    if (result == NULL) { return ALIGN_GGML_INIT; }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* The first Qwen3.5 text session retains only the final DeltaNet state (K=1).
+ * Check all six operands before calling ggml, whose graph constructor asserts.
+ */
+int32_t align_ggml_op_gated_delta_net_final(
+    void *ctx, void *slots, int64_t out, int64_t q, int64_t k, int64_t v,
+    int64_t gate, int64_t beta, int64_t state) {
+    struct ggml_tensor *sq = align_ggml_slot_tensor(slots, q);
+    struct ggml_tensor *sk = align_ggml_slot_tensor(slots, k);
+    struct ggml_tensor *sv = align_ggml_slot_tensor(slots, v);
+    struct ggml_tensor *sg = align_ggml_slot_tensor(slots, gate);
+    struct ggml_tensor *sb = align_ggml_slot_tensor(slots, beta);
+    struct ggml_tensor *ss = align_ggml_slot_tensor(slots, state);
+    struct ggml_tensor *result = NULL;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (sq == NULL || sk == NULL || sv == NULL || sg == NULL || sb == NULL || ss == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (sq->type != GGML_TYPE_F32 || sk->type != GGML_TYPE_F32 ||
+        sv->type != GGML_TYPE_F32 || sg->type != GGML_TYPE_F32 ||
+        sb->type != GGML_TYPE_F32 || ss->type != GGML_TYPE_F32 ||
+        !ggml_is_contiguous_rows(sq) || !ggml_is_contiguous_rows(sk) ||
+        !ggml_is_contiguous_rows(sv) || !ggml_is_contiguous(sg) ||
+        !ggml_is_contiguous(sb) || !ggml_is_contiguous(ss)) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (sv->ne[0] < 1 || sv->ne[0] > 4096 || sv->ne[1] < 1 || sv->ne[1] > 4096 ||
+        sv->ne[2] < 1 || sv->ne[2] > 65536 || sv->ne[3] != 1 ||
+        sv->ne[0] * sv->ne[1] * (sv->ne[2] + sv->ne[0]) > 134217728 ||
+        sq->ne[0] != sv->ne[0] || sk->ne[0] != sv->ne[0] ||
+        sq->ne[1] < 1 || sk->ne[1] < 1 ||
+        sv->ne[1] % sq->ne[1] != 0 || sv->ne[1] % sk->ne[1] != 0 ||
+        sq->ne[2] != sv->ne[2] || sk->ne[2] != sv->ne[2] ||
+        sq->ne[3] != 1 || sk->ne[3] != 1 ||
+        sg->ne[0] != 1 || sb->ne[0] != 1 ||
+        sg->ne[1] != sv->ne[1] || sb->ne[1] != sv->ne[1] ||
+        sg->ne[2] != sv->ne[2] || sb->ne[2] != sv->ne[2] ||
+        sg->ne[3] != 1 || sb->ne[3] != 1 ||
+        ss->ne[0] != sv->ne[0] || ss->ne[1] != sv->ne[0] ||
+        ss->ne[2] != sv->ne[1] || ss->ne[3] != 1) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_gated_delta_net((struct ggml_context *) ctx, sq, sk, sv, sg, sb, ss, 1);
+    if (result == NULL) { return ALIGN_GGML_INIT; }
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 
@@ -4588,6 +4770,45 @@ int32_t align_ggml_op_view_2d(
     if (result == NULL) {
         return ALIGN_GGML_INIT;
     }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* All strides and the offset come from the source tensor. Checked division keeps
+ * malformed indices from overflowing before the reachable byte span is tested. */
+int32_t align_ggml_op_view_3d(
+    void *ctx, void *slots, int64_t out, int64_t a,
+    int64_t ne0, int64_t ne1, int64_t ne2,
+    int32_t nb1_dim, int32_t nb2_dim, int32_t offset_dim, int64_t offset_index) {
+    size_t nb1, nb2, offset, row, span, capacity;
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (nb1_dim < 0 || nb1_dim > 3 || nb2_dim < 0 || nb2_dim > 3
+        || offset_dim < 0 || offset_dim > 3) { return ALIGN_GGML_INIT; }
+    if (ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || offset_index < 0 || ne0 > sa->ne[0]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (sa->type != GGML_TYPE_F32 && sa->type != GGML_TYPE_I32) {
+        return ALIGN_GGML_TYPE;
+    }
+    nb1 = sa->nb[nb1_dim];
+    nb2 = sa->nb[nb2_dim];
+    capacity = ggml_nbytes(sa);
+    row = ggml_row_size(sa->type, ne0);
+    if ((size_t) offset_index > capacity / sa->nb[offset_dim]) { return ALIGN_GGML_BOUNDS; }
+    offset = (size_t) offset_index * sa->nb[offset_dim];
+    span = capacity - offset;
+    if (row > span) { return ALIGN_GGML_BOUNDS; }
+    if ((size_t) ne0 > span / sizeof(float)
+        || (size_t) ne1 > (span / sizeof(float)) / (size_t) ne0
+        || (size_t) ne2 > ((span / sizeof(float)) / (size_t) ne0) / (size_t) ne1) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    span -= row;
+    if ((size_t) (ne1 - 1) > span / nb1) { return ALIGN_GGML_BOUNDS; }
+    span -= (size_t) (ne1 - 1) * nb1;
+    if ((size_t) (ne2 - 1) > span / nb2) { return ALIGN_GGML_BOUNDS; }
+    result = ggml_view_3d((struct ggml_context *) ctx, sa, ne0, ne1, ne2,
+                          nb1, nb2, offset);
+    if (result == NULL) { return ALIGN_GGML_INIT; }
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 
