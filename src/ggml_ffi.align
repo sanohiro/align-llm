@@ -474,6 +474,9 @@ extern "C" link("align_ggml_shim") {
     q: i64, k: i64, v: i64, mask: i64, scale_bits: i32) -> i32
   fn align_ggml_op_reshape_3d(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, ne0: i64, ne1: i64, ne2: i64) -> i32
+  fn align_ggml_op_reshape_4d(
+    ctx: raw, slots: slice<u8>, out: i64, a: i64,
+    ne0: i64, ne1: i64, ne2: i64, ne3: i64) -> i32
   fn align_ggml_op_permute(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, p0: i32, p1: i32, p2: i32, p3: i32) -> i32
   fn align_ggml_op_cont_3d(
@@ -534,6 +537,9 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_op_view_2d(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, ne0: i64, ne1: i64,
     nb1_dim: i32, offset_dim: i32, offset_index: i64) -> i32
+  fn align_ggml_op_view_3d(
+    ctx: raw, slots: slice<u8>, out: i64, a: i64, ne0: i64, ne1: i64, ne2: i64,
+    nb1_dim: i32, nb2_dim: i32, offset_dim: i32, offset_index: i64) -> i32
   fn align_ggml_slot_new_tensor_3d(
     ctx: raw, slots: slice<u8>, out: i64, kind: i32, ne0: i64, ne1: i64, ne2: i64) -> i32
   fn align_ggml_slot_new_strided_tensor_3d(
@@ -1952,6 +1958,16 @@ pub fn op_reshape_3d(
   }
 }
 
+pub fn op_reshape_4d(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64,
+  ne0: i64, ne1: i64, ne2: i64, ne3: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_reshape_4d(ctx, slots, out, a, ne0, ne1, ne2, ne3) as i64,
+      label)
+  }
+}
+
 pub fn op_permute(
   ctx: raw, borrow slots: slice<u8>, out: i64, a: i64,
   p0: i64, p1: i64, p2: i64, p3: i64, label: str,
@@ -2234,6 +2250,22 @@ pub fn op_view_2d(
       align_ggml_op_view_2d(
         ctx, slots, out, a, ne0, ne1, nb1_dim as i32, offset_dim as i32, offset_index) as i64,
       label)
+  }
+}
+
+pub fn op_view_3d(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64,
+  ne0: i64, ne1: i64, ne2: i64,
+  nb1_dim: i64, nb2_dim: i64, offset_dim: i64, offset_index: i64,
+  label: str,
+) -> Result<(), Fault> {
+  if nb1_dim < 0 || nb1_dim > 3 || nb2_dim < 0 || nb2_dim > 3
+    || offset_dim < 0 || offset_dim > 3 {
+    return Err(r5_fault(STATUS_INIT, label))
+  }
+  unsafe {
+    return r5_result(align_ggml_op_view_3d(ctx, slots, out, a, ne0, ne1, ne2,
+        nb1_dim as i32, nb2_dim as i32, offset_dim as i32, offset_index) as i64, label)
   }
 }
 

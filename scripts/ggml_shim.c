@@ -4328,6 +4328,25 @@ int32_t align_ggml_op_reshape_3d(
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 
+int32_t align_ggml_op_reshape_4d(
+    void *ctx, void *slots, int64_t out, int64_t a,
+    int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
+    int64_t remaining = 0;
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || ne3 <= 0 || !ggml_is_contiguous(sa)) {
+        return ALIGN_GGML_SHAPE;
+    }
+    remaining = ggml_nelements(sa);
+    if (remaining % ne0 != 0) { return ALIGN_GGML_SHAPE; }
+    remaining /= ne0;
+    if (remaining % ne1 != 0) { return ALIGN_GGML_SHAPE; }
+    remaining /= ne1;
+    if (remaining % ne2 != 0 || remaining / ne2 != ne3) { return ALIGN_GGML_SHAPE; }
+    result = ggml_reshape_4d((struct ggml_context *) ctx, sa, ne0, ne1, ne2, ne3);
+    if (result == NULL) { return ALIGN_GGML_INIT; }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
 int32_t align_ggml_op_permute(
     void *ctx, void *slots, int64_t out, int64_t a,
     int32_t p0, int32_t p1, int32_t p2, int32_t p3) {
@@ -4737,6 +4756,45 @@ int32_t align_ggml_op_view_2d(
     if (result == NULL) {
         return ALIGN_GGML_INIT;
     }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* All strides and the offset come from the source tensor. Checked division keeps
+ * malformed indices from overflowing before the reachable byte span is tested. */
+int32_t align_ggml_op_view_3d(
+    void *ctx, void *slots, int64_t out, int64_t a,
+    int64_t ne0, int64_t ne1, int64_t ne2,
+    int32_t nb1_dim, int32_t nb2_dim, int32_t offset_dim, int64_t offset_index) {
+    size_t nb1, nb2, offset, row, span, capacity;
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (nb1_dim < 0 || nb1_dim > 3 || nb2_dim < 0 || nb2_dim > 3
+        || offset_dim < 0 || offset_dim > 3) { return ALIGN_GGML_INIT; }
+    if (ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || offset_index < 0 || ne0 > sa->ne[0]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (sa->type != GGML_TYPE_F32 && sa->type != GGML_TYPE_I32) {
+        return ALIGN_GGML_TYPE;
+    }
+    nb1 = sa->nb[nb1_dim];
+    nb2 = sa->nb[nb2_dim];
+    capacity = ggml_nbytes(sa);
+    row = ggml_row_size(sa->type, ne0);
+    if ((size_t) offset_index > capacity / sa->nb[offset_dim]) { return ALIGN_GGML_BOUNDS; }
+    offset = (size_t) offset_index * sa->nb[offset_dim];
+    span = capacity - offset;
+    if (row > span) { return ALIGN_GGML_BOUNDS; }
+    if ((size_t) ne0 > span / sizeof(float)
+        || (size_t) ne1 > (span / sizeof(float)) / (size_t) ne0
+        || (size_t) ne2 > ((span / sizeof(float)) / (size_t) ne0) / (size_t) ne1) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    span -= row;
+    if ((size_t) (ne1 - 1) > span / nb1) { return ALIGN_GGML_BOUNDS; }
+    span -= (size_t) (ne1 - 1) * nb1;
+    if ((size_t) (ne2 - 1) > span / nb2) { return ALIGN_GGML_BOUNDS; }
+    result = ggml_view_3d((struct ggml_context *) ctx, sa, ne0, ne1, ne2,
+                          nb1, nb2, offset);
+    if (result == NULL) { return ALIGN_GGML_INIT; }
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 

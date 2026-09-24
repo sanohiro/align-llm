@@ -1070,7 +1070,7 @@ typedef struct align_stub_tensor {
      * entry exactly: `align_ggml_graph_context_bytes` is `node_capacity * sizeof(this struct)`, so
      * growing the record by one pointer would move `abi.graph_context_bytes` in every R5A, R5B,
      * and R5C golden document for a change that has nothing to do with those arms. */
-    int64_t lp[2];
+    int64_t lp[3];
     int32_t is_output;
     int32_t visited;
     int32_t context;
@@ -1493,8 +1493,12 @@ static void align_stub_run(align_stub_tensor *t) {
      * expose. */
     case ALIGN_STUB_OP_VIEW: {
         const unsigned char *from = (const unsigned char *) a->data + t->lp[1];
-        for (i1 = 0; i1 < t->ne[1]; i1++) {
-            memcpy(d + i1 * t->ne[0], from + i1 * t->lp[0], (size_t) t->ne[0] * 4);
+        for (i2 = 0; i2 < t->ne[2]; i2++) {
+            for (i1 = 0; i1 < t->ne[1]; i1++) {
+                memcpy(d + t->ne[0] * (i1 + t->ne[1] * i2),
+                       from + i1 * t->lp[0] + i2 * t->lp[2],
+                       (size_t) t->ne[0] * 4);
+            }
         }
     } break;
     /* R6 section 2.5. `ggml_concat` along `dim`: `a`'s elements keep their own coordinates and
@@ -4472,6 +4476,24 @@ int32_t align_ggml_op_reshape_3d(
         sa, NULL, ALIGN_STUB_OP_RESHAPE);
 }
 
+int32_t align_ggml_op_reshape_4d(
+    void *ctx, void *slots, int64_t out, int64_t a,
+    int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    int64_t remaining;
+    if (sa == NULL) { return ALIGN_GGML_SLOT; }
+    if (ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || ne3 <= 0) { return ALIGN_GGML_SHAPE; }
+    remaining = align_stub_nelements(sa);
+    if (remaining % ne0 != 0) { return ALIGN_GGML_SHAPE; }
+    remaining /= ne0;
+    if (remaining % ne1 != 0) { return ALIGN_GGML_SHAPE; }
+    remaining /= ne1;
+    if (remaining % ne2 != 0 || remaining / ne2 != ne3) { return ALIGN_GGML_SHAPE; }
+    return align_stub_bind(slots, out,
+        align_stub_new(ctx, sa->type, ne0, ne1, ne2, ne3),
+        sa, NULL, ALIGN_STUB_OP_RESHAPE);
+}
+
 int32_t align_ggml_op_permute(
     void *ctx, void *slots, int64_t out, int64_t a,
     int32_t p0, int32_t p1, int32_t p2, int32_t p3) {
@@ -4876,6 +4898,47 @@ int32_t align_ggml_op_view_2d(
     }
     t->lp[0] = nb1;
     t->lp[1] = offset;
+    return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_VIEW);
+}
+
+int32_t align_ggml_op_view_3d(
+    void *ctx, void *slots, int64_t out, int64_t a,
+    int64_t ne0, int64_t ne1, int64_t ne2,
+    int32_t nb1_dim, int32_t nb2_dim, int32_t offset_dim, int64_t offset_index) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    align_stub_tensor *t;
+    int64_t nb[4], nb1, nb2, offset, capacity, span;
+    int i;
+    if (sa == NULL) { return ALIGN_GGML_SLOT; }
+    if (nb1_dim < 0 || nb1_dim > 3 || nb2_dim < 0 || nb2_dim > 3
+        || offset_dim < 0 || offset_dim > 3) { return ALIGN_GGML_INIT; }
+    if (ne0 <= 0 || ne1 <= 0 || ne2 <= 0 || offset_index < 0 || ne0 > sa->ne[0]) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (sa->type != ALIGN_STUB_TYPE_F32 && sa->type != ALIGN_STUB_TYPE_I32) {
+        return ALIGN_GGML_TYPE;
+    }
+    nb[0] = 4;
+    for (i = 1; i < 4; i++) { nb[i] = nb[i - 1] * sa->ne[i - 1]; }
+    nb1 = nb[nb1_dim];
+    nb2 = nb[nb2_dim];
+    capacity = align_stub_nbytes(sa);
+    if (offset_index > capacity / nb[offset_dim]) { return ALIGN_GGML_BOUNDS; }
+    offset = offset_index * nb[offset_dim];
+    span = capacity - offset;
+    if (ne0 > span / 4) { return ALIGN_GGML_BOUNDS; }
+    if (ne1 > (span / 4) / ne0 || ne2 > ((span / 4) / ne0) / ne1) {
+        return ALIGN_GGML_BOUNDS;
+    }
+    span -= ne0 * 4;
+    if (ne1 - 1 > span / nb1) { return ALIGN_GGML_BOUNDS; }
+    span -= (ne1 - 1) * nb1;
+    if (ne2 - 1 > span / nb2) { return ALIGN_GGML_BOUNDS; }
+    t = align_stub_new(ctx, sa->type, ne0, ne1, ne2, 1);
+    if (t == NULL) { return ALIGN_GGML_INIT; }
+    t->lp[0] = nb1;
+    t->lp[1] = offset;
+    t->lp[2] = nb2;
     return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_VIEW);
 }
 

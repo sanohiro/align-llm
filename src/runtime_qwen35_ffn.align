@@ -14,13 +14,22 @@ pub fn build_one(
   borrow g: runtime_qwen35_geometry.Geometry,
   layer: i64, ctx: raw, borrow slots: slice<u8>,
 ) -> Result<(), Error> {
+  return build_many(owner, g, layer, 1, ctx, slots)
+}
+
+pub fn build_many(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  layer: i64, count: i64, ctx: raw, borrow slots: slice<u8>,
+) -> Result<(), Error> {
   if !runtime_qwen35_geometry.valid_layer_pattern(g)
     || layer < 0 || layer >= g.n_layer
+    || count < 1 || count > 128
     || ggml_ffi.handle_absent(ctx)
     || ggml_ffi.slot_ne(slots, INPUT, 0) != g.n_embd
-    || ggml_ffi.slot_ne(slots, INPUT, 1) != 1
+    || ggml_ffi.slot_ne(slots, INPUT, 1) != count
     || ggml_ffi.slot_ne(slots, ATTENTION, 0) != g.n_embd
-    || ggml_ffi.slot_ne(slots, ATTENTION, 1) != 1 {
+    || ggml_ffi.slot_ne(slots, ATTENTION, 1) != count {
     return Err(Error.Invalid)
   }
   base := runtime_qwen35_roles.layer_count(g, layer) - 4

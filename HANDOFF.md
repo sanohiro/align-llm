@@ -143,6 +143,16 @@ optimization floor was not met, and this excludes prompt, sampler, and request s
 Deleting attention Q/K/V `CONT` nodes did not win consistently and was reverted. Next:
 identify the remaining Metal decode cost, then complete longer-prompt/provider parity and
 the paired full-request comparison. No faster-than-llama claim exists.
+The next local checkpoint adds a 128-token batched prefill graph using checked 3-D views and
+4-D reshape, with a following decode graph on the staged state. The Apple M1 pinned Metal owner
+and same-pin llama.cpp oracle match all 248,320 logits exactly at the last prefill token and
+following token 128. Removing an unnecessary recurrent QKV materialization reduced the warmed
+prefill diagnostic from about 122 ms to about 109 ms; removing the attention query
+materialization brought its five-pair median to 108.08 ms, versus 104.55 ms for llama.cpp.
+It remains slower in all five pairs and misses the 15% material floor. The full provider path,
+sampler, contemporary reference, and request latency remain open. Next: check batch shape and
+failure cases, finish the native provider session, then profile and compare complete requests.
+The branch remains an unpublished implementation checkpoint.
 The callback's CPU and Metal builds produce materially different logits, so the Metal oracle is
 the valid comparison for this Metal owner. Remaining: longer-prompt output parity,
 session/provider routing, then paired speed

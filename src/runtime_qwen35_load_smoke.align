@@ -22,8 +22,9 @@ BenchResult { tokens: i64, elapsed_ns: i64 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
   benchmark := (args.len() == 7 || args.len() == 8) && args[6] == "--decode-bench"
+  prefill := args.len() == 9 && args[6] == "--prefill-128"
   edge_dumps := (args.len() == 8 || args.len() == 10) && args[6] != "--decode-bench"
-  if args.len() != 6 && !benchmark && !edge_dumps { return Err(Error.Invalid) }
+  if args.len() != 6 && !benchmark && !prefill && !edge_dumps { return Err(Error.Invalid) }
   source := fs.read_file(args[1])?
   snapshot := gguf.open_snapshot(args[2])?
   g := runtime_qwen35_geometry.parse_snapshot(source, snapshot)?
@@ -63,6 +64,10 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     || runtime_kv.state(owner, ggml_ffi.GPU_KV_CREATED) != 84
     || runtime_kv.state(owner, ggml_ffi.GPU_KV_FINISHED) != 1 {
     return Err(Error.Invalid)
+  }
+  if prefill {
+    run_prefill_128(owner, g, args[7], args[8])?
+    return Ok(())
   }
   mut slot_storage := buffer.filled(1040, 0 as u8)
   slots := slot_storage.bytes()
@@ -336,5 +341,151 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     return Err(Error.Invalid)
   }
   print("qwen35 load: PASS")
+  return Ok(())
+}
+
+fn run_prefill_128(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  dump: str, decode_dump: str,
+) -> Result<(), Error> {
+  count := 128
+  width := runtime_inputs.attention_width(count, g.context_length)?
+  decode_width := runtime_inputs.attention_width(count + 1, g.context_length)?
+  runtime_inputs.begin(owner, 8)?
+  positions := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 4 * count, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  mask := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 0, n_dims: 2, ne0: width, ne1: count, ne2: 1, ne3: 1,
+    })?
+  token := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: count, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  index_input := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  decode_positions := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 4, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  decode_mask := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 0, n_dims: 2, ne0: decode_width, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  decode_token := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  decode_index := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  if positions != 0 || mask != 1 || token != 2 || index_input != 3
+    || decode_positions != 4 || decode_mask != 5 || decode_token != 6
+    || decode_index != 7 {
+    return Err(Error.Invalid)
+  }
+  runtime_inputs.finish(owner)?
+  ctx := ggml_ffi.gpu_graph_context_open(owner, ggml_ffi.GPU_GRAPH_PREFILL, 25165824)
+  if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
+  graph := ggml_ffi.graph_new(ctx)
+  if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
+  mut slot_storage := buffer.filled(1040, 0 as u8)
+  slots := slot_storage.bytes()
+  ggml_ffi.slots_init(slots, slots.len(), "qwen35_prefill_slots") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, token, slots, runtime_qwen35_model.TOKEN) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, positions, slots, runtime_qwen35_model.POSITION) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, mask, slots, runtime_qwen35_model.MASK) else {
+    return Err(Error.Invalid)
+  }
+  mut state := runtime_qwen35_state.new()
+  runtime_qwen35_model.build_tokens(owner, g, state, 0, count,
+    ggml_ffi.GPU_GRAPH_PREFILL, index_input, ctx, graph, slots)?
+  runtime_qwen35_state.finish(state, true)
+  decode_ctx := ggml_ffi.gpu_graph_context_open(owner, ggml_ffi.GPU_GRAPH_DECODE, 25165824)
+  if ggml_ffi.handle_absent(decode_ctx) { return Err(Error.Invalid) }
+  decode_graph := ggml_ffi.graph_new(decode_ctx)
+  if ggml_ffi.handle_absent(decode_graph) { return Err(Error.Invalid) }
+  mut decode_slot_storage := buffer.filled(1040, 0 as u8)
+  decode_slots := decode_slot_storage.bytes()
+  ggml_ffi.slots_init(decode_slots, decode_slots.len(), "qwen35_prefill_decode_slots") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, decode_token, decode_slots, runtime_qwen35_model.TOKEN) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, decode_positions, decode_slots,
+    runtime_qwen35_model.POSITION) else { return Err(Error.Invalid) }
+  ggml_ffi.gpu_input_slot(owner, decode_mask, decode_slots, runtime_qwen35_model.MASK) else {
+    return Err(Error.Invalid)
+  }
+  runtime_qwen35_model.build_one_token(owner, g, state, decode_width - 1,
+    ggml_ffi.GPU_GRAPH_DECODE, decode_index, decode_ctx, decode_graph, decode_slots)?
+  state = runtime_qwen35_state.new()
+  key := "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  decode_key := "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+  runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+  runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
+  mut position_image := buffer.filled(count * 16, 0 as u8)
+  mut position_view := position_image.bytes()
+  runtime_qwen35_geometry.write_text_positions(0, count, position_view)?
+  runtime_inputs.update(owner, positions, 0, position_view)?
+  mut mask_image := buffer.filled(width * count * 4, 0 as u8)
+  mut mask_view := mask_image.bytes()
+  mut query := 0
+  loop {
+    if query >= count { break }
+    mut key_position := query + 1
+    loop {
+      if key_position >= width { break }
+      mask_view.set_u32_le((query * width + key_position) * 4, 4286578688 as u32)
+      key_position = key_position + 1
+    }
+    query = query + 1
+  }
+  runtime_inputs.update(owner, mask, 0, mask_view)?
+  mut token_image := buffer.filled(count * 4, 0 as u8)
+  mut token_view := token_image.bytes()
+  token_view.set_u32_le(4, 23066 as u32)
+  runtime_inputs.update(owner, token, 0, token_view)?
+  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+  started := time.instant()
+  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+  elapsed_ns := time.instant() - started
+  mut output_image := buffer.filled(g.n_vocab * 4, 0 as u8)
+  output := output_image.bytes()
+  ggml_ffi.gpu_slot_get(owner, slots, runtime_qwen35_model.OUTPUT,
+    output, 0, output.len(), "qwen35_prefill_logits") else { return Err(Error.Invalid) }
+  fs.write_file(dump, output)?
+  runtime_qwen35_state.finish(state, true)
+  mut decode_position_image := buffer.filled(16, 0 as u8)
+  mut decode_position_view := decode_position_image.bytes()
+  runtime_qwen35_geometry.write_text_positions(count, 1, decode_position_view)?
+  runtime_inputs.update(owner, decode_positions, 0, decode_position_view)?
+  mut decode_mask_image := buffer.filled(decode_width * 4, 0 as u8)
+  mut decode_mask_view := decode_mask_image.bytes()
+  mut masked_at := count + 1
+  loop {
+    if masked_at >= decode_width { break }
+    decode_mask_view.set_u32_le(masked_at * 4, 4286578688 as u32)
+    masked_at = masked_at + 1
+  }
+  runtime_inputs.update(owner, decode_mask, 0, decode_mask_view)?
+  mut decode_token_image := buffer.filled(4, 0 as u8)
+  mut decode_token_view := decode_token_image.bytes()
+  runtime_inputs.update(owner, decode_token, 0, decode_token_view)?
+  decode_token_view.set_u32_le(0, count as u32)
+  runtime_inputs.update(owner, decode_index, 0, decode_token_view)?
+  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, decode_key, decode_graph)?
+  ggml_ffi.gpu_slot_get(owner, decode_slots, runtime_qwen35_model.OUTPUT,
+    output, 0, output.len(), "qwen35_prefill_decode_logits") else {
+    return Err(Error.Invalid)
+  }
+  fs.write_file(decode_dump, output)?
+  result := BenchResult { tokens: count, elapsed_ns: elapsed_ns }
+  print(json.encode(result)?)
   return Ok(())
 }

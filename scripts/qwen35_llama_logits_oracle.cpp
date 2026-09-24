@@ -44,10 +44,13 @@ static bool compare(const char * path, const float * reference, int32_t count,
 
 int main(int argc, char ** argv) {
     const bool benchmark = (argc == 3 || argc == 4) && std::string(argv[2]) == "--decode-bench";
-    if (argc != 4 && argc != 6 && !benchmark) {
+    const bool prefill = (argc == 4 || argc == 5) &&
+        std::string(argv[2]) == "--prefill-128";
+    if (argc != 4 && argc != 6 && !benchmark && !prefill) {
         std::fprintf(stderr,
                      "usage: qwen35_llama_logits_oracle GGUF ALIGN_FIRST ALIGN_SECOND "
-                     "[ALIGN_THIRD ALIGN_FOURTH] | GGUF --decode-bench [ALIGN_FINAL]\n");
+                     "[ALIGN_THIRD ALIGN_FOURTH] | GGUF --decode-bench [ALIGN_FINAL] "
+                     "| GGUF --prefill-128 ALIGN_FINAL [ALIGN_DECODE]\n");
         return 2;
     }
     llama_backend_init();
@@ -74,7 +77,30 @@ int main(int argc, char ** argv) {
     const int32_t vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
     const llama_token tokens[4] = {0, 23066, 0, 0};
     bool passed = vocab == 248320;
-    for (int32_t step = 0; passed && step < (benchmark ? 4 : argc - 2); ++step) {
+    if (passed && prefill) {
+        std::vector<llama_token> prompt(128, 0);
+        prompt[1] = 23066;
+        passed = llama_decode(context, llama_batch_get_one(prompt.data(), 128)) == 0;
+        if (passed) {
+            passed = llama_get_logits(context) != nullptr;
+            llama_memory_clear(llama_get_memory(context), true);
+        }
+        const auto started = std::chrono::steady_clock::now();
+        passed = passed && llama_decode(context, llama_batch_get_one(prompt.data(), 128)) == 0;
+        const float * logits = passed ? llama_get_logits(context) : nullptr;
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        std::printf("{\"tokens\":128,\"elapsed_ns\":%lld}\n",
+                    static_cast<long long>(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
+        passed = logits && compare(argv[3], logits, vocab, 127);
+        if (passed && argc == 5) {
+            llama_token next = 0;
+            passed = llama_decode(context, llama_batch_get_one(&next, 1)) == 0;
+            logits = passed ? llama_get_logits(context) : nullptr;
+            passed = logits && compare(argv[4], logits, vocab, 128);
+        }
+    }
+    for (int32_t step = 0; passed && !prefill && step < (benchmark ? 4 : argc - 2); ++step) {
         llama_token token = tokens[step];
         if (llama_decode(context, llama_batch_get_one(&token, 1)) != 0) {
             passed = false;

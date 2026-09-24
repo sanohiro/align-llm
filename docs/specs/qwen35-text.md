@@ -248,6 +248,55 @@ and 0.0005222. The fourth step reuses decode parity 1's prepared graph once with
 invalidation. This is a local graph owner checkpoint. A provider session, longer input,
 request latency, and a faster-than-llama claim remain unverified.
 
+### Batched text prefill contract
+
+The next native consumer packs 1..128 prompt IDs in one prefill graph at a validated prefix
+position. Token, four-plane text position, and causal mask inputs have shapes `[T]`, `[4,T]`,
+and `[W,T]`; `W = attention_width(prefix + T, context)` and the mask excludes all keys after
+each query's absolute position. Recurrent convolution joins the committed `(kernel-1)` history
+with a contiguous `[T, channels, 1]` projected token block, retaining only its final
+`(kernel-1)` values. Gated DeltaNet receives Q/K `[state_size, groups, T]`, V/gate/beta
+`[state_size or 1, dt_rank, T]`, and one committed state, with pinned `K=1`; only the final
+state is staged. Full-attention layers write all T K/V rows to the retained-F16 cache before
+the Flash Attention node reads the valid prefix. Each layer's residual/FFN remains `[n_embd,T]`;
+the tied output projection reads only the final token's hidden vector. The graph publishes its
+recurrent parity and attention prefix only after a successful complete compute and logits
+readback. A failed chunk makes the session unusable until reset; it never advertises an
+advanced prefix. Chunk width, start position, attention width, final-output selection, and
+parity are part of topology identity. This implements the already-settled provider contract
+above, without a new public CLI or artifact format.
+The existing thin ggml boundary lacks a strided 3-D view and a 4-D reshape needed to split
+head-interleaved Q/gate and convolution Q/K/V across T tokens. Add only `op_view_3d`, with
+dimensions and selectors into the source's own strides, and `op_reshape_4d`, with a checked
+element product. C derives byte strides and offsets and rejects out-of-range spans before
+calling ggml; Align never supplies raw byte arithmetic. The real and stub shims share the
+same refusal statuses. These are existing pinned ggml operations, so they require no new
+Align language surface.
+
+| Case | Owner and acceptance |
+| --- | --- |
+| Construction | `runtime_qwen35_recurrent`, `runtime_qwen35_attention`, `runtime_qwen35_ffn`, and `runtime_qwen35_model` build one coherent T-token graph; the owner smoke checks shapes at T=1 and T=128 before compute. |
+| Success | A real 0.8B Metal prefill of `[0, 23066, 0, ...]` with T=128 compares all 248,320 last-token logits against one same-pin llama.cpp 128-token prefill and the qualified sequential oracle; a following decode checks state and KV publication. |
+| Malformed input and failure | The builder refuses T=0, T>128, prefix overflow, wrong input extents, or mismatched state geometry before ggml's asserts. The generation owner injects a compute failure and checks that no token is returned and no prefix/parity is published. |
+| Early exit and cleanup | A final prompt chunk selects one output token, and the session releases graph and buffers on cancellation, EOG, or error. The provider owner runs two requests to check no state leakage. |
+
+Local Metal checkpoint (Apple M1, pinned ggml and llama.cpp `bb4caa7`, 0.8B Q4_0,
+128 IDs `[0, 23066, 0, ...]`, 512 context, Flash Attention on): one warmed
+batched prefill and the following token-0 decode match the reference at all
+248,320 logits with maximum absolute difference zero. The prefill timing starts
+after graph preparation and one identical warm compute, and ends before logits
+readback. Five alternating align-llm/llama.cpp pairs after removing the extra
+recurrent QKV materialization measured 109.78/104.70, 109.87/105.88,
+109.27/105.81, 108.93/104.14, and 109.15/104.27 ms. Removing the prefill
+attention query materialization then measured 108.76/104.92, 107.80/104.44,
+108.08/104.43, 108.16/104.65, and 107.91/104.55 ms. The final medians are
+108.08 and 104.55 ms; align-llm remains slower in all five pairs. An initial
+three-pair control with the recurrent materialization measured about 122 ms
+against 104–106 ms. This focused graph measurement excludes load, tokenizer,
+sampler, logits readback, provider startup, and a complete request. Its candidate
+improvement is below the 15% material floor and supports no faster-than-llama
+claim. CPU and CUDA remain unmeasured pending native session qualification.
+
 Align-owned full-model graph construction remains implementation work, not an
 upstream Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the
