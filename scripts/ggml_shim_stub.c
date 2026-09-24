@@ -1066,10 +1066,8 @@ typedef struct align_stub_tensor {
      * schedule the multiply before the ids it reads. */
     struct align_stub_tensor *src[3];
     int32_t ip[4];
-    /* Two, not three. The third slot has never had a user, and dropping it pays for `src`'s third
-     * entry exactly: `align_ggml_graph_context_bytes` is `node_capacity * sizeof(this struct)`, so
-     * growing the record by one pointer would move `abi.graph_context_bytes` in every R5A, R5B,
-     * and R5C golden document for a change that has nothing to do with those arms. */
+    /* The third stride is used by 3D views in batched Qwen3.5 prefill. This record's size feeds
+     * `align_ggml_graph_context_bytes`, so the golden ABI context sizes include that stride. */
     int64_t lp[3];
     int32_t is_output;
     int32_t visited;

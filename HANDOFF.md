@@ -29,7 +29,9 @@ and all three hosted checks. Native `align-runtime` generation is the active bou
 Next actions in priority order:
 1. Finish the retained Qwen3.5 session candidate: format, run the real generation and GPU KV
    owners plus Python boundary guard, complete one comprehensive review, run executable preflight,
-   and publish after checks pass. The batch reuses decode graphs and clears resident KV in one backend
+   and publish after checks pass. Hosted preflight exposed stale stub graph-context golden values
+   from the preceding batched-prefill commit; the regenerated corpus changed only those ABI size
+   fields and awaits the normal owner and preflight run. The batch reuses decode graphs and clears resident KV in one backend
    call while retaining full-vector finite-logit validation. The six-request real smoke passes against pinned
    llama.cpp, including malformed-input recovery and max-one early exit.
 2. Continue the 0.8B prefill bottleneck investigation and perform a strict same-pin and
