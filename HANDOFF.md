@@ -85,6 +85,12 @@ compare prefill plus multistep decode against pinned llama.cpp before profiling.
 geometry smoke, both C shim syntax checks, `ggml_ffi` check, format check, and the ggml-free
 `run-ggml-spike-smoke` pass with the documented Homebrew library path. No native Qwen3.5
 numeric result or speed claim is established by this checkpoint.
+The real 0.8B alignpack has 321 member records but 320 unique source tensors: its final output
+member aliases the embedding's source range. `runtime_qwen35_roles` now maps each layer's 11 or
+14 members to consecutive device slots, shares the embedding slot for output, and checks the
+alias source offset/type/shape/size. Its real-pack smoke passes every role/block and slot,
+including an injected alias mismatch. Next, build the validated load plan and resident
+allocation from this map, then construct the recurrent and full-attention graphs.
 The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
 src/main.align` (3,134 functions), `gmake build` with the documented Homebrew
 `LIBRARY_PATH`, `./scripts/check-format`, `git diff --check`, C syntax

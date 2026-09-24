@@ -1,0 +1,91 @@
+module runtime_qwen35_roles_smoke
+
+import alignpack_read
+import gguf
+import runtime_qwen35_geometry
+import runtime_qwen35_roles
+import std.fs
+
+fn block(borrow index: alignpack_read.PackIndex, at: i64) -> Result<alignpack_read.PackBlock, Error> =
+match alignpack_read.block_at(index, at) {
+  Ok(value) => Ok(value),
+  Err(_) => Err(Error.Invalid),
+}
+
+fn member(
+  borrow pack: file, borrow index: alignpack_read.PackIndex,
+  borrow selected: alignpack_read.PackBlock, at: i64,
+  borrow mut counters: alignpack_read.Counters,
+) -> Result<alignpack_read.PackMember, Error> =
+match alignpack_read.member_at(pack, index, selected, at, counters) {
+  Ok(value) => Ok(value),
+  Err(_) => Err(Error.Invalid),
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 4 { return Err(Error.Invalid) }
+  text := fs.read_file(args[1])?
+  snapshot := gguf.open_snapshot(args[2])?
+  geometry := runtime_qwen35_geometry.parse_snapshot(text, snapshot)?
+  pack := fs.open_rw(args[3])?
+  mut counters := alignpack_read.new_counters()
+  index := alignpack_read.open_pack_bounded(pack, counters, 50) else {
+    return Err(Error.Invalid)
+  }
+  if geometry.n_layer != 24 || index.block_count != 50 || index.member_count != 321
+    || runtime_qwen35_roles.weight_count(geometry) != 320 {
+    return Err(Error.Invalid)
+  }
+  embed_block := block(index, 0)?
+  if embed_block.kind != 0 || embed_block.layer != -1 || embed_block.member_count != 1 {
+    return Err(Error.Invalid)
+  }
+  embedding := member(pack, index, embed_block, 0, counters)?
+  if embedding.role_id != 12 { return Err(Error.Invalid) }
+  mut next_slot := 1
+  mut layer := 0
+  loop {
+    if layer >= geometry.n_layer { break }
+    count := runtime_qwen35_roles.layer_count(geometry, layer)
+    attention_count := count - 3
+    attention := block(index, 1 + 2 * layer)?
+    mlp := block(index, 2 + 2 * layer)?
+    if attention.kind != runtime_qwen35_roles.KIND_ATTENTION || attention.layer != layer
+      || attention.member_count != attention_count
+      || mlp.kind != runtime_qwen35_roles.KIND_MLP || mlp.layer != layer
+      || mlp.member_count != 3 {
+      return Err(Error.Invalid)
+    }
+    mut row := 0
+    loop {
+      if row >= count { break }
+      selected := if row < attention_count { attention } else { mlp }
+      within := if row < attention_count { row } else { row - attention_count }
+      record := member(pack, index, selected, within, counters)?
+      if record.role_id != runtime_qwen35_roles.role_id(geometry, layer, row)?
+        || selected.kind != runtime_qwen35_roles.block_kind(geometry, layer, row)?
+        || runtime_qwen35_roles.layer_slot(geometry, layer, row)? != next_slot {
+        return Err(Error.Invalid)
+      }
+      next_slot = next_slot + 1
+      row = row + 1
+    }
+    layer = layer + 1
+  }
+  head := block(index, 49)?
+  if head.kind != 0 || head.layer != -1 || head.member_count != 2
+    || next_slot != runtime_qwen35_roles.head_norm_slot(geometry) {
+    return Err(Error.Invalid)
+  }
+  norm := member(pack, index, head, 0, counters)?
+  mut output := member(pack, index, head, 1, counters)?
+  if !runtime_qwen35_roles.tied_output_matches(geometry, embedding, norm, output) {
+    return Err(Error.Invalid)
+  }
+  output.source_offset = output.source_offset + 32
+  if runtime_qwen35_roles.tied_output_matches(geometry, embedding, norm, output) {
+    return Err(Error.Invalid)
+  }
+  print("qwen35 roles: PASS")
+  return Ok(())
+}

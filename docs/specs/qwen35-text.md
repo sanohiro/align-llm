@@ -139,6 +139,18 @@ on the next attempted step. The first session does not retain extra DeltaNet sna
 The owning smoke must check layer-to-state indices across the 3/4 and 7/8 block boundaries,
 84 unique allocations, a successful flip, and unchanged active indices on failure before the
 full model oracle is attempted.
+The 0.8B pack has 321 member records but 320 distinct source tensors: its final `output`
+member repeats `token_embd.weight` (270,172,160 bytes). The native weight plan must validate
+that the `output` member has the embedding member's source offset, type, dimensions, and byte
+size before binding the output projection to the already loaded embedding tensor. It then loads
+one embedding, 18 recurrent layers with 14 members each, six attention layers with 11 members
+each, and one output norm: 320 device weight tensors. This avoids a second upload and resident
+copy of the tied embedding; it is a loader ownership rule, not a measured speed claim.
+`runtime_qwen35_roles` now numbers the 320 unique loaded weights in graph order: embedding at
+zero, 14 recurrent or 11 full-attention members per layer, and output norm last. Its owning
+real-pack smoke compares all 321 member role ids and block kinds, checks consecutive weight
+slots, and refuses an altered tied-output source offset. Device allocation and upload are the
+next part of this boundary; role admission alone is not a runnable model.
 The plan must validate the four rope sections from source GGUF, model/pack identity, block roles,
 all state extents and the selected ggml op shapes before graph creation. `ggml_rope_multi`,
 `ggml_ssm_conv`, and `ggml_gated_delta_net` exist at the pin and now have checked shim symbols.

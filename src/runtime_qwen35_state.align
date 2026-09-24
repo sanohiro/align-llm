@@ -12,10 +12,7 @@ pub State { active: i64 }
 pub fn new() -> State = State { active: 0 }
 
 fn valid(borrow g: runtime_qwen35_geometry.Geometry) -> bool =
-g.n_layer >= 1 && g.n_layer <= 512
-  && g.full_attention_interval >= 1 && g.full_attention_interval <= g.n_layer
-  && g.attention_layers == g.n_layer / g.full_attention_interval
-  && g.recurrent_layers == g.n_layer - g.attention_layers
+runtime_qwen35_geometry.valid_layer_pattern(g)
 
 pub fn resident_count(borrow g: runtime_qwen35_geometry.Geometry) -> i64 =
 if valid(g) { 2 * g.attention_layers + 4 * g.recurrent_layers } else { -1 }

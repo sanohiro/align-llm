@@ -1,0 +1,94 @@
+module runtime_qwen35_roles
+
+import alignpack_read
+import runtime_qwen35_geometry
+
+pub KIND_ATTENTION := 1
+pub KIND_MLP := 2
+
+fn valid(borrow g: runtime_qwen35_geometry.Geometry) -> bool =
+runtime_qwen35_geometry.valid_layer_pattern(g)
+
+pub fn full_attention(borrow g: runtime_qwen35_geometry.Geometry, layer: i64) -> bool =
+valid(g) && layer >= 0 && layer < g.n_layer
+  && (layer + 1) % g.full_attention_interval == 0
+
+pub fn layer_count(borrow g: runtime_qwen35_geometry.Geometry, layer: i64) -> i64 {
+  if !valid(g) || layer < 0 || layer >= g.n_layer { return -1 }
+  return if full_attention(g, layer) { 11 } else { 14 }
+}
+
+// Slot zero is the embedding. The tied output projection reuses it.
+pub fn weight_count(borrow g: runtime_qwen35_geometry.Geometry) -> i64 {
+  if !valid(g) { return -1 }
+  return 2 + 14 * g.n_layer - 3 * g.attention_layers
+}
+
+pub fn head_norm_slot(borrow g: runtime_qwen35_geometry.Geometry) -> i64 = weight_count(g) - 1
+
+pub fn layer_slot(
+  borrow g: runtime_qwen35_geometry.Geometry, layer: i64, row: i64,
+) -> Result<i64, Error> {
+  count := layer_count(g, layer)
+  if count < 1 || row < 0 || row >= count { return Err(Error.Invalid) }
+  return Ok(1 + 14 * layer - 3 * (layer / g.full_attention_interval) + row)
+}
+
+pub fn role_id(
+  borrow g: runtime_qwen35_geometry.Geometry, layer: i64, row: i64,
+) -> Result<i64, Error> {
+  if layer_count(g, layer) < 1 || row < 0 || row >= layer_count(g, layer) {
+    return Err(Error.Invalid)
+  }
+  if full_attention(g, layer) {
+    if row == 0 { return Ok(0) } // attn_norm
+    if row == 1 { return Ok(1) } // attn_q
+    if row == 2 { return Ok(27) } // attn_q_norm
+    if row == 3 { return Ok(3) } // attn_k
+    if row == 4 { return Ok(28) } // attn_k_norm
+    if row == 5 { return Ok(5) } // attn_v
+    if row == 6 { return Ok(7) } // attn_output
+    if row == 7 { return Ok(29) } // post_attention_norm
+    return Ok(if row == 8 { 9 } else { if row == 9 { 10 } else { 11 } })
+  }
+  if row == 0 { return Ok(0) } // attn_norm
+  if row == 1 { return Ok(30) } // attn_qkv
+  if row == 2 { return Ok(31) } // attn_gate
+  if row == 3 { return Ok(32) } // ssm_conv1d
+  if row == 4 { return Ok(33) } // ssm_dt
+  if row == 5 { return Ok(34) } // ssm_a
+  if row == 6 { return Ok(35) } // ssm_beta
+  if row == 7 { return Ok(36) } // ssm_alpha
+  if row == 8 { return Ok(37) } // ssm_norm
+  if row == 9 { return Ok(38) } // ssm_out
+  if row == 10 { return Ok(29) } // post_attention_norm
+  return Ok(if row == 11 { 9 } else { if row == 12 { 10 } else { 11 } })
+}
+
+pub fn block_kind(
+  borrow g: runtime_qwen35_geometry.Geometry, layer: i64, row: i64,
+) -> Result<i64, Error> {
+  if layer_count(g, layer) < 1 || row < 0 || row >= layer_count(g, layer) {
+    return Err(Error.Invalid)
+  }
+  return Ok(if row < layer_count(g, layer) - 3 { KIND_ATTENTION } else { KIND_MLP })
+}
+
+pub fn tied_output_matches(
+  borrow g: runtime_qwen35_geometry.Geometry,
+  borrow embedding: alignpack_read.PackMember,
+  borrow norm: alignpack_read.PackMember,
+  borrow output: alignpack_read.PackMember,
+) -> bool =
+valid(g) && embedding.role_id == 12 && norm.role_id == 13 && output.role_id == 14
+  && norm.ggml_type == 0 && norm.n_dims == 1 && norm.dim0 == g.n_embd
+  && norm.dim1 == 1 && norm.dim2 == 1 && norm.dim3 == 1
+  && norm.nbytes == g.n_embd * 4
+  && embedding.n_dims == 2 && embedding.dim0 == g.n_embd && embedding.dim1 == g.n_vocab
+  && embedding.dim2 == 1 && embedding.dim3 == 1
+  && output.source_offset == embedding.source_offset
+  && output.ggml_type == embedding.ggml_type
+  && output.n_dims == embedding.n_dims
+  && output.dim0 == embedding.dim0 && output.dim1 == embedding.dim1
+  && output.dim2 == 1 && output.dim3 == 1
+  && output.nbytes == embedding.nbytes

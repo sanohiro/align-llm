@@ -33,6 +33,12 @@ fn field(value: json.doc, name: str) -> Result<i64, Error> = match value.get(nam
 
 fn bounded(value: i64, low: i64, high: i64) -> bool = value >= low && value <= high
 
+pub fn valid_layer_pattern(borrow g: Geometry) -> bool =
+g.n_layer >= 1 && g.n_layer <= 512
+  && g.full_attention_interval >= 1 && g.full_attention_interval <= g.n_layer
+  && g.attention_layers == g.n_layer / g.full_attention_interval
+  && g.recurrent_layers == g.n_layer - g.attention_layers
+
 // The source GGUF snapshot owns the four section values. Model IR records only their
 // declared type and count, so the caller must pass values read from that same snapshot.
 pub fn parse(text: str, borrow sections: array<i64>) -> Result<Geometry, Error> {
