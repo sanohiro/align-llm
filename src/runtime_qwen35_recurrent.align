@@ -43,7 +43,6 @@ pub fn build_one(
   bind_weights(owner, g, layer, slots)?
   channels := g.ssm_inner_size + 2 * g.ssm_group_count * g.ssm_state_size
   heads := 2 * g.ssm_group_count + g.ssm_time_step_rank
-  scale_bits := runtime_qwen35_geometry.inverse_sqrt_bits(g.ssm_state_size)
 
   ggml_ffi.op_rms_norm(ctx, slots, 21, INPUT, g.rms_eps_bits, "q35_recurrent_norm") else {
     return Err(Error.Invalid)
@@ -120,10 +119,7 @@ pub fn build_one(
   ggml_ffi.op_reshape_3d(ctx, slots, 47, 30, 1, g.ssm_time_step_rank, 1,
     "q35_recurrent_gate_shape") else { return Err(Error.Invalid) }
   runtime_qwen35_state_io.bind_read(owner, g, state, layer, runtime_qwen35_state.DELTA, slots, 48)?
-  ggml_ffi.op_scale(ctx, slots, 49, 43, scale_bits, "q35_recurrent_q_scale") else {
-    return Err(Error.Invalid)
-  }
-  ggml_ffi.op_gated_delta_net_final(ctx, slots, 50, 49, 44, 45, 47, 46, 48,
+  ggml_ffi.op_gated_delta_net_final(ctx, slots, 50, 43, 44, 45, 47, 46, 48,
     "q35_recurrent_delta_net") else { return Err(Error.Invalid) }
   ggml_ffi.op_view_2d(ctx, slots, 51, 50, g.ssm_inner_size, 1, 1, 1, 0,
     "q35_recurrent_delta_output") else { return Err(Error.Invalid) }

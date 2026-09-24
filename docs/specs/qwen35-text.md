@@ -193,6 +193,15 @@ The real pinned-Metal owner executes layer 3 with a synthetic input and nonzero 
 selects Flash Attention before memory admission and uses a 256-wide masked first-token view.
 This is graph execution evidence, not numerical parity or a speed comparison. A decomposed
 attention path remains a separate implementation decision after the first Metal oracle.
+The first complete one-token graph now chains all 24 layers, applies the output RMS norm and
+tied embedding projection, and reads 248,320 logits. The recurrent loader zeroes the active
+state explicitly because backend allocation does not guarantee zero fill. The pinned fused
+Gated DeltaNet receives the L2-normalized Q directly; applying another inverse-square-root
+factor before it changes the layer output and is prohibited. Same-pin Metal callback comparison
+for token 0 matches the first and last logits within a bounded floating tolerance. A second
+sequential step with token 23066 from `! hello` matches the reference's displayed edge logits
+after resident recurrence and KV publication. These focused samples do not establish full-vector
+or longer-prompt parity, a reusable decode session, or a speed result.
 Align-owned full-model graph construction remains implementation work, not an
 upstream Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the

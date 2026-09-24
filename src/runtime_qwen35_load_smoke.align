@@ -4,9 +4,9 @@ import ggml_ffi
 import gguf
 import runtime_attention
 import runtime_qwen35_geometry
-import runtime_qwen35_attention
 import runtime_qwen35_ffn
 import runtime_qwen35_load
+import runtime_qwen35_model
 import runtime_qwen35_recurrent
 import runtime_qwen35_state
 import runtime_qwen35_state_io
@@ -42,11 +42,11 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     payload_bytes = payload_bytes + plan.nbytes[at]
     at = at + 1
   }
-  runtime_attention.select(owner, 1, 1, 1, g.context_length,
+  runtime_attention.select(owner, 1, 1, 2, g.context_length,
     g.head_dim, g.n_head, g.n_head_kv)?
   runtime_memory.admit(owner, runtime_memory.MemoryPlan {
       weights_bytes: plan.weights_bytes, kv_bytes: plan.kv_bytes,
-      workspace_bytes: 268435456, metadata_bytes: 4194304,
+      workspace_bytes: 536870912, metadata_bytes: 67108864,
       staging_bytes: 1048576, legacy_cache_bytes: 0,
     })?
   runtime_memory.allocate(owner)?
@@ -74,7 +74,8 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   if ggml_ffi.slot_ne(slots, 0, 0) != 3 || ggml_ffi.slot_ne(slots, 0, 1) != 6144 {
     return Err(Error.Invalid)
   }
-  runtime_inputs.begin(owner, 3)?
+  runtime_qwen35_state.finish(state, true)
+  runtime_inputs.begin(owner, 5)?
   hidden := runtime_inputs.add(owner, runtime_inputs.Shape {
       ggml_type: 0, n_dims: 2, ne0: g.n_embd, ne1: 1, ne2: 1, ne3: 1,
     })?
@@ -86,58 +87,36 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   mask := runtime_inputs.add(owner, runtime_inputs.Shape {
       ggml_type: 0, n_dims: 2, ne0: width, ne1: 1, ne2: 1, ne3: 1,
     })?
-  if positions != 1 || mask != 2 { return Err(Error.Invalid) }
+  token := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  index_input := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  if positions != 1 || mask != 2 || token != 3 || index_input != 4 {
+    return Err(Error.Invalid)
+  }
   runtime_inputs.finish(owner)?
-  ctx := ggml_ffi.gpu_graph_context_open(owner, ggml_ffi.GPU_GRAPH_PREFILL, 1048576)
+  ctx := ggml_ffi.gpu_graph_context_open(owner, ggml_ffi.GPU_GRAPH_PREFILL, 25165824)
   if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
   graph := ggml_ffi.graph_new(ctx)
   if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
-  ggml_ffi.slots_init(slots, slots.len(), "qwen35_recurrent_slots") else {
+  ggml_ffi.slots_init(slots, slots.len(), "qwen35_first_step_slots") else {
     return Err(Error.Invalid)
   }
-  ggml_ffi.gpu_input_slot(owner, 0, slots, runtime_qwen35_recurrent.INPUT) else {
+  ggml_ffi.gpu_input_slot(owner, 3, slots, runtime_qwen35_model.TOKEN) else {
     return Err(Error.Invalid)
   }
-  runtime_qwen35_recurrent.build_one(owner, g, state, 0, ggml_ffi.GPU_GRAPH_PREFILL,
+  ggml_ffi.gpu_input_slot(owner, 1, slots, runtime_qwen35_model.POSITION) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, 2, slots, runtime_qwen35_model.MASK) else {
+    return Err(Error.Invalid)
+  }
+  runtime_qwen35_model.build_one_token(owner, g, state, 0, ggml_ffi.GPU_GRAPH_PREFILL, 4,
     ctx, graph, slots)?
-  if ggml_ffi.slot_ne(slots, runtime_qwen35_recurrent.OUTPUT, 0) != g.n_embd
-    || ggml_ffi.slot_ne(slots, runtime_qwen35_recurrent.OUTPUT, 1) != 1
-    || ggml_ffi.graph_node_count(graph) < 3 {
-    return Err(Error.Invalid)
-  }
-  ggml_ffi.slot_copy(slots, runtime_qwen35_ffn.INPUT, slots,
-    runtime_qwen35_recurrent.INPUT, "qwen35_ffn_input") else { return Err(Error.Invalid) }
-  ggml_ffi.slot_copy(slots, runtime_qwen35_ffn.ATTENTION, slots,
-    runtime_qwen35_recurrent.OUTPUT, "qwen35_ffn_attention") else { return Err(Error.Invalid) }
-  runtime_qwen35_ffn.build_one(owner, g, 0, ctx, slots)?
-  if ggml_ffi.slot_ne(slots, runtime_qwen35_ffn.OUTPUT, 0) != g.n_embd
-    || ggml_ffi.slot_ne(slots, runtime_qwen35_ffn.OUTPUT, 1) != 1 {
-    return Err(Error.Invalid)
-  }
-  ggml_ffi.slot_mark_output(slots, runtime_qwen35_ffn.OUTPUT,
-    "qwen35_block_output") else { return Err(Error.Invalid) }
-  ggml_ffi.graph_expand(graph, slots, runtime_qwen35_ffn.OUTPUT,
-    "qwen35_block_output") else { return Err(Error.Invalid) }
-  key := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-  runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
-  mut hidden_image := buffer.filled(g.n_embd * 4, 0 as u8)
-  mut hidden_view := hidden_image.bytes()
-  hidden_view.set_u32_le(0, 1065353216 as u32)
-  runtime_inputs.update(owner, 0, 0, hidden_view)?
-  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
-  mut result_image := buffer.filled(g.n_embd * 4, 0 as u8)
-  result := result_image.bytes()
-  ggml_ffi.gpu_slot_get(owner, slots, runtime_qwen35_ffn.OUTPUT,
-    result, 0, result.len(), "qwen35_block_output") else { return Err(Error.Invalid) }
-  mut byte_index := 0
-  mut nonzero := false
-  loop {
-    if byte_index >= result.len() { break }
-    if result[byte_index] != 0 { nonzero = true }
-    byte_index = byte_index + 1
-  }
-  if !nonzero { return Err(Error.Invalid) }
-  attention_ctx := ggml_ffi.gpu_graph_context_open(owner, ggml_ffi.GPU_GRAPH_DECODE, 1048576)
+  runtime_qwen35_state.finish(state, true)
+  attention_ctx := ggml_ffi.gpu_graph_context_open(owner, ggml_ffi.GPU_GRAPH_DECODE, 25165824)
   if ggml_ffi.handle_absent(attention_ctx) { return Err(Error.Invalid) }
   attention_graph := ggml_ffi.graph_new(attention_ctx)
   if ggml_ffi.handle_absent(attention_graph) { return Err(Error.Invalid) }
@@ -146,35 +125,25 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   ggml_ffi.slots_init(attention_slots, attention_slots.len(), "qwen35_attention_slots") else {
     return Err(Error.Invalid)
   }
-  ggml_ffi.gpu_input_slot(owner, 0, attention_slots, runtime_qwen35_attention.INPUT) else {
+  ggml_ffi.gpu_input_slot(owner, 3, attention_slots, runtime_qwen35_model.TOKEN) else {
     return Err(Error.Invalid)
   }
-  ggml_ffi.gpu_input_slot(owner, 1, attention_slots, runtime_qwen35_attention.POSITION) else {
+  ggml_ffi.gpu_input_slot(owner, 1, attention_slots, runtime_qwen35_model.POSITION) else {
     return Err(Error.Invalid)
   }
-  ggml_ffi.gpu_input_slot(owner, 2, attention_slots, runtime_qwen35_attention.MASK) else {
+  ggml_ffi.gpu_input_slot(owner, 2, attention_slots, runtime_qwen35_model.MASK) else {
     return Err(Error.Invalid)
   }
-  runtime_qwen35_attention.build_one(owner, g, 3, 0, ggml_ffi.GPU_GRAPH_DECODE,
+  runtime_qwen35_model.build_one_token(owner, g, state, 1, ggml_ffi.GPU_GRAPH_DECODE, 4,
     attention_ctx, attention_graph, attention_slots)?
-  if ggml_ffi.slot_ne(attention_slots, runtime_qwen35_attention.OUTPUT, 0) != g.n_embd
-    || ggml_ffi.slot_ne(attention_slots, runtime_qwen35_attention.OUTPUT, 1) != 1 {
+  runtime_qwen35_state.finish(state, true)
+  if ggml_ffi.slot_ne(attention_slots, runtime_qwen35_model.OUTPUT, 0) != g.n_vocab
+    || ggml_ffi.slot_ne(attention_slots, runtime_qwen35_model.OUTPUT, 1) != 1 {
     return Err(Error.Invalid)
   }
-  ggml_ffi.slot_copy(attention_slots, runtime_qwen35_ffn.INPUT, attention_slots,
-    runtime_qwen35_attention.INPUT, "qwen35_attention_ffn_input") else {
-    return Err(Error.Invalid)
-  }
-  ggml_ffi.slot_copy(attention_slots, runtime_qwen35_ffn.ATTENTION, attention_slots,
-    runtime_qwen35_attention.OUTPUT, "qwen35_attention_ffn_attention") else {
-    return Err(Error.Invalid)
-  }
-  runtime_qwen35_ffn.build_one(owner, g, 3, attention_ctx, attention_slots)?
-  ggml_ffi.slot_mark_output(attention_slots, runtime_qwen35_ffn.OUTPUT,
-    "qwen35_attention_block_output") else { return Err(Error.Invalid) }
-  ggml_ffi.graph_expand(attention_graph, attention_slots, runtime_qwen35_ffn.OUTPUT,
-    "qwen35_attention_block_output") else { return Err(Error.Invalid) }
+  first_key := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
   attention_key := "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+  runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, first_key, graph)?
   runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_DECODE, attention_key, attention_graph)?
   mut position_image := buffer.filled(16, 0 as u8)
   mut position_view := position_image.bytes()
@@ -189,21 +158,59 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     mask_at = mask_at + 1
   }
   runtime_inputs.update(owner, 2, 0, mask_view)?
-  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, attention_key, attention_graph)?
-  mut attention_result_image := buffer.filled(g.n_embd * 4, 0 as u8)
-  attention_result := attention_result_image.bytes()
-  ggml_ffi.gpu_slot_get(owner, attention_slots, runtime_qwen35_ffn.OUTPUT,
-    attention_result, 0, attention_result.len(), "qwen35_attention_block_output") else {
+  mut token_image := buffer.filled(4, 0 as u8)
+  token_view := token_image.bytes()
+  runtime_inputs.update(owner, 3, 0, token_view)?
+  runtime_inputs.update(owner, 4, 0, token_view)?
+  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, first_key, graph)?
+  mut first_image := buffer.filled(g.n_vocab * 4, 0 as u8)
+  first_logits := first_image.bytes()
+  ggml_ffi.gpu_slot_get(owner, slots, runtime_qwen35_model.OUTPUT,
+    first_logits, 0, first_logits.len(), "qwen35_first_logits") else {
     return Err(Error.Invalid)
   }
-  nonzero = false
-  byte_index = 0
-  loop {
-    if byte_index >= attention_result.len() { break }
-    if attention_result[byte_index] != 0 { nonzero = true }
-    byte_index = byte_index + 1
+  // Same-pin Metal llama-eval-callback, token 0, 512 context, Flash Attention on.
+  if first_logits.f32_le(0) < (6.22 as f32)
+    || first_logits.f32_le(0) > (6.29 as f32)
+    || first_logits.f32_le(4) < (-0.74 as f32)
+    || first_logits.f32_le(4) > (-0.66 as f32)
+    || first_logits.f32_le(8) < (5.57 as f32)
+    || first_logits.f32_le(8) > (5.64 as f32)
+    || first_logits.f32_le((g.n_vocab - 1) * 4) < (-5.53 as f32)
+    || first_logits.f32_le((g.n_vocab - 1) * 4) > (-5.45 as f32) {
+    return Err(Error.Invalid)
   }
-  if !nonzero { return Err(Error.Invalid) }
+  runtime_qwen35_state.finish(state, true)
+  runtime_qwen35_geometry.write_text_positions(1, 1, position_view)?
+  runtime_inputs.update(owner, 1, 0, position_view)?
+  mask_view.set_u32_le(4, 0 as u32)
+  runtime_inputs.update(owner, 2, 0, mask_view)?
+  mut second_token := buffer.filled(4, 0 as u8)
+  mut second_view := second_token.bytes()
+  second_view.set_u32_le(0, 23066 as u32)
+  runtime_inputs.update(owner, 3, 0, second_view)?
+  mut second_index := buffer.filled(4, 0 as u8)
+  mut second_index_view := second_index.bytes()
+  second_index_view.set_u32_le(0, 1 as u32)
+  runtime_inputs.update(owner, 4, 0, second_index_view)?
+  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, attention_key, attention_graph)?
+  mut attention_result_image := buffer.filled(g.n_vocab * 4, 0 as u8)
+  attention_result := attention_result_image.bytes()
+  ggml_ffi.gpu_slot_get(owner, attention_slots, runtime_qwen35_model.OUTPUT,
+    attention_result, 0, attention_result.len(), "qwen35_model_logits") else {
+    return Err(Error.Invalid)
+  }
+  // The second token is 23066 in the reference's "! hello" prompt.
+  if attention_result.f32_le(0) < (13.98 as f32)
+    || attention_result.f32_le(0) > (14.04 as f32)
+    || attention_result.f32_le(4) < (10.98 as f32)
+    || attention_result.f32_le(4) > (11.04 as f32)
+    || attention_result.f32_le(8) < (6.75 as f32)
+    || attention_result.f32_le(8) > (6.81 as f32)
+    || attention_result.f32_le((g.n_vocab - 1) * 4) < (-5.14 as f32)
+    || attention_result.f32_le((g.n_vocab - 1) * 4) > (-5.08 as f32) {
+    return Err(Error.Invalid)
+  }
   print("qwen35 load: PASS")
   return Ok(())
 }

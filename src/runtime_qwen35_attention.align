@@ -18,7 +18,7 @@ pub OUTPUT := 61
 pub fn build_one(
   borrow owner: ggml_ffi.GpuDevice,
   borrow g: runtime_qwen35_geometry.Geometry,
-  layer: i64, position: i64, kind: i64,
+  layer: i64, position: i64, kind: i64, index_input: i64,
   ctx: raw, graph: raw, borrow slots: slice<u8>,
 ) -> Result<(), Error> {
   if !runtime_qwen35_roles.full_attention(g, layer)
@@ -102,10 +102,17 @@ pub fn build_one(
     "q35_attention_key_columns") else { return Err(Error.Invalid) }
   key_index := runtime_qwen35_state.attention_index(g, layer, runtime_qwen35_state.KEY)?
   value_index := runtime_qwen35_state.attention_index(g, layer, runtime_qwen35_state.VALUE)?
-  runtime_kv.write_slot(owner, key_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
-    position, slots, 41, 52)?
-  runtime_kv.write_slot(owner, value_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
-    position, slots, 42, 40)?
+  if kind == ggml_ffi.GPU_GRAPH_PREFILL {
+    runtime_kv.write_prefix(owner, key_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
+      position, position + 1, slots, 41, 52)?
+    runtime_kv.write_prefix(owner, value_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
+      position, position + 1, slots, 42, 40)?
+  } else {
+    runtime_kv.write_indexed_prefix(owner, key_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
+      index_input, position + 1, slots, 41, 52)?
+    runtime_kv.write_indexed_prefix(owner, value_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
+      index_input, position + 1, slots, 42, 40)?
+  }
   ggml_ffi.graph_expand(graph, slots, 41, "q35_attention_key_commit") else {
     return Err(Error.Invalid)
   }

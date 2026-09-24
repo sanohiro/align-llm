@@ -111,8 +111,16 @@ SwiGLU FFN, and second residual with real weights. The synthetic block output is
 The same owner now builds and executes full-attention layer 3 with interleaved Q/gate,
 four-plane M-RoPE, resident KV write, masked Flash Attention and the common FFN tail. Its
 synthetic output is nonzero. The Flash policy is selected before memory admission and both
-KV tensors use sequence-major storage. Next join all 24 layers and the head, then compare
-real token logits/output with pinned llama.cpp, implement session publication, and benchmark.
+KV tensors use sequence-major storage.
+The unpublished full-model graph now joins all 24 layers and the tied output head. A same-pin
+Metal `llama-eval-callback` build identified a duplicated Q scaling in the fused Gated DeltaNet;
+removing it aligned the first recurrent layer and token-0 edge logits. A two-step real Metal
+smoke now matches displayed callback edge logits for token IDs 0 and 23066 (`! hello`) within
+0.03 per selected F32 value, with state parity flipped only after the first successful compute.
+The callback's CPU and Metal builds produce materially different logits, so the Metal oracle is
+the valid comparison for this Metal owner. Remaining: complete-vector and longer-prompt output
+parity, reusable decode graphs across parity flips, session/provider routing, then paired speed
+measurements against same-pin and contemporary llama.cpp. No faster-than-llama claim exists.
 The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
 src/main.align` (3,134 functions), `gmake build` with the documented Homebrew
 `LIBRARY_PATH`, `./scripts/check-format`, `git diff --check`, C syntax
