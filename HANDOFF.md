@@ -2,7 +2,26 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active Qwen3.5 dense-model checkpoint (2026-09-24)
+## Local Qwen3.5 serving guide (2026-09-25)
+
+Branch: `agent/qwen35-2b-perf-next`, based on merged PR #300
+(`c0b30c61`). The 2B source adoption, native generation, HTTP/SSE owner,
+and five-pair same-pin measurement merged in #300 after final-head preflight,
+one clean comprehensive review, and all three hosted checks passed. The
+2B Align request median remained 1355.28 ms versus pinned llama.cpp 1306.84 ms;
+the phase gap lies mostly in graph execution, with no kernel-level cause or
+candidate meeting the declared 15% floor. No faster-than-llama.cpp claim is
+active. The root `main` worktree's unrelated `docs/align-requests.md` edit
+remains untouched.
+
+The current consumer is a tested setup guide for the local 2B OpenAI-compatible
+endpoint, linked from README. The exact guide build and server command ran
+on Apple M1; `/v1/models`, normal chat, and SSE `[DONE]` succeeded. Next:
+run the Markdown classifier preflight, publish and merge the guide, then
+choose a specific operation-level performance hypothesis or a later roadmap
+consumer. CPU/CUDA 2B qualification and large models remain deferred.
+
+## Completed Qwen3.5 dense-model checkpoint (2026-09-24)
 
 Branch: `agent/qwen35-dense-next`, based on merged PR #299 (`35bdd024`).
 The 0.8B loopback OpenAI-compatible chat endpoint, including token-yield SSE,
@@ -38,18 +57,17 @@ interposed repeat gave 1307.37/1253.79 ms graph medians, split approximately
 396.15/375.64 ms prefill and 911.34/878.15 ms decode. No kernel-level cause
 or faster-than-llama.cpp claim is established.
 
-Next actions: finish owner and Python-boundary verification, review the exact
-2B adoption diff, run executable preflight, publish and merge the consumer
-capability. Then investigate a specific same-pin 2B graph operation or host
-overhead before trying a bounded optimization. Keep 27B, 35B MoE and 9B
-deferred. CPU and CUDA 2B qualification remain unmeasured on this host.
+Next performance action: investigate a specific same-pin 2B graph operation
+before trying a bounded optimization. Keep 27B, 35B MoE and 9B deferred.
+CPU and CUDA 2B qualification remain unmeasured on this host.
 
 Durable verification: real 2B Model IR, pack and pack-verify PASS;
 `scripts/run-qwen35-tokenizer-smoke` PASS on 2B;
 `scripts/run-qwen35-generation-smoke` PASS on 2B;
 `scripts/run-openai-serving-smoke` PASS on 2B and regression 0.8B;
 `python3 scripts/check-python-boundary` PASS before the latest owner repair.
-Publication preflight and review remain open.
+Final-head publication preflight, comprehensive review, and hosted checks
+passed; #300 merged as `c0b30c61`.
 
 ## Prior Qwen3.5 text capability checkpoint (2026-09-24)
 
