@@ -93,7 +93,7 @@ fn resident_bytes(
     })?
   v := runtime_weights.allocation_bytes(owner, runtime_weights.Shape {
       ggml_type: 0, n_dims: 3,
-      ne0: kv_capacity, ne1: g.head_dim, ne2: g.n_head_kv, ne3: 1,
+      ne0: g.head_dim, ne1: kv_capacity, ne2: g.n_head_kv, ne3: 1,
     })?
   channels := add(g.ssm_inner_size, mul(2, mul(g.ssm_group_count, g.ssm_state_size)?)?)?
   conv := runtime_weights.allocation_bytes(owner, runtime_weights.Shape {
@@ -128,8 +128,8 @@ pub fn define_resident(
     mut ne1 := 0
     mut ne2 := 0
     if at < 2 * g.attention_layers {
-      ne0 = if at % 2 == 0 { g.head_dim } else { kv_capacity }
-      ne1 = if at % 2 == 0 { kv_capacity } else { g.head_dim }
+      ne0 = g.head_dim
+      ne1 = kv_capacity
       ne2 = g.n_head_kv
     } else if (at - 2 * g.attention_layers) % 4 < 2 {
       ne0 = g.ssm_conv_kernel - 1

@@ -185,6 +185,14 @@ The common one-token block tail adds the attention result to the layer input, ap
 post-attention RMS normalization and its weight, computes a parallel SiLU-gated FFN, and adds
 the FFN result to the first residual. The same Metal owner executes this complete recurrent
 block tail with the real layer-0 weights; numeric oracle parity remains a later gate.
+The one-token full-attention builder splits the joint query/gate projection by the pinned
+head-interleaved stride, normalizes Q and K per head, applies the four-plane text M-RoPE,
+and writes K and V into resident sequence-major tensors before masked Flash Attention.
+It applies the sigmoid gate and output projection; the common tail then completes the block.
+The real pinned-Metal owner executes layer 3 with a synthetic input and nonzero result. It
+selects Flash Attention before memory admission and uses a 256-wide masked first-token view.
+This is graph execution evidence, not numerical parity or a speed comparison. A decomposed
+attention path remains a separate implementation decision after the first Metal oracle.
 Align-owned full-model graph construction remains implementation work, not an
 upstream Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the

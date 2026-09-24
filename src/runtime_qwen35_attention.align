@@ -1,0 +1,146 @@
+module runtime_qwen35_attention
+
+import ggml_ffi
+import runtime_attention
+import runtime_inputs
+import runtime_kv
+import runtime_qwen35_geometry
+import runtime_qwen35_roles
+import runtime_qwen35_state
+
+pub INPUT := 20
+pub POSITION := 21
+pub MASK := 22
+pub OUTPUT := 61
+
+// Builds one full-attention layer for a single token. The caller owns the input tensors,
+// mask values, graph lifetime, and the success-only publication of the prefix.
+pub fn build_one(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  layer: i64, position: i64, kind: i64,
+  ctx: raw, graph: raw, borrow slots: slice<u8>,
+) -> Result<(), Error> {
+  if !runtime_qwen35_roles.full_attention(g, layer)
+    || position < 0 || position >= g.context_length {
+    return Err(Error.Invalid)
+  }
+  if !runtime_attention.fused(owner)
+    || ggml_ffi.handle_absent(ctx) || ggml_ffi.handle_absent(graph) {
+    return Err(Error.Invalid)
+  }
+  if ggml_ffi.slot_ne(slots, INPUT, 0) != g.n_embd
+    || ggml_ffi.slot_ne(slots, INPUT, 1) != 1
+    || ggml_ffi.slot_ne(slots, POSITION, 0) != 4 {
+    return Err(Error.Invalid)
+  }
+  width := runtime_inputs.attention_width(position + 1, g.context_length)?
+  if ggml_ffi.slot_ne(slots, MASK, 0) != width
+    || ggml_ffi.slot_ne(slots, MASK, 1) != 1 {
+    return Err(Error.Invalid)
+  }
+  mut row := 0
+  loop {
+    if row >= 7 { break }
+    index := runtime_qwen35_roles.layer_slot(g, layer, row)?
+    ggml_ffi.gpu_weight_slot(owner, index, slots, row) else { return Err(Error.Invalid) }
+    row = row + 1
+  }
+  ggml_ffi.op_rms_norm(ctx, slots, 23, INPUT, g.rms_eps_bits, "q35_attention_norm") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul(ctx, slots, 24, 23, 0, "q35_attention_norm_weight") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul_mat(ctx, slots, 25, 1, 24, "q35_attention_query_gate") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_reshape_3d(ctx, slots, 26, 25, g.head_dim, 2, g.n_head,
+    "q35_attention_query_gate_shape") else { return Err(Error.Invalid) }
+  ggml_ffi.op_view_2d(ctx, slots, 27, 26, g.head_dim, g.n_head, 2, 1, 0,
+    "q35_attention_query_view") else { return Err(Error.Invalid) }
+  ggml_ffi.op_rms_norm(ctx, slots, 28, 27, g.rms_eps_bits, "q35_attention_query_norm") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul(ctx, slots, 29, 28, 2, "q35_attention_query_norm_weight") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_reshape_3d(ctx, slots, 30, 29, g.head_dim, g.n_head, 1,
+    "q35_attention_query_shape") else { return Err(Error.Invalid) }
+  ggml_ffi.op_rope_imrope(ctx, slots, 31, 30, POSITION, g.rope_dim_count,
+    g.context_length, g.rope_freq_base_bits,
+    g.rope_sections[0], g.rope_sections[1], g.rope_sections[2], g.rope_sections[3],
+    "q35_attention_query_rope") else { return Err(Error.Invalid) }
+  ggml_ffi.op_permute(ctx, slots, 53, 31, 0, 2, 1, 3,
+    "q35_attention_query_order") else { return Err(Error.Invalid) }
+  ggml_ffi.op_cont_3d(ctx, slots, 54, 53, g.head_dim, 1, g.n_head,
+    "q35_attention_query_columns") else { return Err(Error.Invalid) }
+  ggml_ffi.op_mul_mat(ctx, slots, 32, 3, 24, "q35_attention_key") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_reshape_3d(ctx, slots, 33, 32, g.head_dim, g.n_head_kv, 1,
+    "q35_attention_key_shape") else { return Err(Error.Invalid) }
+  ggml_ffi.op_rms_norm(ctx, slots, 34, 33, g.rms_eps_bits, "q35_attention_key_norm") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul(ctx, slots, 35, 34, 4, "q35_attention_key_norm_weight") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_rope_imrope(ctx, slots, 36, 35, POSITION, g.rope_dim_count,
+    g.context_length, g.rope_freq_base_bits,
+    g.rope_sections[0], g.rope_sections[1], g.rope_sections[2], g.rope_sections[3],
+    "q35_attention_key_rope") else { return Err(Error.Invalid) }
+  ggml_ffi.op_mul_mat(ctx, slots, 37, 5, 24, "q35_attention_value") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_reshape_3d(ctx, slots, 38, 37, g.head_dim, g.n_head_kv, 1,
+    "q35_attention_value_shape") else { return Err(Error.Invalid) }
+  runtime_attention.values(ctx, slots, 38, 39, 40, g.head_dim, 1, g.n_head_kv)?
+  ggml_ffi.op_permute(ctx, slots, 51, 36, 0, 2, 1, 3,
+    "q35_attention_key_order") else { return Err(Error.Invalid) }
+  ggml_ffi.op_cont_3d(ctx, slots, 52, 51, g.head_dim, 1, g.n_head_kv,
+    "q35_attention_key_columns") else { return Err(Error.Invalid) }
+  key_index := runtime_qwen35_state.attention_index(g, layer, runtime_qwen35_state.KEY)?
+  value_index := runtime_qwen35_state.attention_index(g, layer, runtime_qwen35_state.VALUE)?
+  runtime_kv.write_slot(owner, key_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
+    position, slots, 41, 52)?
+  runtime_kv.write_slot(owner, value_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
+    position, slots, 42, 40)?
+  ggml_ffi.graph_expand(graph, slots, 41, "q35_attention_key_commit") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.graph_expand(graph, slots, 42, "q35_attention_value_commit") else {
+    return Err(Error.Invalid)
+  }
+  if width > position + 1 {
+    ggml_ffi.op_pad(ctx, slots, 43, 41, 0, width - position - 1, 0, 0,
+      "q35_attention_key_pad") else { return Err(Error.Invalid) }
+    ggml_ffi.op_pad(ctx, slots, 44, 42, 0, width - position - 1, 0, 0,
+      "q35_attention_value_pad") else { return Err(Error.Invalid) }
+  } else {
+    ggml_ffi.slot_copy(slots, 43, slots, 41, "q35_attention_key_ready") else {
+      return Err(Error.Invalid)
+    }
+    ggml_ffi.slot_copy(slots, 44, slots, 42, "q35_attention_value_ready") else {
+      return Err(Error.Invalid)
+    }
+  }
+  runtime_attention.prepare_mask(owner, ctx, slots, MASK)?
+  runtime_attention.output(ctx, slots, 45, 46, 54, 43, 44, MASK,
+    runtime_qwen35_geometry.inverse_sqrt_bits(g.head_dim),
+    g.n_head * g.head_dim, 1)?
+  ggml_ffi.op_view_2d(ctx, slots, 47, 26, g.head_dim, g.n_head, 2, 1, 1,
+    "q35_attention_gate_view") else { return Err(Error.Invalid) }
+  ggml_ffi.op_cont_3d(ctx, slots, 48, 47, g.n_head * g.head_dim, 1, 1,
+    "q35_attention_gate_flat") else { return Err(Error.Invalid) }
+  ggml_ffi.op_sigmoid(ctx, slots, 49, 48, "q35_attention_gate_sigmoid") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul(ctx, slots, 50, 46, 49, "q35_attention_gated") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul_mat(ctx, slots, OUTPUT, 6, 50, "q35_attention_output") else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}

@@ -108,7 +108,11 @@ its output is nonzero and the convolution/DeltaNet copy nodes are included. This
 operation smoke, not a llama.cpp numeric comparison or full-model result.
 The same real Metal smoke now executes the layer-0 post-attention residual, normalization,
 SwiGLU FFN, and second residual with real weights. The synthetic block output is nonzero.
-Next complete the full-attention layers, head, session publication, and pinned oracle comparison.
+The same owner now builds and executes full-attention layer 3 with interleaved Q/gate,
+four-plane M-RoPE, resident KV write, masked Flash Attention and the common FFN tail. Its
+synthetic output is nonzero. The Flash policy is selected before memory admission and both
+KV tensors use sequence-major storage. Next join all 24 layers and the head, then compare
+real token logits/output with pinned llama.cpp, implement session publication, and benchmark.
 The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
 src/main.align` (3,134 functions), `gmake build` with the documented Homebrew
 `LIBRARY_PATH`, `./scripts/check-format`, `git diff --check`, C syntax
