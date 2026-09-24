@@ -45,13 +45,10 @@ pub fn build_one(
   ggml_ffi.op_mul_mat(ctx, slots, 77, 71, 76, "q35_ffn_gate") else {
     return Err(Error.Invalid)
   }
-  ggml_ffi.op_silu(ctx, slots, 78, 77, "q35_ffn_gate_silu") else {
-    return Err(Error.Invalid)
-  }
   ggml_ffi.op_mul_mat(ctx, slots, 79, 72, 76, "q35_ffn_up") else {
     return Err(Error.Invalid)
   }
-  ggml_ffi.op_mul(ctx, slots, 80, 78, 79, "q35_ffn_gated") else {
+  ggml_ffi.op_swiglu_split(ctx, slots, 80, 77, 79, "q35_ffn_gated") else {
     return Err(Error.Invalid)
   }
   ggml_ffi.op_mul_mat(ctx, slots, 82, 73, 80, "q35_ffn_down") else {

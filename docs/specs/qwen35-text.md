@@ -292,6 +292,27 @@ separately. The material floor is at least 15% lower median paired generation la
 least four of five pairs faster, and no more than 5% prompt or startup regression. Preparation
 is capped at 3,600 seconds and the paired experiment at 900 seconds, with a 120-second request
 limit. A missing parity result or invalid receipt is an unmeasured outcome, not a speedup.
+The first measured seam is retained F16 K/V for the six full-attention layers. The control
+retains F32 K/V and casts its fixed 256-token views to F16 before each Flash Attention call;
+the candidate uses the already-qualified cached-F16 policy at allocation and indexed-write
+boundaries. The experiment costs at most 3,600 seconds of preparation and 900 seconds for five
+alternating control/candidate pairs. It must retain four-step full-vector parity and clear the
+15% paired generation-latency floor above before it is called a material optimization. A
+separate same-pin llama.cpp comparison is required for a faster-than-llama claim.
+The focused owner and independent llama.cpp oracle expose `--decode-bench` for diagnosis:
+after four matching warm steps `[0, 23066, 0, 0]`, both execute 124 more token-0 steps and
+obtain full logits before every next step. The JSON result reports `tokens = 124` and
+`elapsed_ns`; it excludes load, prefill, sampling, and session startup. On one Apple M1,
+five alternating F32/F16/reference triples yielded median 2.375/2.307/2.188 seconds.
+F16 beat F32 in five of five pairs but beat the same-pin llama.cpp reference in zero of five.
+Its roughly 3% control improvement misses the 15% material floor. The retained-F16 work
+therefore remains a local candidate; this diagnostic does not support a full-request or
+faster-than-llama claim. The optional final-logits dump also compares the full 248,320-vector
+at step 127 after the same fixed-token sequence; the Metal result was bit-identical to
+the same-pin llama.cpp reference. This verifies long sequential state parity, not batched
+text prefill or generated-token sampling. An attempted removal of the attention Q/K/V `CONT` nodes kept
+four-step exact logits but improved only three of five pairs against F16 and one of five
+against llama.cpp, so that change was discarded.
 After parity, run a separate five-pair same-model comparison against `llama.cpp` at the pinned
 ggml revision and report a contemporary llama.cpp revision as a second, separately labeled
 reference. Fix the GGUF hash, token IDs, generated output, context, sampler, backend, GPU

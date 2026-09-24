@@ -129,10 +129,20 @@ graph contexts. This remains unpublished local implementation work.
 `gmake fmt`, `./scripts/check-format`, `git diff --check`, real/stub shim C syntax,
 `scripts/run-gpu-generation-smoke`, `scripts/run-gpu-session-reuse-smoke`, and
 `scripts/run-gpu-device-smoke` with the required Homebrew `LIBRARY_PATH` pass. The post-format
-real Metal four-step owner and same-pin full-vector oracle also pass. Next: qualify a longer
-prompt and provider session, then run paired decode and end-to-end benchmarks before selecting
-an optimization. The earlier `run-gpu-device-smoke` invocation without `LIBRARY_PATH` stopped
-at linker `-lcrypto`; the corrected invocation passed.
+real Metal four-step owner and same-pin full-vector oracle also pass. The earlier
+`run-gpu-device-smoke` invocation without `LIBRARY_PATH` stopped at linker `-lcrypto`;
+the corrected invocation passed.
+An unpublished optimization candidate now uses pinned `ggml_swiglu_split` for the 24 FFNs
+and the existing cached-F16 policy for the six attention K/V pairs. The fused FFN made
+four-step full-vector Metal logits bit-identical to same-pin llama.cpp; retained F16 preserves
+that parity, including the full vector at step 127 in the fixed-token sequence. The focused
+`--decode-bench` reads full logits after each of 124 post-warm
+token-0 steps. Five alternating F32/F16/llama.cpp triples on Apple M1 measured median
+2.375/2.307/2.188 seconds: F16 beat F32 in all five, llama.cpp in none. The 15% material
+optimization floor was not met, and this excludes prompt, sampler, and request startup.
+Deleting attention Q/K/V `CONT` nodes did not win consistently and was reverted. Next:
+identify the remaining Metal decode cost, then complete longer-prompt/provider parity and
+the paired full-request comparison. No faster-than-llama claim exists.
 The callback's CPU and Metal builds produce materially different logits, so the Metal oracle is
 the valid comparison for this Metal owner. Remaining: longer-prompt output parity,
 session/provider routing, then paired speed

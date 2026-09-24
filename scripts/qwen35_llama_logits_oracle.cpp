@@ -2,8 +2,10 @@
 #include "ggml-backend.h"
 
 #include <cmath>
+#include <chrono>
 #include <cstdio>
 #include <fstream>
+#include <string>
 #include <vector>
 
 static bool compare(const char * path, const float * reference, int32_t count,
@@ -41,10 +43,11 @@ static bool compare(const char * path, const float * reference, int32_t count,
 }
 
 int main(int argc, char ** argv) {
-    if (argc != 4 && argc != 6) {
+    const bool benchmark = (argc == 3 || argc == 4) && std::string(argv[2]) == "--decode-bench";
+    if (argc != 4 && argc != 6 && !benchmark) {
         std::fprintf(stderr,
                      "usage: qwen35_llama_logits_oracle GGUF ALIGN_FIRST ALIGN_SECOND "
-                     "[ALIGN_THIRD ALIGN_FOURTH]\n");
+                     "[ALIGN_THIRD ALIGN_FOURTH] | GGUF --decode-bench [ALIGN_FINAL]\n");
         return 2;
     }
     llama_backend_init();
@@ -71,14 +74,36 @@ int main(int argc, char ** argv) {
     const int32_t vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
     const llama_token tokens[4] = {0, 23066, 0, 0};
     bool passed = vocab == 248320;
-    for (int32_t step = 0; passed && step < argc - 2; ++step) {
+    for (int32_t step = 0; passed && step < (benchmark ? 4 : argc - 2); ++step) {
         llama_token token = tokens[step];
         if (llama_decode(context, llama_batch_get_one(&token, 1)) != 0) {
             passed = false;
             break;
         }
         const float * logits = llama_get_logits(context);
-        passed = logits && compare(argv[step + 2], logits, vocab, step);
+        passed = logits && (benchmark || compare(argv[step + 2], logits, vocab, step));
+    }
+    if (passed && benchmark) {
+        const auto started = std::chrono::steady_clock::now();
+        for (int32_t step = 4; step < 128; ++step) {
+            llama_token token = 0;
+            if (llama_decode(context, llama_batch_get_one(&token, 1)) != 0) {
+                passed = false;
+                break;
+            }
+            const float * logits = llama_get_logits(context);
+            if (!logits || !std::isfinite(logits[0])) {
+                passed = false;
+                break;
+            }
+        }
+        const auto elapsed = std::chrono::steady_clock::now() - started;
+        std::printf("{\"tokens\":124,\"elapsed_ns\":%lld}\n",
+                    static_cast<long long>(
+                        std::chrono::duration_cast<std::chrono::nanoseconds>(elapsed).count()));
+        if (passed && argc == 4) {
+            passed = compare(argv[3], llama_get_logits(context), vocab, 127);
+        }
     }
     llama_free(context);
     llama_model_free(model);
