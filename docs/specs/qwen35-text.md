@@ -85,6 +85,39 @@ clock includes backend synchronization and is not a shader timing profile.
 Both gaps are far below the 15% improvement floor in the wrong direction;
 there is no supported production optimization from these measurements alone.
 
+### Isolated native Metal kernel probe
+
+Before considering a GPU backend change, benchmark representative Q4_0
+decode matrix-vector products (`[2048, 6144]`, `[6144, 2048]`, and
+`[2048, 2048]`, F32 input) with a standalone Metal compute kernel and the
+pinned ggml/Metal backend. The diagnostic owns
+deterministic synthetic weights and input, checks every F32 output within a
+declared numerical tolerance, warms both paths, and reports five alternating
+paired synchronized latencies. It excludes model load, graph construction,
+and whole-request execution; it cannot establish a Qwen3.5 or align-runtime
+speedup. Limit implementation and build work to 1,800 seconds and the paired
+measurement to 300 seconds. Keep a kernel only as an independent measurement
+tool unless an end-to-end exact-output owner and the existing 15% request
+floor justify production integration.
+
+The standalone probe is `scripts/bench-metal-q4-matvec.mm`; its native path
+uses Metal directly and ggml is loaded only for the reference path. The source
+header gives the build and run command. On Apple M1 with the pinned Metal
+bundle at ggml `bb4caa7540188872173c44d161602d9271386413`, 12 warm
+iterations per path and five alternating pairs of 20 synchronized executions
+per shape gave the following median milliseconds:
+
+| Q4_0 shape | ggml/Metal | Native Metal | Maximum absolute output difference |
+| --- | ---: | ---: | ---: |
+| `[2048, 6144]` | 0.5160 | 0.6286 | 0.00000763 |
+| `[6144, 2048]` | 0.4752 | 0.6071 | 0.00001240 |
+| `[2048, 2048]` | 0.3246 | 0.3520 | 0.00000763 |
+
+The native kernel passed every output check but lost all 15 paired timing
+comparisons. This proves neither a GPU backend ceiling nor a whole-request
+slowdown from a future custom implementation; it does show that a direct Metal
+Q4_0 matvec must beat an already tuned ggml kernel before replacing that seam.
+
 The first independently useful consumer boundary is `--model-ir` plus `--pack` for this real GGUF. It permits validated model inspection, complete tensor coverage, and an owned layout artifact without claiming inference. The next boundary is `--tokenize` and `--detokenize` on this GGUF, with exact pinned llama.cpp token parity. The existing `--prepare-prompt` command then provides real text-only Qwen3.5 chat input IDs. Text-only native `align-runtime` prefill and decode through `--provider align-runtime` uses that tokenizer plus hybrid recurrent/attention state. Vision, MTP/speculative heads, MoE, and 27B are later consumers. Do not infer their support from a passing 0.8B case. No speed claim is made by this work.
 
 ## Public contract ledger
