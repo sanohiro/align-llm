@@ -2,43 +2,54 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active local OpenAI serving capability (2026-09-24)
+## Active Qwen3.5 dense-model checkpoint (2026-09-24)
 
-Branch: `agent/openai-serving-next`, based on merged PR #298 (`77f42a55`), with
-the serving candidate at `21a1d0da` plus the final review repair. The
-Qwen3.5-0.8B multi-turn history prerequisite is merged. The active consumer is
-loopback-only `--serve-openai` with non-stream and per-token SSE chat over one
-retained native Metal session. Code, real-model owner, plan map and backend parity
-are in progress; no serving PR is published yet. The root `main`
-worktree's unrelated `docs/align-requests.md` modification remains untouched.
+Branch: `agent/qwen35-dense-next`, based on merged PR #299 (`35bdd024`).
+The 0.8B loopback OpenAI-compatible chat endpoint, including token-yield SSE,
+merged in #299. All three hosted checks and final-head preflight passed at
+`cf464f60`; the real owner checked two-turn output against pinned llama.cpp,
+usage, streaming, refusals, disconnect recovery, and restart. Align Request 120
+tracks bounded inbound HTTP receive in [issue #1171](https://github.com/sanohiro/align/issues/1171).
+The root `main` worktree's unrelated uncommitted `docs/align-requests.md`
+remains untouched.
 
-Next actions: commit the final narrow review repair, rerun exact-head
-`scripts/pre-pr` with the serving owner, publish and merge after checks, then
-refresh main and select the next small-model capability.
-Align Request 120 records that pinned `std.http.accept()` allocates the whole
-request body before application validation, so the current 1 MiB HTTP body cap
-is post-read. The endpoint stays loopback-only until Align supplies a bounded
-inbound accept and the consumer verifies it. The existing same-pin Metal
-speed gap versus llama.cpp remains unresolved; no faster-than-llama.cpp claim
-is active. CUDA and CPU Qwen3.5 serving are unmeasured/deferred in
-`docs/backend-parity.md`.
+The next consumer is Qwen3.5 dense 2B Q4_0 native text. The source selected for
+local evaluation is `unsloth/Qwen3.5-2B-GGUF` at Hugging Face commit
+`f6d5376be1edb4d416d56da11e5397a961aca8ae`, member
+`Qwen3.5-2B-Q4_0.gguf` (1,214,873,856 bytes; upstream SHA-256
+`cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1`).
+The complete local file matches that SHA-256 and remains outside Git. The official Qwen text configuration
+has 24 layers, hidden width 2048, eight attention heads, two KV heads, head
+width 256, FFN width 6144, and one full-attention layer every four blocks.
+The complete Model IR, pack and byte-identical pack verification passed. Keep
+weights and generated packs outside Git.
+The first bartowski Q4_0 candidate had 25 blocks including MTP and the text
+frontend refused it. The complete Unsloth file reports 24 layers, 50 blocks,
+248,320 tokens, all 320 tensors assigned, and a valid source-bound pack.
+Its embedded chat template differs from the official one only in the tool-call
+branch; the second exact hash is admitted for text-only conversations.
 
-The current real owner has passed pinned llama.cpp two-turn three-token output,
-SSE parity and termination, wrong-model/unsupported-input refusals, and one
-disconnect followed by a correct fresh request. A sample on Apple M1 observed
-0.735 s startup, 0.114 s non-stream completion, 0.064 s first stream content
-and 0.099 s stream completion; this is a functional owner observation, not a
-speed claim or paired benchmark. `gmake build`, `gmake fmt`, and
-`python3 scripts/check-python-boundary` and the serving owner passed; the
-existing Qwen3.5 generation owner also passed after the first review repair.
-Executable `scripts/pre-pr` passed at `21a1d0da`; the final review found one
-unsafe graph-invalidation swallow and one unimplementable resource-specific
-HTTP 503 promise. Both were corrected in `fbdf3370`, whose exact-head preflight
-passed. A final full-diff review found one prefill-graph cleanup failure path;
-the current narrow repair sends the error before terminating and needs a new
-exact-head preflight. Compute-failure injection, descriptor-growth
-measurement, SDK integration, and paired native-CLI serving timing are explicit
-deferrals in `docs/specs/openai-local-serving.md`.
+The 2B tokenizer, five prompt cases, two history cases, three native generation
+cases and six retained requests pass against pinned llama.cpp. Real HTTP normal
+and SSE replies, refusal, disconnect recovery and restart also pass. Five
+alternating 200-prompt/32-output pairs on Apple M1 produced identical text;
+Align/llama.cpp medians were 1355.28/1306.84 ms, with five Align losses. An
+interposed repeat gave 1307.37/1253.79 ms graph medians, split approximately
+396.15/375.64 ms prefill and 911.34/878.15 ms decode. No kernel-level cause
+or faster-than-llama.cpp claim is established.
+
+Next actions: finish owner and Python-boundary verification, review the exact
+2B adoption diff, run executable preflight, publish and merge the consumer
+capability. Then investigate a specific same-pin 2B graph operation or host
+overhead before trying a bounded optimization. Keep 27B, 35B MoE and 9B
+deferred. CPU and CUDA 2B qualification remain unmeasured on this host.
+
+Durable verification: real 2B Model IR, pack and pack-verify PASS;
+`scripts/run-qwen35-tokenizer-smoke` PASS on 2B;
+`scripts/run-qwen35-generation-smoke` PASS on 2B;
+`scripts/run-openai-serving-smoke` PASS on 2B and regression 0.8B;
+`python3 scripts/check-python-boundary` PASS before the latest owner repair.
+Publication preflight and review remain open.
 
 ## Prior Qwen3.5 text capability checkpoint (2026-09-24)
 

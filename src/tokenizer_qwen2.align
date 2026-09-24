@@ -26,6 +26,7 @@ I64_MAX := 9223372036854775807
 SUPPORTED_CHAT_TEMPLATE_ID := "d5495a1e5db0611132a97e46a65dbb64a642a499421228b9c8b93229097fa9a4"
 SUPPORTED_OLMO_CHAT_TEMPLATE_ID := "fe689ffbd6a4e2d0532d7480696b065b10e0e1eff3f9b9fc4bea415761e4bf4a"
 SUPPORTED_QWEN35_CHAT_TEMPLATE_ID := "273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80"
+SUPPORTED_QWEN35_2B_CHAT_TEMPLATE_ID := "7f0e529032c25183bcd66c7f238da2d377f43be754a94e2725a58c4e16d2ed67"
 
 CLASSIFIER_ID := "align-regex-v1;regex=1.13.1+f020237b6c8eed93db2e2cb53c00c60a8e1bc73da7d073199a1180401450218d;regex-automata=0.4.16+8fcfdb36bda0c880c5931cdc7a2bcdc8ba4556847b9d912bca70bc94708711ad;regex-syntax=0.8.11+d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
@@ -1977,7 +1978,8 @@ fn prepare_snapshot(
   template_id := template_id_of(chat_source)
   template_id_view: str := template_id
   template_olmo := template_id_view == SUPPORTED_OLMO_CHAT_TEMPLATE_ID
-  template_qwen35 := template_id_view == SUPPORTED_QWEN35_CHAT_TEMPLATE_ID
+  template_qwen35 := template_id_view == SUPPORTED_QWEN35_CHAT_TEMPLATE_ID ||
+  template_id_view == SUPPORTED_QWEN35_2B_CHAT_TEMPLATE_ID
   if template_id_view != SUPPORTED_CHAT_TEMPLATE_ID && !template_olmo && !template_qwen35 {
     detail := builder()
     detail.write("sha256[")
@@ -2353,7 +2355,8 @@ pub fn load_generation_snapshot(snapshot: gguf.GgufSnapshot) -> Result<Generatio
   if source.len() > MAX_CHAT_TEMPLATE_BYTES { return Err(Error.Invalid) }
   template_id := template_id_of(source)
   olmo := template_id == SUPPORTED_OLMO_CHAT_TEMPLATE_ID
-  qwen35 := template_id == SUPPORTED_QWEN35_CHAT_TEMPLATE_ID
+  qwen35 := template_id == SUPPORTED_QWEN35_CHAT_TEMPLATE_ID ||
+  template_id == SUPPORTED_QWEN35_2B_CHAT_TEMPLATE_ID
   if !olmo && !qwen35 && template_id != SUPPORTED_CHAT_TEMPLATE_ID { return Err(Error.Invalid) }
   profile := tokenizer_profile(snapshot.table)
   if !profile.ok || profile.olmo != olmo || profile.qwen35 != qwen35 { return Err(Error.Invalid) }

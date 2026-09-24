@@ -59,8 +59,9 @@ def main() -> None:
     with model.open("rb") as stream:
         for chunk in iter(lambda: stream.read(1024 * 1024), b""):
             digest.update(chunk)
-    if digest.hexdigest() != MODEL_SHA256:
-        raise RuntimeError("QWEN35_GGUF differs from the recorded 0.8B Q4_0 file")
+    expected_sha256 = os.environ.get("QWEN35_EXPECTED_SHA256", MODEL_SHA256)
+    if digest.hexdigest() != expected_sha256:
+        raise RuntimeError("QWEN35_GGUF differs from the recorded Qwen3.5 file")
     version_result = subprocess.run([str(reference), "--version"], capture_output=True, timeout=30, check=False)
     if version_result.returncode != 0:
         raise RuntimeError("QWEN35_LLAMA_TOKENIZE version probe failed")
@@ -140,7 +141,7 @@ def main() -> None:
             if completed.returncode == 0 or completed.stdout:
                 raise RuntimeError(f"invalid history {index} was accepted")
     print(f"Qwen3.5 tokenizer PASS: {len(CASES)} token, {len(PROMPT_CASES)} prompt, "
-          f"{len(HISTORY_CASES)} history, and {len(invalid_histories)} refusal cases at {MODEL_SHA256}")
+          f"{len(HISTORY_CASES)} history, and {len(invalid_histories)} refusal cases at {expected_sha256}")
 
 
 if __name__ == "__main__":

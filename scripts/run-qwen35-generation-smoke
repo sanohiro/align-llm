@@ -44,8 +44,9 @@ def main() -> None:
     with model.open("rb") as source:
         for part in iter(lambda: source.read(1024 * 1024), b""):
             digest.update(part)
-    if digest.hexdigest() != MODEL_SHA256:
-        raise RuntimeError("GGUF differs from the recorded 0.8B Q4_0 file")
+    expected_sha256 = os.environ.get("QWEN35_EXPECTED_SHA256", MODEL_SHA256)
+    if digest.hexdigest() != expected_sha256:
+        raise RuntimeError("GGUF differs from the recorded Qwen3.5 file")
     environment = os.environ.copy()
     environment["DYLD_LIBRARY_PATH"] = os.environ["QWEN35_LIB_PATH"]
     reference_environment = environment.copy()

@@ -6,6 +6,85 @@ Status: active. This plan owns the `qwen35` extension; the existing Qwen2 and OL
 
 The first real consumer is `ggml-org/Qwen3.5-0.8B-GGUF`, file `Qwen3.5-0.8B-Q4_0.gguf` (563,036,064 bytes; SHA-256 `57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf`). Its GGUF inspection at the current `.llama-revision` reports architecture `qwen35`, 24 layers, 320 tensors, embedding width 1024, feed-forward width 3584, vocabulary 248320, context 262144, full attention every fourth layer, and 18 recurrent Gated DeltaNet layers. The six full-attention layers and 18 recurrent layers have distinct tensor sets. The file declares `tokenizer.ggml.pre = qwen35` and has a tied output embedding. Before #294, `--model-ir` refused it with `R1_UNSUPPORTED_ARCH`; #294 completed the first boundary.
 
+### Dense 2B adoption after local serving
+
+The next local source candidate is `unsloth/Qwen3.5-2B-GGUF` at revision
+`f6d5376be1edb4d416d56da11e5397a961aca8ae`, member
+`Qwen3.5-2B-Q4_0.gguf` (1,214,873,856 bytes; published SHA-256
+`cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1`).
+The official `Qwen/Qwen3.5-2B` text configuration declares 24 layers, hidden
+width 2048, FFN width 6144, eight attention heads, two KV heads, head width
+256, and full attention every fourth layer. These are source-selection facts,
+not a claim that the local GGUF or Align runtime has passed. Inspect GGUF
+metadata, tensor roles, quantization, template, and digest before adoption.
+An earlier `bartowski/Qwen_Qwen3.5-2B-GGUF` Q4_0 candidate declares 25 blocks,
+including an MTP sidecar. Its header reached the frontend but was refused at
+`qwen35.full_attention_interval`; carrying MTP in a source-bound artifact is a
+separate capability, so this text-only adoption uses the Unsloth trunk file.
+An initial sparse-file header probe of that Unsloth file reported 24 layers,
+50 blocks, 320 assigned tensors, 248,320 vocabulary entries and Model IR `OK`.
+The metadata lists 133 F32, 129 Q4_0, three Q4_1, 36 Q8_0, 18 Q5_K and one
+Q6_K tensors, totaling 1,203,911,936 tensor bytes. It contains no real
+weight bytes and is only a metadata diagnostic, not acceptance evidence.
+Relative to the qualified 0.8B geometry, this header changes embedding width
+1024→2048 and FFN width 3584→6144 while retaining the 24-layer pattern,
+eight attention heads, two KV heads, 256-wide heads and recurrent-state
+dimensions. A vocabulary-only `Hello world` diagnostic gave token IDs
+`[9419, 1814]` from both Align and pinned llama.cpp on the sparse header;
+repeat the complete owner on the authenticated real file.
+The official 2B `tokenizer_config.json` chat template has the same 7,755
+bytes and SHA-256 `273d8e0e683b885071fb17e08d71e5f2a5ddfb5309756181681de4f5a1822d80`
+as the qualified 0.8B source. The authenticated GGUF instead embeds 7,816
+bytes with SHA-256 `7f0e529032c25183bcd66c7f238da2d377f43be754a94e2725a58c4e16d2ed67`.
+The sole template diff is inside the tool-call argument iteration branch:
+the GGUF tests whether the arguments are a mapping and iterates its keys,
+whereas the official source tests whether arguments are defined and uses
+`items`. The supported text-only history and generation prefix branches are
+byte-identical. Admit this exact second hash for the same text-only rendering
+contract, then pair prompt IDs with pinned llama.cpp on the complete GGUF.
+
+The 2B consumer reuses `--model-ir`, `--pack`, tokenizer/history preparation,
+`--runtime-session`, and `--serve-openai`; it adds no public flag or persisted
+schema. Admit the exact source-bound GGUF and pack only after the frontend
+claims every tensor and the pinned llama.cpp tokenizer/prompt and three-token
+greedy oracles pass. Then check repeated native and HTTP requests for state
+isolation. The first implementation batch must keep the current 0.8B owners
+green; any 2B-only shape or weight-role exception must be evidenced by both
+the GGUF and pinned llama.cpp graph before code changes. CPU, CUDA, vision,
+MTP, and MoE are outside this 2B text qualification.
+
+Measure the 2B retained 200-prompt/32-output request against the same-pin
+llama.cpp reference only after exact text parity. Use five alternating pairs
+after two warm requests per process; report prompt, decode, and full request
+separately. A production speed change requires a named operation hypothesis,
+at least 15% lower paired request median, four of five wins, no more than 5%
+prompt or startup regression, and a bounded local build and measurement cost.
+No 2B faster-than-llama.cpp claim is inherited from 0.8B.
+
+The complete source file matches the recorded digest. Model IR accepted all
+320 tensor assignments across 50 blocks; the source tensor payload totals
+1,203,911,936 bytes. `--pack` produced a 1,621,209,088-byte artifact and
+`--pack-verify` reported byte identity. The difference includes a second
+417,177,600-byte tied embedding/output member in the offline pack; it does
+not establish a runtime copy. The pinned tokenizer owner passed eight token,
+five prompt, two history, and five refusal cases. Native generation matched
+pinned llama.cpp on 31-, 200-, and 330-token prompts for three greedy steps,
+and its retained six-request owner passed. The real HTTP owner passed normal
+responses, SSE, rejection, disconnect recovery, and restart on this 2B file.
+The 2B's tested HTTP prompt emitted `<|im_end|>` before its three-token limit;
+the owner compares the visible prefix, `stop` reason, and visible token count.
+
+On Apple M1 Metal, five alternating 200-prompt/32-output pairs after two warm
+requests per process produced identical text. The uninstrumented Align and
+same-pin llama.cpp request medians were 1355.28 and 1306.84 ms; Align was
+slower in all five pairs. The phase-interposed repeat had 1362.31 and
+1299.15 ms wall medians and 1307.37 and 1253.79 ms graph medians, again five
+Align losses. Approximate graph phase medians were 396.15/375.64 ms prefill
+and 911.34/878.15 ms decode for Align/llama.cpp. The instrumented graph
+clock includes backend synchronization and is not a shader timing profile.
+Both gaps are far below the 15% improvement floor in the wrong direction;
+there is no supported production optimization from these measurements alone.
+
 The first independently useful consumer boundary is `--model-ir` plus `--pack` for this real GGUF. It permits validated model inspection, complete tensor coverage, and an owned layout artifact without claiming inference. The next boundary is `--tokenize` and `--detokenize` on this GGUF, with exact pinned llama.cpp token parity. The existing `--prepare-prompt` command then provides real text-only Qwen3.5 chat input IDs. Text-only native `align-runtime` prefill and decode through `--provider align-runtime` uses that tokenizer plus hybrid recurrent/attention state. Vision, MTP/speculative heads, MoE, and 27B are later consumers. Do not infer their support from a passing 0.8B case. No speed claim is made by this work.
 
 ## Public contract ledger
