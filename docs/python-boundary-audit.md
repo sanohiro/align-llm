@@ -220,8 +220,8 @@ owner evidence; an unchanged native boundary needs no repeat GPU campaign.
   the current template-size ceiling; it is test-only and supplies no shipping prompt behavior.
   `qwen35_frontdoor_smoke.py` is a synthetic GGUF fixture and independent CLI oracle; it performs
   no shipping model selection or inference. `run-qwen35-tokenizer-smoke` compares Align CLI token
-  ids and the existing `--prepare-prompt` text-only Qwen3.5 token sequence with a pinned llama.cpp
-  executable on a local real GGUF; it is a qualification oracle only.
+  ids, `--prepare-prompt`, and ordered `--prepare-history` text-only Qwen3.5 token sequences
+  with a pinned llama.cpp executable on a local real GGUF; it is a qualification oracle only.
   `run-qwen35-generation-smoke` independently compares real one-shot and retained-session
   provider output and counts with pinned llama.cpp greedy tokens; it is an optional real-model
   qualification, not inference used by the product.

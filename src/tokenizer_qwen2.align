@@ -86,6 +86,11 @@ pub GenerationPromptResult {
   eog_token_ids: array<i64>,
 }
 
+pub ChatMessage {
+  role: string,
+  content: string,
+}
+
 pub Tokenizer {
   olmo: bool,
   qwen35: bool,
@@ -1889,6 +1894,24 @@ fn qwen35_chat_trim(value: str) -> str {
   return value[begin..end]
 }
 
+fn qwen35_history_assistant(value: str) -> str {
+  trimmed := qwen35_chat_trim(value)
+  mut after := 0
+  mut found := false
+  loop {
+    remaining := trimmed[after..trimmed.len()]
+    position := remaining.find("</think>") else { break }
+    after = after + position + 8
+    found = true
+  }
+  if !found { return trimmed }
+  loop {
+    if after >= trimmed.len() || trimmed.bytes()[after] != 10 { break }
+    after = after + 1
+  }
+  return trimmed[after..trimmed.len()]
+}
+
 fn render_prompt(system: str, user: str, olmo: bool, qwen35: bool, bos_token: str) -> string {
   output := builder()
   if olmo {
@@ -2383,6 +2406,67 @@ pub fn prepare_retained(borrow session: GenerationTokenizer, system: str, user: 
       template_id: session.template_id.clone(), tokenizer_id: session.loaded.tokenizer.tokenizer_id.clone(),
       vocab_size: session.loaded.vocab_size, merge_count: session.loaded.merge_count,
       system_bytes: system.len(), user_bytes: user.len(), prompt_bytes: prompt.len(),
+      token_ids: ids, eog_token_ids: copy_i64(session.eog_ids),
+    })
+}
+
+pub fn prepare_retained_history(
+  borrow session: GenerationTokenizer,
+  borrow messages: array<ChatMessage>,
+) -> Result<GenerationPromptResult, Error> {
+  if !session.loaded.tokenizer.qwen35 || messages.len() < 1 || messages.len() > 128 {
+    return Err(Error.Invalid)
+  }
+  mut index := 0
+  mut system_bytes := 0
+  mut other_bytes := 0
+  mut expected_user := true
+  mut rendered_bytes := 0
+  output := builder()
+  loop {
+    if index >= messages.len() { break }
+    role: str := messages[index].role
+    content: str := messages[index].content
+    if content.len() > MAX_PROMPT_BYTES { return Err(Error.Invalid) }
+    if index == 0 && role == "system" {
+      system_bytes = content.len()
+      output.write("<|im_start|>system\n")
+      output.write(qwen35_chat_trim(content))
+      output.write("<|im_end|>\n")
+      rendered_bytes = 30 + qwen35_chat_trim(content).len()
+    } else {
+      if expected_user {
+        if role != "user" { return Err(Error.Invalid) }
+        output.write("<|im_start|>user\n")
+        output.write(qwen35_chat_trim(content))
+        output.write("<|im_end|>\n")
+        rendered_bytes = rendered_bytes + 28 + qwen35_chat_trim(content).len()
+      } else {
+        if role != "assistant" { return Err(Error.Invalid) }
+        output.write("<|im_start|>assistant\n")
+        visible := qwen35_history_assistant(content)
+        output.write(visible)
+        output.write("<|im_end|>\n")
+        rendered_bytes = rendered_bytes + 33 + visible.len()
+      }
+      other_bytes = other_bytes + content.len()
+      expected_user = !expected_user
+    }
+    if rendered_bytes > MAX_PROMPT_BYTES { return Err(Error.Invalid) }
+    index = index + 1
+  }
+  if expected_user { return Err(Error.Invalid) }
+  output.write("<|im_start|>assistant\n<think>\n\n</think>\n\n")
+  prompt := output.to_string()
+  if prompt.len() > MAX_PROMPT_BYTES { return Err(Error.Invalid) }
+  ids := encode_text(session.loaded.tokenizer, prompt, true,
+    session.letter, session.mark, session.number, session.space)
+  if ids.len() > MAX_OPERATION_TOKEN_IDS { return Err(Error.Invalid) }
+  return Ok(GenerationPromptResult {
+      status: TokenizerStatus.Ok, error_code: "".clone(), error_detail: "".clone(),
+      template_id: session.template_id.clone(), tokenizer_id: session.loaded.tokenizer.tokenizer_id.clone(),
+      vocab_size: session.loaded.vocab_size, merge_count: session.loaded.merge_count,
+      system_bytes: system_bytes, user_bytes: other_bytes, prompt_bytes: prompt.len(),
       token_ids: ids, eog_token_ids: copy_i64(session.eog_ids),
     })
 }

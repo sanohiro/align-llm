@@ -536,6 +536,46 @@ prefill medians were 189.41/201.78 ms and decode graph medians were
 535.75/558.65 ms. Host conditions varied across pairs. The candidate missed
 the 15% and four-win floors and was reverted. Removing five 256-element mask
 conversions did not close the same-pin execution gap.
+
+Another bounded candidate used the pinned llama.cpp attention-cache layout
+for the six full-attention layers: resident K and V each have logical shape
+`[head_dim * kv_heads, capacity, 1]`, with all heads of one token adjacent.
+`runtime_qwen35_load` owns the resident allocation, and
+`runtime_qwen35_attention` reshapes the contiguous projected K/V to that
+write shape and presents the written prefix to Flash Attention as a strided
+`[head_dim, width, kv_heads, 1]` permutation. The indexed KV-write ABI,
+position validation, F16 policy, graph key, total resident bytes, and
+success-only state publication remain unchanged; no persisted artifact or
+schema changes. Prefill, decode, rounded masked tail, request reset, and
+malformed-input recovery must pass the real six-request generation owner.
+The graph trace must show twelve fewer K/V `CONT` nodes in decode and the same
+six Flash Attention and 18 recurrent operations. Allow 1,800 seconds for the
+candidate and owners and 900 seconds for five alternating same-pin
+200-prompt/32-output control/candidate pairs. Ship a material speed claim only
+at 15% lower paired request median, four of five wins, and no more than 5%
+prompt or startup regression; otherwise revert the executable candidate.
+The real six-request generation owner passed against pinned llama.cpp, and the
+decode graph changed from 18 to six `CONT` nodes while preserving six Flash
+Attention and 18 Gated DeltaNet nodes. A detailed trace confirmed that the
+Flash Attention K/V strides now match llama.cpp on the three active dimensions.
+Five alternating control/candidate 200-prompt/32-output pairs with identical
+text measured 772.08/774.50 ms request medians and two candidate wins;
+prefill medians were 188.45/189.48 ms and decode graph medians were
+551.60/552.89 ms. The change missed the 15% and four-win floors and was
+reverted. Eliminating the twelve K/V materializations did not close the gap.
+An Apple M1 Metal System Trace diagnostic split both pinned backends into eight
+command buffers per graph in disposable builds. Both still produced the same
+200-prompt/32-output text. The short GPU intervals were roughly 1.2–1.4 ms
+for Align and 1.0–1.3 ms for llama.cpp; the recurring longer intervals were
+roughly 5.6 ms for both. This split changes command-submission behavior, and
+Xcode's trace exported no shader-profiler rows on this host, so these intervals
+do not identify a slower kernel or support a production change. In the normal
+unsplit debug graph, all 187 decode matrix multiplications matched the pinned
+llama.cpp reference by quantized weight type and shape and by F32 input shape
+and stride. The 18 Gated DeltaNet and 18 convolution nodes also matched on
+their principal input shapes and strides. The remaining same-pin GPU execution
+gap is unresolved; preserve the exact baseline and revisit it when kernel-level
+timing or a specific operation-level hypothesis is available.
 The first measured seam is retained F16 K/V for the six full-attention layers. The control
 retains F32 K/V and casts its fixed 256-token views to F16 before each Flash Attention call;
 the candidate uses the already-qualified cached-F16 policy at allocation and indexed-write

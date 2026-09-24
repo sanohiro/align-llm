@@ -8,9 +8,11 @@ Branch: `agent/qwen35-prefill-next`, based on merged PR #297 (`8080f542`). Activ
 staged Qwen3.5 native text correctness and measured optimization on small and middle-size models,
 then a normally usable OpenAI-compatible local endpoint. Large models, including Qwen3.8-27B and
 Qwen3.5-35B-A3B, are deferred. `docs/specs/qwen35-text.md`
-owns the model contract; `docs/specs/roadmap.md` owns the delivery order. The next active work is
-the Qwen3.5-0.8B prefill speed diagnosis against the same-pin llama.cpp reference. The local HTTP
-contract is settled but serving implementation has not started.
+owns the model contract; `docs/specs/roadmap.md` owns the delivery order. The active work is
+Qwen3.5-0.8B multi-turn prompt history as the first local HTTP serving prerequisite. The
+same-pin GPU speed gap remains unresolved; further speed changes need an operation-level
+hypothesis or a usable kernel trace. The local HTTP contract is settled but serving
+implementation has not started.
 
 The first independently usable boundary is merged: `--model-ir`, `--pack`, and
 `--pack-verify` accept a real Qwen3.5-0.8B Q4_0 GGUF. Its SHA-256 is recorded in the plan;
@@ -102,7 +104,18 @@ Next actions in priority order:
    `CPY` from 42 to 37, but five alternating control/candidate pairs measured
    752.80/786.32 ms request medians and three candidate wins. It missed the
    material speed floor and was reverted. The remaining K/V `CONT` operations
-   are a larger graph difference but still lack operation-level cost evidence.
+   were tested with a llama.cpp-like token-major cache layout: the real owner
+   passed and decode `CONT` fell from 18 to six, but five alternating pairs
+   measured 772.08/774.50 ms control/candidate medians with two wins. The
+   candidate was reverted. Both implementations' 187 decode matrix products
+   match in quantized weight type/shape and F32 input shape/stride; the main
+   Gated DeltaNet and convolution input shapes/strides also match. A temporary
+   eight-command-buffer build of each pinned Metal backend produced matching
+   text and GPU traces, but M1 exported no shader timing rows and the split
+   changes execution. The specific slower kernel remains unknown. Keep the
+   established same-pin baseline; resume speed work on a kernel-level trace or
+   an independently testable operation hypothesis. The next concrete serving
+   prerequisite is ordered multi-turn Qwen3.5 prompt rendering.
    Five alternating
    contemporary llama.cpp default/Metal-optimization-disabled pairs, using the third request
    after two warm requests per process, had 747.07/754.01 ms medians and three default wins.
@@ -112,7 +125,8 @@ Next actions in priority order:
    521.16/515.26 ms control/candidate medians and three candidate wins. Temporary timing placed
    retained prefill near 200 ms and decode near 300 ms. No faster-than-llama.cpp claim is active.
    The root `main` worktree's `docs/align-requests.md` edit remains untouched.
-2. Settle and implement an Align-owned OpenAI-compatible local HTTP endpoint on the passing 0.8B
+2. Finish publication of the `--prepare-history` capability, then implement an Align-owned
+   OpenAI-compatible local HTTP endpoint on the passing 0.8B
    runtime, beginning with a real `POST /v1/chat/completions` request. The existing OpenAI provider
    is a client. `docs/specs/roadmap.md` owns this new delivery order and
    `docs/specs/openai-local-serving.md` now owns the initial endpoint contract. Extend the
