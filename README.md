@@ -79,6 +79,9 @@ make failure-memory-smoke
 
 `make check` checks the complete import graph one module at a time. `make run` compiles and runs the bootstrap CLI. `make build` writes the `main` executable in the repository root; it is ignored by Git.
 
+For local Qwen3.5-2B text chat through the OpenAI-compatible HTTP and streaming
+endpoint, follow the [Apple M1 setup and request guide](docs/qwen35-local-chat.md).
+
 Read [Align development notes](docs/align-development.md) before adding language or standard-library dependencies. Read [AGENTS.md](AGENTS.md) for repository conventions, including the English-only policy for code comments, commits, and pull requests.
 
 The provider demonstration accepts an explicit endpoint and writes the common result record:
