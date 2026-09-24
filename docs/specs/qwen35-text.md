@@ -200,8 +200,18 @@ Gated DeltaNet receives the L2-normalized Q directly; applying another inverse-s
 factor before it changes the layer output and is prohibited. Same-pin Metal callback comparison
 for token 0 matches the first and last logits within a bounded floating tolerance. A second
 sequential step with token 23066 from `! hello` matches the reference's displayed edge logits
-after resident recurrence and KV publication. These focused samples do not establish full-vector
-or longer-prompt parity, a reusable decode session, or a speed result.
+after resident recurrence and KV publication. These displayed samples alone do not establish
+full-vector or longer-prompt parity, a reusable decode session, or a speed result. The owner also
+accepts two optional output paths for complete F32 logits. The independent
+`scripts/qwen35_llama_logits_oracle.cpp`, compiled against the exact pinned llama.cpp headers and
+Metal build, loads the same GGUF with all layers offloaded, context 512, and Flash Attention on.
+It compares every logit in separate decode calls for token IDs 0 and 23066. The Apple M1 result
+is 248,320 finite values per step, maximum absolute differences 0.0004912 and 0.0002388,
+and matching argmax IDs 198 and 11. The oracle rejects an absent or wrong-size dump. This
+establishes two-step full-vector Metal parity only; longer prompts, graph reuse, and provider
+behavior remain open. Build the oracle with the pinned source's `include` and `ggml/include`
+directories and the Metal build's `libllama`; invoke it with `GGUF ALIGN_FIRST ALIGN_SECOND`
+after the smoke writes both dumps. The oracle requires a GPU backend at runtime.
 Align-owned full-model graph construction remains implementation work, not an
 upstream Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the

@@ -117,16 +117,20 @@ Metal `llama-eval-callback` build identified a duplicated Q scaling in the fused
 removing it aligned the first recurrent layer and token-0 edge logits. A two-step real Metal
 smoke now matches displayed callback edge logits for token IDs 0 and 23066 (`! hello`) within
 0.03 per selected F32 value, with state parity flipped only after the first successful compute.
+The optional two output paths dump complete logits, and the independent same-pin Metal oracle
+`scripts/qwen35_llama_logits_oracle.cpp` compares all 248,320 values per step. Maximum absolute
+differences are 0.0004912 and 0.0002388, with matching argmax token IDs 198 and 11.
 The callback's CPU and Metal builds produce materially different logits, so the Metal oracle is
-the valid comparison for this Metal owner. Remaining: complete-vector and longer-prompt output
-parity, reusable decode graphs across parity flips, session/provider routing, then paired speed
+the valid comparison for this Metal owner. Remaining: longer-prompt output parity, reusable decode
+graphs across parity flips, session/provider routing, then paired speed
 measurements against same-pin and contemporary llama.cpp. No faster-than-llama claim exists.
 The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
 src/main.align` (3,134 functions), `gmake build` with the documented Homebrew
 `LIBRARY_PATH`, `./scripts/check-format`, `git diff --check`, C syntax
 checks of the real shim against pinned ggml headers and of the standalone stub, and the
 ggml-free shim build. Numeric M-RoPE
-and the full Qwen3.5 graph have not passed a pinned reference comparison.
+has not passed an isolated pinned reference comparison; two complete model steps have passed
+the full-vector reference comparison.
 
 Reference bottleneck diagnosis: pinned llama.cpp `bb4caa7` on Apple M1, Qwen3.5-0.8B Q4_0,
 three repetitions: CPU 464.98 prompt / 55.32 generation tok/s; Metal 1180.77 / 61.85 with

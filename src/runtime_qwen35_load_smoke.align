@@ -19,7 +19,7 @@ import runtime_weights
 import std.fs
 
 pub fn main(args: array<str>) -> Result<(), Error> {
-  if args.len() != 6 { return Err(Error.Invalid) }
+  if args.len() != 6 && args.len() != 8 { return Err(Error.Invalid) }
   source := fs.read_file(args[1])?
   snapshot := gguf.open_snapshot(args[2])?
   g := runtime_qwen35_geometry.parse_snapshot(source, snapshot)?
@@ -180,6 +180,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     || first_logits.f32_le((g.n_vocab - 1) * 4) > (-5.45 as f32) {
     return Err(Error.Invalid)
   }
+  if args.len() == 8 {
+    fs.write_file(args[6], first_logits)?
+  }
   runtime_qwen35_state.finish(state, true)
   runtime_qwen35_geometry.write_text_positions(1, 1, position_view)?
   runtime_inputs.update(owner, 1, 0, position_view)?
@@ -210,6 +213,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     || attention_result.f32_le((g.n_vocab - 1) * 4) < (-5.14 as f32)
     || attention_result.f32_le((g.n_vocab - 1) * 4) > (-5.08 as f32) {
     return Err(Error.Invalid)
+  }
+  if args.len() == 8 {
+    fs.write_file(args[7], attention_result)?
   }
   print("qwen35 load: PASS")
   return Ok(())
