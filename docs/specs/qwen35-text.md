@@ -208,10 +208,46 @@ Metal build, loads the same GGUF with all layers offloaded, context 512, and Fla
 It compares every logit in separate decode calls for token IDs 0 and 23066. The Apple M1 result
 is 248,320 finite values per step, maximum absolute differences 0.0004912 and 0.0002388,
 and matching argmax IDs 198 and 11. The oracle rejects an absent or wrong-size dump. This
-establishes two-step full-vector Metal parity only; longer prompts, graph reuse, and provider
-behavior remain open. Build the oracle with the pinned source's `include` and `ggml/include`
+established two-step full-vector Metal parity; the next checkpoint below adds graph reuse.
+Longer prompts and provider behavior remain open. Build the oracle with the pinned source's `include` and `ggml/include`
 directories and the Metal build's `libllama`; invoke it with `GGUF ALIGN_FIRST ALIGN_SECOND`
 after the smoke writes both dumps. The oracle requires a GPU backend at runtime.
+
+### Reusable one-token decode graph contract
+
+The Qwen3.5 recurrent state has two resident copies. A successful token flips its active
+parity; the next decode graph must read the newly active copy and stage writes to the other.
+Retain one prepared graph for each decode parity while keeping the existing prefill graph.
+The shim's internal graph-kind ABI adds `GPU_GRAPH_DECODE_ALT = 2` with the same indexed KV,
+input validation, allocation, compute, and failure behavior as decode kind 1. Kinds 1 and 2
+have separate graph contexts, keys, preparation state, and execution counters. Existing Qwen2
+and OLMoE sessions continue to use kinds 0 and 1. A malformed kind fails before indexing any
+array. The Align FFI and `runtime_execution` admit kind 2 only where decode semantics apply.
+
+For one-token Qwen3.5 decode, graph identity includes recurrent parity and a fixed attention
+width bucket. Token ID, text position, indexed KV write position, and causal mask are inputs
+updated for each execution; they do not change graph identity within that bucket. The six
+attention layers share the same indexed position. A graph reads only committed recurrent
+state, stages the opposite parity, and advances parity only after complete compute and output
+readback. The prefill graph remains kind 0 with its existing prefix policy. When width changes,
+invalidate and rebuild the affected parity graph; a failed step cannot publish recurrent state.
+
+| Case | Implementation | Exact regression |
+| --- | --- | --- |
+| Construction and malformed kind | `ggml_ffi`, `runtime_execution`, and real/stub shims accept kind 2 as decode semantics with distinct context and key; reject all other new kinds before array access. | `runtime_device_smoke` plus C shim graph owner test exercise independent preparation, bad kind, and row index admission. |
+| Success and reuse | `runtime_qwen35_model` and `runtime_qwen35_attention` build fixed-width indexed decode graphs for both parities; `runtime_generation` selects parity and updates all inputs. | Real 0.8B Metal owner executes at least three sequential tokens, compares full logits with the pinned llama.cpp oracle, and observes reuse on a repeated parity. |
+| Failure, early exit, and cleanup | `runtime_generation` publishes state only after a successful graph and output read; graph invalidation releases one parity's transient context without touching resident state or the other graph. | The generation owner injects a failed step, checks unchanged parity, then closes and reopens a session without state leakage. |
+
+The focused real Metal smoke now prepares a prefill graph and both decode parity graphs under
+one 96 MiB metadata budget. Each decode graph has a fixed 256-token attention view, reads
+indexed write positions at execution, and uses a mask for future rows. The loader initializes
+the attention planes to zero because the full-width view can include unwritten rows. Four
+successive tokens `[0, 23066, 0, 0]` match the same-pin Metal llama.cpp full logits at all
+248,320 coordinates: maximum absolute differences are 0.0004912, 0.0002388, 0.0002618,
+and 0.0005222. The fourth step reuses decode parity 1's prepared graph once without
+invalidation. This is a local graph owner checkpoint. A provider session, longer input,
+request latency, and a faster-than-llama claim remain unverified.
+
 Align-owned full-model graph construction remains implementation work, not an
 upstream Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the

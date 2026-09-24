@@ -120,9 +120,22 @@ smoke now matches displayed callback edge logits for token IDs 0 and 23066 (`! h
 The optional two output paths dump complete logits, and the independent same-pin Metal oracle
 `scripts/qwen35_llama_logits_oracle.cpp` compares all 248,320 values per step. Maximum absolute
 differences are 0.0004912 and 0.0002388, with matching argmax token IDs 198 and 11.
+The next local checkpoint adds a third internal graph kind for the alternate recurrent parity,
+fixed 256-token decode views with zero-initialized attention planes, and indexed writes for both
+decode graphs. A four-token real Metal smoke `[0, 23066, 0, 0]` passes same-pin full-vector
+comparison (maximum absolute differences 0.0004912, 0.0002388, 0.0002618, 0.0005222); the
+fourth token reuses a prepared decode graph. The real and stub shim now hold three isolated
+graph contexts. This remains unpublished local implementation work.
+`gmake fmt`, `./scripts/check-format`, `git diff --check`, real/stub shim C syntax,
+`scripts/run-gpu-generation-smoke`, `scripts/run-gpu-session-reuse-smoke`, and
+`scripts/run-gpu-device-smoke` with the required Homebrew `LIBRARY_PATH` pass. The post-format
+real Metal four-step owner and same-pin full-vector oracle also pass. Next: qualify a longer
+prompt and provider session, then run paired decode and end-to-end benchmarks before selecting
+an optimization. The earlier `run-gpu-device-smoke` invocation without `LIBRARY_PATH` stopped
+at linker `-lcrypto`; the corrected invocation passed.
 The callback's CPU and Metal builds produce materially different logits, so the Metal oracle is
-the valid comparison for this Metal owner. Remaining: longer-prompt output parity, reusable decode
-graphs across parity flips, session/provider routing, then paired speed
+the valid comparison for this Metal owner. Remaining: longer-prompt output parity,
+session/provider routing, then paired speed
 measurements against same-pin and contemporary llama.cpp. No faster-than-llama claim exists.
 The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
 src/main.align` (3,134 functions), `gmake build` with the documented Homebrew

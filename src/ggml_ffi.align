@@ -99,6 +99,7 @@ pub GPU_GRAPH_REUSES := 2
 pub GPU_GRAPH_INVALIDATIONS := 3
 pub GPU_GRAPH_PREFILL := 0
 pub GPU_GRAPH_DECODE := 1
+pub GPU_GRAPH_DECODE_ALT := 2
 pub GPU_KV_LAYOUT_K := 0
 pub GPU_KV_LAYOUT_V := 1
 
@@ -1002,7 +1003,8 @@ pub fn gpu_kv_prefix_slot(
   out: i64,
 ) -> Result<(), Fault> {
   gpu_failure_activity(GPU_STAGE_PLAN)
-  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE
+    && kind != GPU_GRAPH_DECODE_ALT {
     gpu_note_failure(GPU_STATUS_CONFIG, 0)
     return Err(fault("CONFIG", "graph_kind"))
   }
@@ -1035,7 +1037,8 @@ pub fn gpu_kv_write_slot(
   source: i64,
 ) -> Result<(), Fault> {
   gpu_failure_activity(GPU_STAGE_PLAN)
-  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE
+    && kind != GPU_GRAPH_DECODE_ALT {
     gpu_note_failure(GPU_STATUS_CONFIG, 0)
     return Err(fault("CONFIG", "graph_kind"))
   }
@@ -1075,7 +1078,8 @@ pub fn gpu_kv_write_indexed_prefix(
   borrow slots: slice<u8>, out: i64, source: i64,
 ) -> Result<(), Fault> {
   gpu_failure_activity(GPU_STAGE_PLAN)
-  if (kind != GPU_GRAPH_DECODE && kind != GPU_GRAPH_PREFILL) || (layout != GPU_KV_LAYOUT_K && layout != GPU_KV_LAYOUT_V) {
+  if (kind != GPU_GRAPH_DECODE && kind != GPU_GRAPH_DECODE_ALT
+      && kind != GPU_GRAPH_PREFILL) || (layout != GPU_KV_LAYOUT_K && layout != GPU_KV_LAYOUT_V) {
     gpu_note_failure(GPU_STATUS_CONFIG, 0)
     return Err(fault("CONFIG", "indexed_kv_layout"))
   }
@@ -1169,7 +1173,8 @@ pub fn gpu_mask_prefix_slot(
   out: i64,
 ) -> Result<(), Fault> {
   gpu_failure_activity(GPU_STAGE_PLAN)
-  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE
+    && kind != GPU_GRAPH_DECODE_ALT {
     gpu_note_failure(GPU_STATUS_CONFIG, 0)
     return Err(fault("CONFIG", "graph_kind"))
   }
@@ -1226,7 +1231,8 @@ pub fn gpu_graph_context_open(
   borrow owner: GpuDevice, kind: i64, metadata_bytes: i64,
 ) -> raw {
   gpu_failure_activity(GPU_STAGE_PLAN)
-  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE { return NULL }
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE
+    && kind != GPU_GRAPH_DECODE_ALT { return NULL }
   unsafe {
     return align_gpu_graph_context_open(
       resource.raw(resource.borrow(owner)), kind as i32, metadata_bytes,
@@ -1238,7 +1244,8 @@ pub fn gpu_graph_prepare(
   borrow owner: GpuDevice, kind: i64, topology_key: str, graph: raw,
 ) -> Result<(), Fault> {
   gpu_failure_activity(GPU_STAGE_PLAN)
-  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE
+    && kind != GPU_GRAPH_DECODE_ALT {
     gpu_note_failure(GPU_STATUS_CONFIG, 0)
     return Err(fault("CONFIG", "graph_kind"))
   }
@@ -1254,7 +1261,8 @@ pub fn gpu_graph_prepare(
 
 pub fn gpu_graph_invalidate(borrow owner: GpuDevice, kind: i64) -> Result<(), Fault> {
   gpu_failure_activity(GPU_STAGE_PLAN)
-  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE
+    && kind != GPU_GRAPH_DECODE_ALT {
     gpu_note_failure(GPU_STATUS_CONFIG, 0)
     return Err(fault("CONFIG", "graph_kind"))
   }
@@ -1271,7 +1279,8 @@ pub fn gpu_graph_compute(
   borrow owner: GpuDevice, kind: i64, topology_key: str, graph: raw,
 ) -> Result<(), Fault> {
   gpu_failure_activity(if kind == GPU_GRAPH_PREFILL { GPU_STAGE_PREFILL } else { GPU_STAGE_DECODE })
-  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE {
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE
+    && kind != GPU_GRAPH_DECODE_ALT {
     gpu_note_failure(GPU_STATUS_CONFIG, 0)
     return Err(fault("CONFIG", "graph_kind"))
   }
@@ -1286,14 +1295,16 @@ pub fn gpu_graph_compute(
 }
 
 pub fn gpu_graph_context_lookup(borrow owner: GpuDevice, kind: i64) -> raw {
-  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE { return NULL }
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE
+    && kind != GPU_GRAPH_DECODE_ALT { return NULL }
   unsafe {
     return align_gpu_graph_context_lookup(resource.raw(resource.borrow(owner)), kind as i32)
   }
 }
 
 pub fn gpu_graph_lookup(borrow owner: GpuDevice, kind: i64, topology_key: str) -> raw {
-  if (kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE) || topology_key.len() != 64 {
+  if (kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE
+      && kind != GPU_GRAPH_DECODE_ALT) || topology_key.len() != 64 {
     return NULL
   }
   unsafe {
@@ -1303,7 +1314,8 @@ pub fn gpu_graph_lookup(borrow owner: GpuDevice, kind: i64, topology_key: str) -
 }
 
 pub fn gpu_graph_state(borrow owner: GpuDevice, kind: i64, field: i64) -> i64 {
-  if (kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE)
+  if (kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE
+      && kind != GPU_GRAPH_DECODE_ALT)
     || field < GPU_GRAPH_PREPARED || field > GPU_GRAPH_INVALIDATIONS {
     return -1
   }

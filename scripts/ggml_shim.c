@@ -978,9 +978,10 @@ void *align_ggml_device_by_kind(int32_t kind) {
 #define ALIGN_GPU_COMPUTE             (-9)
 #define ALIGN_GPU_UNSUPPORTED        (-10)
 #define ALIGN_GPU_TRANSFER           (-11)
-#define ALIGN_GPU_GRAPH_KINDS           2
+#define ALIGN_GPU_GRAPH_KINDS           3
 #define ALIGN_GPU_GRAPH_PREFILL         0
 #define ALIGN_GPU_GRAPH_DECODE          1
+#define ALIGN_GPU_GRAPH_DECODE_ALT      2
 
 /* Private diagnostics contain no owner pointer and cannot extend native lifetimes. */
 static _Thread_local int32_t align_gpu_first_status;
@@ -2247,7 +2248,8 @@ int32_t align_gpu_kv_slot(void *owner, int64_t index, void *slots, int64_t out) 
 }
 
 static int align_gpu_graph_kind_ok(int32_t kind) {
-    return kind == ALIGN_GPU_GRAPH_PREFILL || kind == ALIGN_GPU_GRAPH_DECODE;
+    return kind == ALIGN_GPU_GRAPH_PREFILL || kind == ALIGN_GPU_GRAPH_DECODE
+        || kind == ALIGN_GPU_GRAPH_DECODE_ALT;
 }
 
 static struct ggml_context *align_gpu_graph_context_at(
@@ -2258,7 +2260,7 @@ static struct ggml_context *align_gpu_graph_context_at(
     return state->graph_contexts[kind];
 }
 
-/* Root tensor metadata is frozen once the first graph context opens.  Both request-local graph
+/* Root tensor metadata is frozen once the first graph context opens. Request-local graph
  * contexts then occupy fixed, disjoint slices of the already admitted metadata allocation. */
 void *align_gpu_graph_context_open(void *owner, int32_t kind, int64_t metadata_bytes) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
@@ -3133,9 +3135,10 @@ int32_t align_gpu_graph_compute(
         if (!state->prefill_rows_valid) { return ALIGN_GPU_CONFIG; }
         state->prefill_rows_valid = 0;
     }
-    if (kind == ALIGN_GPU_GRAPH_DECODE
-        && ((state->row_registered[0] && !state->row_position_valid)
-            || (state->row_registered[1] && !state->row_values_valid))) { return ALIGN_GPU_CONFIG; }
+    if (kind == ALIGN_GPU_GRAPH_DECODE || kind == ALIGN_GPU_GRAPH_DECODE_ALT) {
+        if ((state->row_registered[0] && !state->row_position_valid)
+            || (state->row_registered[1] && !state->row_values_valid)) { return ALIGN_GPU_CONFIG; }
+    }
     if (kind == ALIGN_GPU_FORCE_COMPUTE_KIND) { state->workspace_failed = 1; return ALIGN_GPU_COMPUTE; }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     if (state->graph_execution_count[kind] == INT64_MAX

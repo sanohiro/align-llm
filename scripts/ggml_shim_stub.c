@@ -1695,9 +1695,10 @@ void *align_ggml_device_by_kind(int32_t kind) {
 #define ALIGN_GPU_COMPUTE             (-9)
 #define ALIGN_GPU_UNSUPPORTED        (-10)
 #define ALIGN_GPU_TRANSFER           (-11)
-#define ALIGN_GPU_GRAPH_KINDS           2
+#define ALIGN_GPU_GRAPH_KINDS           3
 #define ALIGN_GPU_GRAPH_PREFILL         0
 #define ALIGN_GPU_GRAPH_DECODE          1
+#define ALIGN_GPU_GRAPH_DECODE_ALT      2
 
 void *align_ggml_context_open(int64_t mem_bytes);
 void align_ggml_context_close(void *ctx);
@@ -2719,7 +2720,8 @@ int32_t align_gpu_kv_slot(void *owner, int64_t index, void *slots, int64_t out) 
 }
 
 static int align_gpu_graph_kind_ok(int32_t kind) {
-    return kind == ALIGN_GPU_GRAPH_PREFILL || kind == ALIGN_GPU_GRAPH_DECODE;
+    return kind == ALIGN_GPU_GRAPH_PREFILL || kind == ALIGN_GPU_GRAPH_DECODE
+        || kind == ALIGN_GPU_GRAPH_DECODE_ALT;
 }
 
 static void *align_gpu_graph_context_at(
@@ -3028,7 +3030,8 @@ int32_t align_gpu_kv_write_indexed_prefix(
     int64_t lanes;
     int32_t status;
     if (state == NULL || plane == NULL || src == NULL || ids == NULL || ctx == NULL
-        || kind != ALIGN_GPU_GRAPH_DECODE || state->graph_prepared[kind]
+        || (kind != ALIGN_GPU_GRAPH_DECODE && kind != ALIGN_GPU_GRAPH_DECODE_ALT)
+        || state->graph_prepared[kind]
         || (layout != 0 && layout != 1) || width <= 0 || width > plane->ne[axis]
         || plane->type != ALIGN_STUB_TYPE_F32 || src->type != ALIGN_STUB_TYPE_F32
         || ids->type != ALIGN_STUB_TYPE_I32 || ids->ne[1] != 1 || ids->ne[2] != 1 || ids->ne[3] != 1
@@ -3363,9 +3366,10 @@ int32_t align_gpu_graph_compute(
         || memcmp(state->graph_keys[kind], key, 64) != 0) {
         return ALIGN_GPU_CONFIG;
     }
-    if (kind == ALIGN_GPU_GRAPH_DECODE
-        && ((state->row_registered[0] && !state->row_position_valid)
-            || (state->row_registered[1] && !state->row_values_valid))) { return ALIGN_GPU_CONFIG; }
+    if (kind == ALIGN_GPU_GRAPH_DECODE || kind == ALIGN_GPU_GRAPH_DECODE_ALT) {
+        if ((state->row_registered[0] && !state->row_position_valid)
+            || (state->row_registered[1] && !state->row_values_valid)) { return ALIGN_GPU_CONFIG; }
+    }
     if (kind == ALIGN_GPU_FORCE_COMPUTE_KIND) { state->workspace_failed = 1; return ALIGN_GPU_COMPUTE; }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     if (state->graph_execution_count[kind] == INT64_MAX

@@ -41,8 +41,10 @@ static bool compare(const char * path, const float * reference, int32_t count,
 }
 
 int main(int argc, char ** argv) {
-    if (argc != 4) {
-        std::fprintf(stderr, "usage: qwen35_llama_logits_oracle GGUF ALIGN_FIRST ALIGN_SECOND\n");
+    if (argc != 4 && argc != 6) {
+        std::fprintf(stderr,
+                     "usage: qwen35_llama_logits_oracle GGUF ALIGN_FIRST ALIGN_SECOND "
+                     "[ALIGN_THIRD ALIGN_FOURTH]\n");
         return 2;
     }
     llama_backend_init();
@@ -67,9 +69,9 @@ int main(int argc, char ** argv) {
         return 4;
     }
     const int32_t vocab = llama_vocab_n_tokens(llama_model_get_vocab(model));
-    const llama_token tokens[2] = {0, 23066};
+    const llama_token tokens[4] = {0, 23066, 0, 0};
     bool passed = vocab == 248320;
-    for (int32_t step = 0; passed && step < 2; ++step) {
+    for (int32_t step = 0; passed && step < argc - 2; ++step) {
         llama_token token = tokens[step];
         if (llama_decode(context, llama_batch_get_one(&token, 1)) != 0) {
             passed = false;

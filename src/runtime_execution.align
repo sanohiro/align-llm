@@ -79,13 +79,15 @@ pub fn topology_key(
   borrow invocation: TopologyInvocation,
 ) -> Result<string, Error> {
   if (identity.backend != "metal" && identity.backend != "cuda")
-    || (identity.model_id != "qwen2" && identity.model_id != "olmoe")
+    || (identity.model_id != "qwen2" && identity.model_id != "olmoe"
+      && identity.model_id != "qwen35")
     || !valid_digest(identity.bundle_id)
     || !valid_digest(identity.model_layout_sha256)
     || !valid_digest(identity.tensor_shape_stride_sha256)
     || !valid_identifier(identity.attention_policy)
     || (invocation.graph_kind != ggml_ffi.GPU_GRAPH_PREFILL
-      && invocation.graph_kind != ggml_ffi.GPU_GRAPH_DECODE)
+      && invocation.graph_kind != ggml_ffi.GPU_GRAPH_DECODE
+      && invocation.graph_kind != ggml_ffi.GPU_GRAPH_DECODE_ALT)
     || invocation.buffer_generation < 1 || invocation.kv_view_width < 1
     || invocation.query_width < 1
     || !valid_digest(invocation.mask_layout_sha256)

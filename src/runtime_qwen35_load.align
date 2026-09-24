@@ -149,6 +149,17 @@ pub fn define_resident(
     at = at + 1
   }
   runtime_kv.finish(owner)?
+  // Fixed-width decode views include masked future rows. Initialize them so the backend
+  // never observes undefined resident bytes while attention skips those rows.
+  mut attention_index := 0
+  attention_elements := mul(mul(g.head_dim, kv_capacity)?, g.n_head_kv)?
+  mut attention_zero := buffer.filled(attention_elements * 4, 0 as u8)
+  attention_zero_bytes := attention_zero.bytes()
+  loop {
+    if attention_index >= 2 * g.attention_layers { break }
+    runtime_kv.update(owner, attention_index, 0, attention_zero_bytes)?
+    attention_index = attention_index + 1
+  }
   // The first graph reads parity zero. Backend allocations have no zero-fill guarantee.
   mut recurrent_index := 2 * g.attention_layers
   loop {
