@@ -578,8 +578,14 @@ pub fn stream_finish(borrow mut session: Session) -> Result<(), Error> {
 pub fn recover_failed_request(borrow mut session: Session) -> Result<(), Error> {
   // A failed graph may still own queued work. Clear it before admitting a new request.
   runtime_device.synchronize(session.owner)?
-  match runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL) {
-    Ok(_) => {}, Err(_) => {},
+  runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
+  if session.decode_a_key.len() > 0 {
+    runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_DECODE)?
+    session.decode_a_key = "".clone()
+  }
+  if session.decode_b_key.len() > 0 {
+    runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_DECODE_ALT)?
+    session.decode_b_key = "".clone()
   }
   runtime_qwen35_load.zero_resident(session.owner, session.geometry, session.capacity)?
   session.stream_active = false

@@ -285,7 +285,9 @@ pub fn run(generation: runtime_qwen35_generation.Session,
                                 prompt.token_ids, prompt.eog_token_ids, request.max_tokens)
                               match started {
                                 Err(_) => {
-                                  runtime_qwen35_generation.recover_failed_request(active)?
+                                  if !active.healthy {
+                                    runtime_qwen35_generation.recover_failed_request(active)?
+                                  }
                                   error_response(ctx, 500, "generation_failed", "Generation failed")?
                                 },
                                 Ok(_) => {
@@ -376,7 +378,9 @@ pub fn run(generation: runtime_qwen35_generation.Session,
                               attempted := native_generate(active, tokenizer, prompt, request.max_tokens)
                               match attempted {
                                 Err(_) => {
-                                  runtime_qwen35_generation.recover_failed_request(active)?
+                                  if !active.healthy {
+                                    runtime_qwen35_generation.recover_failed_request(active)?
+                                  }
                                   error_response(ctx, 500, "generation_failed", "Generation failed")?
                                 },
                                 Ok(generated) => {
