@@ -13,7 +13,7 @@ import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-MODEL_ID = "qwen35-0.8b"
+MODEL_ID = os.environ.get("QWEN35_MODEL_ID", "qwen35-0.8b")
 MESSAGES = [
     {"role": "system", "content": "You are a coding assistant. Return a concise answer."},
     {"role": "user", "content": "Hello"},
@@ -103,10 +103,20 @@ def main() -> None:
         prompt.write_text(json.dumps(ids) + "\n", encoding="utf-8")
         expected_ids = json.loads(execute([str(oracle), str(model), "--greedy-ids",
                                            str(prompt), "3"], oracle_env))
+        end_marker = work / "end-marker.txt"
+        end_marker.write_text("<|im_end|>", encoding="utf-8")
+        end_ids = json.loads(execute([str(ROOT / "main"), "--tokenize", str(model),
+                                      str(end_marker), "parse-control"]))
+        assert len(end_ids) == 1, end_ids
+        stopped = end_ids[0] in expected_ids
+        if stopped:
+            expected_ids = expected_ids[:expected_ids.index(end_ids[0])]
         output_ids = work / "output.json"
         output_ids.write_text(json.dumps(expected_ids), encoding="utf-8")
         expected = execute([str(ROOT / "main"), "--detokenize", str(model),
-                            str(output_ids), "render-control"]).decode("utf-8")
+                            str(output_ids), "skip-control"]).decode("utf-8")
+        expected_finish = "stop" if stopped else "length"
+        expected_count = len(expected_ids)
         listener = socket.socket()
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
@@ -135,14 +145,14 @@ def main() -> None:
                 assert status == 200, completion
                 choice = completion["choices"][0]
                 assert choice["message"] == {"role": "assistant", "content": expected}, (choice, expected)
-                assert choice["finish_reason"] == "length", choice
-                assert completion["usage"] == {"prompt_tokens": len(ids), "completion_tokens": 3,
-                                                "total_tokens": len(ids) + 3}, completion
+                assert choice["finish_reason"] == expected_finish, choice
+                assert completion["usage"] == {"prompt_tokens": len(ids), "completion_tokens": expected_count,
+                                                "total_tokens": len(ids) + expected_count}, completion
                 streamed = dict(chat, stream=True)
                 events, ttft, stream_latency = stream_request(port, streamed)
                 assert events[0]["choices"][0]["delta"]["role"] == "assistant"
                 assert "".join(x["choices"][0]["delta"].get("content") or "" for x in events) == expected
-                assert events[-1]["choices"][0]["finish_reason"] == "length"
+                assert events[-1]["choices"][0]["finish_reason"] == expected_finish
                 assert all(x["model"] == MODEL_ID and x["object"] == "chat.completion.chunk" for x in events)
                 japanese = dict(chat, messages=MESSAGES[:-1] + [
                     {"role": "user", "content": "日本語で短く挨拶してください。"}

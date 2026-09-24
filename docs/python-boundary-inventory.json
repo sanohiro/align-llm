@@ -3294,7 +3294,7 @@
     {
       "path": "scripts/run-openai-serving-smoke",
       "classification": "INDEPENDENT_ORACLE",
-      "behavior": "Compare real local OpenAI chat and SSE responses with pinned llama.cpp greedy output, and probe request rejection and request isolation.",
+      "behavior": "Compare recorded local Qwen3.5 0.8B or 2B OpenAI chat and SSE responses with pinned llama.cpp greedy output, and probe request rejection and isolation.",
       "reachability": "Focused developer qualification only; never part of normal product execution.",
       "substitution": "Invokes the Align server and an independent llama.cpp oracle; does not implement shipping serving.",
       "python_reason": "Independent HTTP and model-result comparison remains outside Align product execution.",
@@ -3307,7 +3307,7 @@
     {
       "path": "scripts/run-qwen35-generation-smoke",
       "classification": "INDEPENDENT_ORACLE",
-      "behavior": "Compare real Qwen3.5 Align one-shot and retained-session output and token counts with pinned llama.cpp greedy output.",
+      "behavior": "Compare recorded 0.8B or 2B Qwen3.5 Align one-shot and retained-session output and token counts with pinned llama.cpp greedy output.",
       "reachability": "Focused developer qualification only; never part of normal product execution.",
       "substitution": "Invokes the product and an independent llama.cpp oracle; does not implement shipping inference.",
       "python_reason": "Independent paired model output comparison remains outside Align product execution.",
@@ -3320,7 +3320,7 @@
     {
       "path": "scripts/run-qwen35-tokenizer-smoke",
       "classification": "INDEPENDENT_ORACLE",
-      "behavior": "Compare Qwen3.5 Align tokenizer CLI with the pinned llama.cpp tokenizer on a local real GGUF.",
+      "behavior": "Compare Qwen3.5 Align tokenizer CLI with the pinned llama.cpp tokenizer on a recorded local 0.8B or 2B GGUF.",
       "reachability": "Focused developer qualification only; never part of normal product execution.",
       "substitution": "Compares two executable tokenizers and does not implement shipping tokenization.",
       "python_reason": "Independent paired corpus and output comparison remain outside Align product execution.",

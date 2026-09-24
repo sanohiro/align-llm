@@ -36,6 +36,15 @@ source/build identity checks against the control commit and primary
 row settled by its plan, and independent result comparison.
 It launches external native workers and is never imported by normal product execution.
 
+`scripts/run-qwen35-tokenizer-smoke` and `scripts/run-qwen35-generation-smoke`
+remain `INDEPENDENT_ORACLE` for the dense 2B adoption. Their expected GGUF
+SHA-256 can be supplied explicitly for a second recorded source; the commands
+still compare Align output with pinned llama.cpp and remain outside normal
+product execution. The default remains the qualified 0.8B file.
+`scripts/run-openai-serving-smoke` remains an `INDEPENDENT_ORACLE`; its external
+model id can be selected for the 2B text consumer while it compares the real
+HTTP path with pinned llama.cpp. Its default remains the 0.8B id.
+
 ## Historical preparation audit
 
 Audit date: 2026-09-09. Application head: `312dd65714036f9587329386b5fdbd65e91b97b9`.
