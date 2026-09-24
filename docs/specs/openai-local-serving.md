@@ -16,15 +16,22 @@ history before multi-turn HTTP acceptance. The measured native optimization gate
 this capability; serving performance is measured separately and cannot inherit a CLI result.
 
 The fixed Align revision `5c7af9e5` ships `std.http` `serve`, `accept`, `respond`, and
-`respond_stream` with an owned request context and response/stream builders. Those are the
-server's network primitives. No new Align surface is assumed. The HTTP server lives in Align;
+`respond_stream` with an owned request context and response/stream builders. Its
+`http_stream.send_event` frames one SSE event in one write, including the lazy response head
+on the first event; `http_stream.reject` can send a normal error before the first event.
+Those are the server's network primitives. No new Align surface is assumed. The HTTP server lives in Align;
 the existing C ggml shim remains a backend ABI. The
 [OpenAI Chat Completions API reference](https://developers.openai.com/api/reference/resources/chat)
 owns the external JSON names and response shape; this file defines the supported local subset.
 
 Streaming inventory at this checkpoint: pinned Align already sends streaming HTTP responses
-through `ctx.respond_stream` and `http_stream.send`; `provider_openai.stream` and
+through `ctx.respond_stream` and `http_stream.send_event`; `provider_openai.stream` and
 `provider_llama.stream` already consume remote SSE bodies. These are shipped and are reused.
+Pinned `pkg.web` also ships zero-copy routing, `web.stream`, `web.sse`, and prefork serving.
+Its handler signatures carry only a request context and stream, with no application-owned model
+session parameter; the first server needs one loaded session shared across successive requests.
+The two-route server therefore uses the existing `std.http` accept loop and event sender directly.
+The framework's published request-per-second result is not a model-serving latency result.
 The native `runtime_generation.generate_session` currently returns a completed `array<i64>`;
 `provider_runtime.stream` returns `Error.Invalid`, and `provider.model_info` reports
 `supports_stream: false` for `AlignRuntime`. The missing client boundary is yielding each
@@ -55,11 +62,11 @@ subset and supplies a curl example only after the endpoint passes its owner test
 | Phase | Implementation and exact regression |
 | --- | --- |
 | Construction | `main` parses the serving command; `provider_runtime` verifies source/pack/geometry and creates a native Qwen3.5 session before `std.http.serve`. `scripts/run-openai-serving-smoke` tests real 0.8B startup and bad pack/options refusal with no listener left behind. |
-| Success | An Align HTTP module decodes ordered messages and invokes the same qualified native session. The native generation owner exposes each committed token; the HTTP module feeds its deltas to the shipped `http_stream.send` and encodes the final JSON/SSE shape. The owner sends non-stream and stream two-turn requests through an OpenAI-compatible client and compares text/tokens to the pinned native oracle. |
+| Success | An Align HTTP module decodes ordered messages and invokes the same qualified native session. The native generation owner exposes each committed token; the HTTP module passes one JSON delta per token to the shipped `http_stream.send_event`, then sends `[DONE]` and calls `finish`. The owner sends non-stream and stream two-turn requests through an OpenAI-compatible client and compares text/tokens to the pinned native oracle. |
 | Malformed and unsupported input | The HTTP module bounds and validates method, path, content type, duplicate keys, model, roles, options, and context. The owner asserts exact 400/404/405 error envelopes and no native call for each malformed class. |
 | Early exit and failure | The HTTP module observes disconnect/EOG/compute error; the native session retains only committed state until response success. The owner injects a compute failure and disconnect, then checks the next request against a fresh session. |
 | Cleanup | Dropping request context, stream, graph and request state releases owned resources; shutdown drops listener and model. The owner runs repeated requests and a shutdown/restart cycle without state or descriptor growth. |
-| Reused modules | `tokenizer_qwen2` owns Qwen3.5 chat rendering; `runtime_generation` owns inference and state; shipped `std.http.respond_stream`/`http_stream.send` own HTTP framing. Existing outbound SSE consumers remain unchanged. Existing tokenizer, generation, and runtime provider owners pass unchanged. |
+| Reused modules | `tokenizer_qwen2` owns Qwen3.5 chat rendering; `runtime_generation` owns inference and state; shipped `std.http.respond_stream`/`http_stream.send_event` own HTTP and SSE framing. Existing outbound SSE consumers remain unchanged. Existing tokenizer, generation, and runtime provider owners pass unchanged. |
 
 The implementation map is open until the native consumer and prompt-history owner pass. Before
 publication, map every applicable ledger and matrix cell to the final diff and exact passing
