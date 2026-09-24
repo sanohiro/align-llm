@@ -1,8 +1,8 @@
 # Local OpenAI-compatible serving
 
-Status: planned after the Qwen3.5-0.8B native correctness and optimization gate in
-`roadmap.md`. This is the inbound local server contract. `provider_openai` is an outbound
-client and does not implement it.
+Status: Qwen3.5-0.8B local serving implemented on the retained Metal session. The
+real-model owner checks two-turn chat and streaming against pinned llama.cpp.
+`provider_openai` remains an outbound client.
 
 ## First usable consumer and prerequisites
 
@@ -81,6 +81,38 @@ subset and supplies a curl example only after the endpoint passes its owner test
 | Cleanup | Dropping request context, stream, graph and request state releases owned resources; shutdown drops listener and model. The owner runs repeated requests and a shutdown/restart cycle without state or descriptor growth. |
 | Reused modules | `tokenizer_qwen2` owns Qwen3.5 chat rendering; `runtime_generation` owns inference and state; shipped `std.http.respond_stream`/`http_stream.send_event` own HTTP and SSE framing. Existing outbound SSE consumers remain unchanged. Existing tokenizer, generation, and runtime provider owners pass unchanged. |
 
-The implementation map is open until the native consumer and prompt-history owner pass. Before
-publication, map every applicable ledger and matrix cell to the final diff and exact passing
-evidence or an explicit deferral here. A separate design-only pull request is not planned.
+## Implementation map and current limits
+
+`src/main.align` parses the command; `provider_runtime.serve_openai` verifies the GGUF,
+pack, Model IR and runtime options and loads one Qwen3.5 Metal session before binding.
+`src/openai_serving.align` owns strict request parsing, route and model admission,
+response envelopes, and SSE framing. `runtime_qwen35_generation.begin_stream`,
+`stream_next`, `stream_finish`, and `recover_failed_request` own token yield and
+per-request session cleanup. A failed native operation is reported as HTTP 500 before
+headers or as an SSE error event after headers; recoverable failures clear resident
+state before another request. A nonrecoverable device failure terminates the process.
+
+`scripts/run-openai-serving-smoke` starts the real 0.8B server, compares a two-turn
+three-token response to the pinned llama.cpp greedy oracle, verifies usage and SSE
+content/finish/[DONE], rejects wrong models, unsupported options, malformed history,
+duplicate keys and wrong routes/methods, disconnects mid-stream and verifies the next
+request is isolated. It records startup, non-stream completion, stream time to first
+content token and total stream latency on the same host. The existing Qwen3.5
+generation and history owners remain independent regressions.
+
+The `std.http` server's `accept()` reads the entire Content-Length body with a 1 GiB
+library cap before passing a request context to Align. The application rejects bodies
+above 1 MiB, but cannot enforce that cap before allocation. This loopback-only
+resource-admission limitation is tracked as Align Request 120. Public or untrusted
+binding is deferred; the CLI exposes no remote bind. A bounded server accept primitive
+must precede such a boundary. This is a known exception to the ledger's pre-read
+body bound, not a claim that the current server enforces it during receive.
+
+Example after building and supplying the matching bundle through runtime options:
+
+```sh
+./main --serve-openai MODEL.gguf MODEL.alignpack model-ir.json runtime-options.json 0 qwen35-0.8b 8080
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen35-0.8b","messages":[{"role":"user","content":"Hello"}],"max_tokens":32}'
+```

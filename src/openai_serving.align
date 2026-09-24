@@ -1,0 +1,417 @@
+module openai_serving
+
+import core.json
+import runtime_generation
+import runtime_options
+import runtime_qwen35_generation
+import tokenizer_qwen2
+import std.http
+import std.time
+
+MAX_BODY := 1048576
+MAX_PROMPT_IDS := 2048
+MAX_TOKENS := 4096
+
+Request {
+  messages: array<tokenizer_qwen2.ChatMessage>,
+  max_tokens: i64,
+  stream: bool,
+}
+
+ApiErrorDetail { message: str, type: str, code: str }
+ApiError { error: ApiErrorDetail }
+ModelEntry { id: string, object: string, owned_by: string }
+ModelList { object: string, data: array<ModelEntry> }
+AssistantMessage { role: string, content: string }
+Choice { index: i64, message: AssistantMessage, finish_reason: string }
+Usage { prompt_tokens: i64, completion_tokens: i64, total_tokens: i64 }
+Completion {
+  id: string,
+  object: string,
+  created: i64,
+  model: string,
+  choices: array<Choice>,
+  usage: Usage,
+}
+ChunkDelta { role: Option<string>, content: Option<string> }
+ChunkChoice { index: i64, delta: ChunkDelta, finish_reason: Option<string> }
+Chunk {
+  id: string,
+  object: string,
+  created: i64,
+  model: string,
+  choices: array<ChunkChoice>,
+}
+
+fn object(value: json.doc) -> bool = match value.kind() { Object => true, _ => false }
+fn array(value: json.doc) -> bool = match value.kind() { Array => true, _ => false }
+
+fn parse(document: str, model_id: str) -> Result<Request, Error> {
+  if document.len() < 1 || document.len() > MAX_BODY
+    || !runtime_options.strict_lexical(document) { return Err(Error.Invalid) }
+  arena {
+    root := json.doc(document)?
+    if !object(root) { return Err(Error.Invalid) }
+    mut model_seen := false
+    mut messages_seen := false
+    mut stream_seen := false
+    mut tokens_seen := false
+    mut temperature_seen := false
+    mut index := 0
+    loop {
+      if index >= root.len() { break }
+      key := root.key(index) else { return Err(Error.Invalid) }
+      if key == "model" && !model_seen { model_seen = true
+      } else if key == "messages" && !messages_seen { messages_seen = true
+      } else if key == "stream" && !stream_seen { stream_seen = true
+      } else if key == "max_tokens" && !tokens_seen { tokens_seen = true
+      } else if key == "temperature" && !temperature_seen { temperature_seen = true
+      } else { return Err(Error.Invalid) }
+      index = index + 1
+    }
+    if !model_seen || !messages_seen { return Err(Error.Invalid) }
+    requested_model := root.get("model").as_str() else { return Err(Error.Invalid) }
+    if requested_model != model_id { return Err(Error.NotFound) }
+    stream := if stream_seen {
+      root.get("stream").as_bool() else { return Err(Error.Invalid) }
+    } else { false }
+    max_tokens := if tokens_seen {
+      root.get("max_tokens").as_i64() else { return Err(Error.Invalid) }
+    } else { 256 }
+    if max_tokens < 1 || max_tokens > MAX_TOKENS { return Err(Error.Invalid) }
+    if temperature_seen {
+      temperature_node := root.get("temperature")
+      integer := temperature_node.as_i64()
+      decimal := temperature_node.as_f64()
+      match integer {
+        Some(value) => { if value != 0 { return Err(Error.Invalid) } },
+        None => match decimal {
+          Some(value) => { if value != 0.0 { return Err(Error.Invalid) } },
+          None => { return Err(Error.Invalid) },
+        },
+      }
+    }
+    source := root.get("messages")
+    if !array(source) || source.len() < 1 || source.len() > 128 { return Err(Error.Invalid) }
+    mut messages: array_builder<tokenizer_qwen2.ChatMessage> := array_builder(source.len())
+    index = 0
+    loop {
+      if index >= source.len() { break }
+      item := source.at(index)
+      if !object(item) || item.len() != 2 { return Err(Error.Invalid) }
+      mut role_seen := false
+      mut content_seen := false
+      mut field := 0
+      loop {
+        if field >= item.len() { break }
+        key := item.key(field) else { return Err(Error.Invalid) }
+        if key == "role" && !role_seen { role_seen = true
+        } else if key == "content" && !content_seen { content_seen = true
+        } else { return Err(Error.Invalid) }
+        field = field + 1
+      }
+      role := item.get("role").as_str() else { return Err(Error.Invalid) }
+      content := item.get("content").as_str() else { return Err(Error.Invalid) }
+      if content.len() > MAX_BODY { return Err(Error.Invalid) }
+      messages.push(tokenizer_qwen2.ChatMessage { role: role.clone(), content: content.clone() })
+      index = index + 1
+    }
+    return Ok(Request { messages: messages.build(), max_tokens: max_tokens, stream: stream })
+  }
+}
+
+fn respond_json(ctx: http_request_ctx, status: i64, body: str) -> Result<(), Error> {
+  rb := http.response(status)
+  rb.header("Content-Type", "application/json; charset=utf-8")
+  rb.body(body)
+  match ctx.respond(rb) { Ok(_) => {}, Err(_) => {} }
+  return Ok(())
+}
+
+fn error_response(ctx: http_request_ctx, status: i64, code: str, message: str) -> Result<(), Error> {
+  payload := ApiError { error: ApiErrorDetail { message: message, type: "invalid_request_error", code: code } }
+  body := json.encode_bounded(payload, 4096)?
+  return respond_json(ctx, status, body)
+}
+
+fn models(ctx: http_request_ctx, model_id: str) -> Result<(), Error> {
+  mut items: array_builder<ModelEntry> := array_builder(1)
+  items.push(ModelEntry { id: model_id.clone(), object: "model".clone(), owned_by: "align-llm".clone() })
+  payload := ModelList { object: "list".clone(), data: items.build() }
+  body := json.encode_bounded(payload, 16384)?
+  return respond_json(ctx, 200, body)
+}
+
+fn contains(borrow ids: array<i64>, value: i64) -> bool {
+  mut index := 0
+  loop {
+    if index >= ids.len() { break }
+    if ids[index] == value { return true }
+    index = index + 1
+  }
+  return false
+}
+
+NativeResult { text: string, completion_count: i64, stopped: bool }
+
+fn native_generate(borrow mut generation: runtime_qwen35_generation.Session,
+  borrow tokenizer: tokenizer_qwen2.GenerationTokenizer,
+  borrow prompt: tokenizer_qwen2.GenerationPromptResult,
+  max_tokens: i64,
+) -> Result<NativeResult, Error> {
+  ids := runtime_qwen35_generation.generate_session(generation,
+    prompt.token_ids, prompt.eog_token_ids, max_tokens)?
+  if ids.len() < 1 || ids.len() > max_tokens { return Err(Error.Invalid) }
+  stopped := contains(prompt.eog_token_ids, ids[ids.len() - 1])
+  completion_count := ids.len() - if stopped { 1 } else { 0 }
+  mut visible: array_builder<i64> := array_builder(completion_count)
+  mut token_index := 0
+  loop {
+    if token_index >= completion_count { break }
+    visible.push(ids[token_index])
+    token_index = token_index + 1
+  }
+  visible_ids := visible.build()
+  rendered := tokenizer_qwen2.decode_retained(tokenizer, visible_ids,
+    tokenizer_qwen2.DecodeSpecials.SkipControl)?
+  match rendered.status { Ok => {}, Error => { return Err(Error.Invalid) } }
+  return Ok(NativeResult { text: rendered.text, completion_count: completion_count, stopped: stopped })
+}
+
+fn token_piece(borrow tokenizer: tokenizer_qwen2.GenerationTokenizer,
+  borrow mut pending: array<i64>, token: i64,
+) -> Result<Option<string>, Error> {
+  if pending.len() > 8 { return Err(Error.Invalid) }
+  mut ids: array_builder<i64> := array_builder(pending.len() + 1)
+  mut index := 0
+  loop {
+    if index >= pending.len() { break }
+    ids.push(pending[index])
+    index = index + 1
+  }
+  ids.push(token)
+  candidate := ids.build()
+  decoded := tokenizer_qwen2.decode_retained(tokenizer, candidate,
+    tokenizer_qwen2.DecodeSpecials.SkipControl)?
+  match decoded.status {
+    Ok => {
+      mut empty: array_builder<i64> := array_builder()
+      pending = empty.build()
+      return Ok(Some(decoded.text))
+    },
+    Error => {
+      if decoded.error_code != "R7_DECODE_UTF8" { return Err(Error.Invalid) }
+      pending = candidate
+      return Ok(None)
+    },
+  }
+}
+
+fn chunk_json(id: str, created: i64, model_id: str,
+  role: bool, content: Option<string>, finish: Option<string>,
+) -> Result<string, Error> {
+  mut choices: array_builder<ChunkChoice> := array_builder(1)
+  choices.push(ChunkChoice { index: 0,
+      delta: ChunkDelta { role: if role { Some("assistant".clone()) } else { None },
+        content: content }, finish_reason: finish,
+    })
+  payload := Chunk { id: id.clone(), object: "chat.completion.chunk".clone(),
+    created: created, model: model_id.clone(), choices: choices.build() }
+  return json.encode_bounded(payload, 1048576)
+}
+
+fn copy_ids(borrow source: array<i64>) -> array<i64> {
+  mut output: array_builder<i64> := array_builder(source.len())
+  mut index := 0
+  loop {
+    if index >= source.len() { break }
+    output.push(source[index])
+    index = index + 1
+  }
+  return output.build()
+}
+
+pub fn run(generation: runtime_qwen35_generation.Session,
+  tokenizer: tokenizer_qwen2.GenerationTokenizer, model_id: str, port: i64,
+) -> Result<(), Error> {
+  if model_id.len() < 1 || model_id.len() > 256 || port < 1 || port > 65535 {
+    return Err(Error.Invalid)
+  }
+  mut active := generation
+  srv := http.serve("127.0.0.1", port)?
+  loop {
+    incoming := srv.accept()
+    match incoming {
+      Err(error) => match error { Invalid => {}, _ => { return Err(error) } },
+      Ok(ctx) => {
+        method := ctx.method()
+        path := ctx.path()
+        if path == "/v1/models" {
+          if method == "GET" { models(ctx, model_id)? } else { error_response(ctx, 405, "method_not_allowed", "Method not allowed")? }
+        } else if path == "/v1/chat/completions" {
+          if method != "POST" {
+            error_response(ctx, 405, "method_not_allowed", "Method not allowed")?
+          } else {
+            headers := ctx.headers()
+            content_type := headers.get("Content-Type") else { "" }
+            body := ctx.body()
+            if content_type != "application/json" && content_type != "application/json; charset=utf-8" {
+              error_response(ctx, 400, "invalid_content_type", "Expected application/json")?
+            } else if body.len() < 1 || body.len() > MAX_BODY {
+              error_response(ctx, 400, "invalid_body", "Invalid request body")?
+            } else {
+              text := body.as_str()
+              match text {
+                Err(_) => { error_response(ctx, 400, "invalid_body", "Invalid UTF-8")? },
+                Ok(document) => {
+                  decoded := parse(document, model_id)
+                  match decoded {
+                    Err(error) => {
+                      status := match error { NotFound => 404, _ => 400 }
+                      if status == 404 { error_response(ctx, status, "model_not_found", "Model not found")? } else { error_response(ctx, status, "invalid_request", "Invalid chat request")? }
+                    },
+                    Ok(request) => {
+                      {
+                        prepared := tokenizer_qwen2.prepare_retained_history(tokenizer, request.messages)
+                        match prepared {
+                          Err(_) => { error_response(ctx, 400, "invalid_messages", "Invalid message history")? },
+                          Ok(prompt) => {
+                            if prompt.token_ids.len() < 1 || prompt.token_ids.len() > MAX_PROMPT_IDS
+                              || prompt.token_ids.len() + request.max_tokens - 1 > 2175
+                              || prompt.token_ids.len() + request.max_tokens - 1 > active.capacity {
+                              error_response(ctx, 400, "context_length", "Context length exceeded")?
+                            } else if request.stream {
+                              started := runtime_qwen35_generation.begin_stream(active,
+                                prompt.token_ids, prompt.eog_token_ids, request.max_tokens)
+                              match started {
+                                Err(_) => {
+                                  runtime_qwen35_generation.recover_failed_request(active)?
+                                  error_response(ctx, 500, "generation_failed", "Generation failed")?
+                                },
+                                Ok(_) => {
+                                  id_builder := builder()
+                                  id_builder.write("chatcmpl-")
+                                  id_builder.write_int(time.now())
+                                  id := id_builder.to_string()
+                                  created := time.now() / 1000000000
+                                  rb := http.response(200)
+                                  rb.header("Content-Type", "text/event-stream; charset=utf-8")
+                                  rb.header("Cache-Control", "no-cache")
+                                  opened := ctx.respond_stream(rb)
+                                  match opened {
+                                    Err(_) => {
+                                      runtime_qwen35_generation.stream_finish(active)?
+                                    },
+                                    Ok(stream_value) => {
+                                      mut stream := stream_value
+                                      eog_ids := copy_ids(prompt.eog_token_ids)
+                                      role_event := chunk_json(id, created, model_id, true, None, None)?
+                                      mut disconnected := match stream.send_event(role_event) {
+                                        Ok(_) => false, Err(_) => true,
+                                      }
+                                      mut pending_builder: array_builder<i64> := array_builder()
+                                      mut pending_ids := pending_builder.build()
+                                      mut token := active.stream_token
+                                      mut stopped := false
+                                      mut failed := false
+                                      loop {
+                                        if disconnected { break }
+                                        if contains(eog_ids, token) { stopped = true; break }
+                                        decoded_piece := token_piece(tokenizer, pending_ids, token)
+                                        piece := match decoded_piece {
+                                          Ok(value) => value,
+                                          Err(_) => { failed = true; break },
+                                        }
+                                        match piece {
+                                          None => {},
+                                          Some(value) => {
+                                            if value.len() > 0 {
+                                              event := chunk_json(id, created, model_id, false, Some(value), None)?
+                                              match stream.send_event(event) {
+                                                Ok(_) => {}, Err(_) => { disconnected = true },
+                                              }
+                                            }
+                                          },
+                                        }
+                                        if disconnected { break }
+                                        advanced := runtime_qwen35_generation.stream_next(active)
+                                        next := match advanced {
+                                          Ok(value) => value,
+                                          Err(_) => { failed = true; break },
+                                        }
+                                        token = match next { None => { break }, Some(value) => value }
+                                      }
+                                      if failed {
+                                        runtime_qwen35_generation.recover_failed_request(active)?
+                                      } else {
+                                        runtime_qwen35_generation.stream_finish(active)?
+                                      }
+                                      if !disconnected {
+                                        if failed || pending_ids.len() > 0 {
+                                          error_event := "{\"error\":{\"message\":\"Generation failed\",\"type\":\"server_error\",\"code\":\"generation_failed\"}}"
+                                          match stream.send_event(error_event) { Ok(_) => {}, Err(_) => {} }
+                                        } else {
+                                          finish := if stopped { "stop".clone() } else { "length".clone() }
+                                          final_event := chunk_json(id, created, model_id, false, None, Some(finish))?
+                                          sent_finish := stream.send_event(final_event)
+                                          match sent_finish {
+                                            Err(_) => {},
+                                            Ok(_) => {
+                                              sent_done := stream.send_event("[DONE]")
+                                              match sent_done {
+                                                Err(_) => {},
+                                                Ok(_) => {
+                                                  match stream.finish() { Ok(_) => {}, Err(_) => {} }
+                                                },
+                                              }
+                                            },
+                                          }
+                                        }
+                                      }
+                                    },
+                                  }
+                                },
+                              }
+                            } else {
+                              attempted := native_generate(active, tokenizer, prompt, request.max_tokens)
+                              match attempted {
+                                Err(_) => {
+                                  runtime_qwen35_generation.recover_failed_request(active)?
+                                  error_response(ctx, 500, "generation_failed", "Generation failed")?
+                                },
+                                Ok(generated) => {
+                                  mut choices: array_builder<Choice> := array_builder(1)
+                                  choices.push(Choice { index: 0,
+                                      message: AssistantMessage { role: "assistant".clone(), content: generated.text.clone() },
+                                      finish_reason: if generated.stopped { "stop".clone() } else { "length".clone() },
+                                    })
+                                  id := builder()
+                                  id.write("chatcmpl-")
+                                  id.write_int(time.now())
+                                  payload := Completion {
+                                    id: id.to_string(), object: "chat.completion".clone(), created: time.now() / 1000000000,
+                                    model: model_id.clone(), choices: choices.build(),
+                                    usage: Usage { prompt_tokens: prompt.token_ids.len(),
+                                      completion_tokens: generated.completion_count,
+                                      total_tokens: prompt.token_ids.len() + generated.completion_count },
+                                  }
+                                  response := json.encode_bounded(payload, 1048576)?
+                                  respond_json(ctx, 200, response)?
+                                },
+                              }
+                            }
+                          },
+                        }
+                      }
+                    },
+                  }
+                },
+              }
+            }
+          }
+        } else {
+          error_response(ctx, 404, "not_found", "Route not found")?
+        } },
+    }
+  }
+}

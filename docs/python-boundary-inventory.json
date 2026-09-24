@@ -3292,6 +3292,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/run-openai-serving-smoke",
+      "classification": "INDEPENDENT_ORACLE",
+      "behavior": "Compare real local OpenAI chat and SSE responses with pinned llama.cpp greedy output, and probe request rejection and request isolation.",
+      "reachability": "Focused developer qualification only; never part of normal product execution.",
+      "substitution": "Invokes the Align server and an independent llama.cpp oracle; does not implement shipping serving.",
+      "python_reason": "Independent HTTP and model-result comparison remains outside Align product execution.",
+      "target": "Retain as a real-model Qwen3.5 serving qualification oracle.",
+      "migration": "N/A",
+      "acceptance": "QWEN35_GGUF=... QWEN35_ALIGNPACK=... QWEN35_MODEL_IR=... QWEN35_RUNTIME_OPTIONS=... QWEN35_LLAMA_ORACLE=... QWEN35_LIB_PATH=... python3 scripts/run-openai-serving-smoke; python3 scripts/check-python-boundary",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/run-qwen35-generation-smoke",
       "classification": "INDEPENDENT_ORACLE",
       "behavior": "Compare real Qwen3.5 Align one-shot and retained-session output and token counts with pinned llama.cpp greedy output.",
