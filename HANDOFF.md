@@ -2,6 +2,23 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Active fused Metal FFN probe (2026-09-25)
+
+Branch: `agent/qwen35-metal-fusion-next`, based on merged `main` `ec34abac`
+(#302). The root `main` worktree's unrelated `docs/align-requests.md` edit
+remains untouched. A standalone native Metal Q4_0 Qwen3.5-2B FFN probe now
+fuses gate/up/SwiGLU and computes down with a second dispatch. Both outputs
+match pinned ggml/Metal within `1.2e-5` absolute error on deterministic
+synthetic inputs. Three five-pair 128-threadgroup runs on Apple M1 measured
+isolated full-FFN ggml/native medians of 1.0777/0.9728, 1.0756/1.0137,
+and 1.0661/0.9457 ms, with 14/15 native wins. This is not a whole-request
+result. The code and exact limits are in `scripts/bench-metal-q4-ffn.mm` and
+`docs/specs/qwen35-text.md`.
+
+Next: decide whether a real-model fused GPU seam can clear the existing 15%
+whole-request floor, with exact output and request-timing owners before any
+runtime integration. CPU/CUDA 2B and large models remain deferred.
+
 ## Qwen3.5 2B operation-level diagnosis (2026-09-25)
 
 Branch: `agent/qwen35-next` at merged `main` `7c42bb44`. The 2B adoption and
