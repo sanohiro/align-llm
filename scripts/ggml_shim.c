@@ -4350,6 +4350,37 @@ int32_t align_ggml_op_rope_neox(
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 
+/* Qwen3.5 text uses interleaved M-RoPE. The position tensor has four contiguous
+ * planes, each with one entry per token; the fourth plane contains zeroes.
+ */
+int32_t align_ggml_op_rope_imrope(
+    void *ctx, void *slots, int64_t out, int64_t a, int64_t pos,
+    int32_t n_dims, int32_t n_ctx_orig, int32_t freq_base_bits,
+    int32_t s0, int32_t s1, int32_t s2, int32_t s3) {
+    struct ggml_tensor *sp = align_ggml_slot_tensor(slots, pos);
+    int sections[GGML_MROPE_SECTIONS] = {s0, s1, s2, s3};
+    float freq_base = align_ggml_bits_to_f32(freq_base_bits);
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sp == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (sa->ne[2] < 1 || sa->ne[2] > INT64_MAX / 4 ||
+        !ggml_is_vector(sp) || sp->type != GGML_TYPE_I32 || sp->ne[0] != sa->ne[2] * 4 ||
+        n_dims < 2 || n_dims > sa->ne[0] || (n_dims & 1) != 0 || n_ctx_orig < 1 ||
+        s0 < 0 || s1 < 0 || s2 < 0 || s3 < 0 ||
+        (int64_t) s0 + s1 + s2 + s3 != n_dims / 2 ||
+        !isfinite(freq_base) || freq_base <= 0.0f) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_rope_multi((struct ggml_context *) ctx, sa, sp, NULL, n_dims, sections,
+                             GGML_ROPE_TYPE_IMROPE, n_ctx_orig, freq_base,
+                             1.0f, 0.0f, 1.0f, 32.0f, 1.0f);
+    if (result == NULL) {
+        return ALIGN_GGML_INIT;
+    }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
 /* R5D section 3.5: the one **widened** symbol. `mask == ALIGN_GGML_NO_MASK` is
  * `ggml_soft_max_ext(ctx, a, NULL, scale, bias)` — the plain softmax the router's 64-way gate is —
  * and every other value is a slot index that must name a live tensor exactly as before. The

@@ -59,19 +59,28 @@ was repaired with two synthetic refusals and the affected owners passed again.
 
 Native text investigation: the pinned `qwen35.cpp` and `delta-net-base.cpp` graph confirms six
 full-attention and 18 recurrent layers with a shared post-attention norm/FFN residual order.
-The current shim has no `ggml_rope_multi`, `ggml_ssm_conv`, or `ggml_gated_delta_net` wrappers;
+The current shim has an IMROPE `ggml_rope_multi` wrapper but no `ggml_ssm_conv` or
+`ggml_gated_delta_net` wrappers;
 the existing session graph supports only Qwen2 or OLMoE and has no recurrent state ownership.
 `docs/specs/qwen35-text.md` records the exact 0.8B state geometry and next acceptance oracle.
 The local native admission checkpoint in `src/runtime_qwen35_geometry.align` reads the Model IR
 geometry and the four sections supplied from the same GGUF snapshot, checks bounded shapes, and
 derives six attention and 18 recurrent layers with 18,432 convolution and 262,144 DeltaNet state
-elements per recurrent layer. Its real-file smoke passes. No native graph or provider result is
+elements per recurrent layer. The same owner now writes the pinned four-plane text position
+layout and checks its values and bounds. The real C shim has a checked IMROPE call; the hosted
+stub explicitly refuses numeric M-RoPE. Its real-file geometry smoke passes. No native graph or provider result is
 claimed yet; this local checkpoint is not a publication candidate on its own.
 Local checkpoint verification: `gmake fmt`, `./scripts/check-format`, and
 `./scripts/alignc run src/runtime_qwen35_geometry_smoke.align
 /Users/hiro/models/qwen35-0.8b-model-ir.json
 /Users/hiro/models/Qwen3.5-0.8B-Q4_0.gguf` PASS; `git diff --check` PASS. The next native
-step is the hybrid role/load plan and thin ggml op wrappers, followed by explicit state commit.
+step is the hybrid role/load plan, SSM convolution and DeltaNet wrappers, and explicit state commit.
+The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
+src/main.align` (3,134 functions), `gmake build` with the documented Homebrew
+`LIBRARY_PATH`, `./scripts/check-format`, `git diff --check`, C syntax
+checks of the real shim against pinned ggml headers and of the standalone stub, and the
+ggml-free shim build. Numeric M-RoPE
+and the full Qwen3.5 graph have not passed a pinned reference comparison.
 
 Reference bottleneck diagnosis: pinned llama.cpp `bb4caa7` on Apple M1, Qwen3.5-0.8B Q4_0,
 three repetitions: CPU 464.98 prompt / 55.32 generation tok/s; Metal 1180.77 / 61.85 with

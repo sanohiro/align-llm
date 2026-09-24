@@ -117,3 +117,25 @@ pub fn parse_snapshot(text: str, borrow snapshot: gguf.GgufSnapshot) -> Result<G
   sections := gguf.snapshot_i32_array(snapshot, "qwen35.rope.dimension_sections")?
   return parse(text, sections)
 }
+
+// Pinned llama.cpp stores text M-RoPE positions as four contiguous planes:
+// position, position, position, zero. ggml_rope_multi requires four ids per token.
+pub fn write_text_positions(start: i64, count: i64, borrow mut dest: slice<u8>) -> Result<(), Error> {
+  if start < 0 || count < 1 || count > 1048576 || start > 2147483647 - (count - 1)
+    || dest.len() != count * 16 {
+    return Err(Error.Invalid)
+  }
+  mut plane := 0
+  loop {
+    if plane >= 4 { break }
+    mut at := 0
+    loop {
+      if at >= count { break }
+      value := if plane == 3 { 0 } else { start + at }
+      dest.set_u32_le((plane * count + at) * 4, value as u32)
+      at = at + 1
+    }
+    plane = plane + 1
+  }
+  return Ok(())
+}

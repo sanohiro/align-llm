@@ -30,6 +30,39 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   wrong.push(0)
   invalid_sections := wrong.build()
   expect_failure(source, invalid_sections)?
+  mut positions := buffer.filled(3 * 16, 255 as u8)
+  mut position_view := positions.bytes()
+  runtime_qwen35_geometry.write_text_positions(7, 3, position_view)?
+  mut plane := 0
+  loop {
+    if plane >= 4 { break }
+    mut at := 0
+    loop {
+      if at >= 3 { break }
+      expected := if plane == 3 { 0 } else { 7 + at }
+      if position_view.u32_le((plane * 3 + at) * 4) != expected as u32 {
+        return Err(Error.Invalid)
+      }
+      at = at + 1
+    }
+    plane = plane + 1
+  }
+  match runtime_qwen35_geometry.write_text_positions(7, 2, position_view) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  mut last_position := buffer.filled(16, 0 as u8)
+  mut last_view := last_position.bytes()
+  runtime_qwen35_geometry.write_text_positions(2147483647, 1, last_view)?
+  if last_view.u32_le(0) != 2147483647 as u32 || last_view.u32_le(12) != 0 as u32 {
+    return Err(Error.Invalid)
+  }
+  mut crossing := buffer.filled(32, 0 as u8)
+  mut crossing_view := crossing.bytes()
+  match runtime_qwen35_geometry.write_text_positions(2147483647, 2, crossing_view) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(_) => {},
+  }
   print("qwen35 geometry: PASS")
   return Ok(())
 }

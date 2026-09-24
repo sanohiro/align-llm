@@ -115,14 +115,24 @@ the stored `ssm_a`, applies causal SSM convolution, L2-normalizes Q and K, runs 
 applies gated RMS norm with z, and projects the output. The native graph must preserve these
 orders; substituting the Qwen2 head or plain RoPE changes the model.
 
+The pinned text input constructor supplies `ggml_rope_multi` with four contiguous position
+planes, each `n_tokens` long. The first three planes contain the same token positions and the
+fourth is zero. A one-position-per-token Qwen2 input violates ggml's M-RoPE assertion.
+`runtime_qwen35_geometry.write_text_positions` produces this layout with bounded `i32`
+positions; its real-model smoke checks all four planes and rejects a short output buffer.
+`ggml_ffi.op_rope_imrope` exposes the pinned operation through a thin checked shim;
+the ggml-free stub refuses numeric M-RoPE execution explicitly. This is input and ABI
+preparation only; the native graph must still consume it and pass oracle parity.
+
 For the first real 0.8B geometry, `ssm_inner_size=2048`, `ssm_group_count=16`,
 `ssm_state_size=128`, `ssm_time_step_rank=16`, and `ssm_conv_kernel=4`. Each recurrent layer has
 `conv_channels=2048+2*16*128=6144`, a three-position convolution history (18,432 elements), and
 a `128*128*16=262,144` element DeltaNet state. These are per-session state, not model weights.
 The plan must validate the four rope sections from source GGUF, model/pack identity, block roles,
 all state extents and the selected ggml op shapes before graph creation. `ggml_rope_multi`,
-`ggml_ssm_conv`, and `ggml_gated_delta_net` exist at the pin but have no align-llm shim symbols;
-adding thin checked ABI wrappers and Align-owned state is implementation work, not an upstream
+`ggml_ssm_conv`, and `ggml_gated_delta_net` exist at the pin; only the M-RoPE shim symbol
+has been added so far. Completing the other thin checked ABI wrappers and Align-owned state
+is implementation work, not an upstream
 Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the
 tokenizer or Model IR checks.

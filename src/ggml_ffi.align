@@ -475,6 +475,10 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_op_rope_neox(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, pos: i64,
     n_dims: i32, mode: i32, n_ctx_orig: i32, freq_base_bits: i32) -> i32
+  fn align_ggml_op_rope_imrope(
+    ctx: raw, slots: slice<u8>, out: i64, a: i64, pos: i64,
+    n_dims: i32, n_ctx_orig: i32, freq_base_bits: i32,
+    s0: i32, s1: i32, s2: i32, s3: i32) -> i32
   fn align_ggml_op_soft_max_ext(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, mask: i64,
     scale_bits: i32, max_bias_bits: i32) -> i32
@@ -1925,6 +1929,20 @@ pub fn op_rope_neox(
       align_ggml_op_rope_neox(
         ctx, slots, out, a, pos, n_dims as i32, mode as i32, n_ctx_orig as i32,
         freq_base_bits as i32) as i64,
+      label)
+  }
+}
+
+pub fn op_rope_imrope(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, pos: i64,
+  n_dims: i64, n_ctx_orig: i64, freq_base_bits: i64,
+  s0: i64, s1: i64, s2: i64, s3: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(
+      align_ggml_op_rope_imrope(
+        ctx, slots, out, a, pos, n_dims as i32, n_ctx_orig as i32, freq_base_bits as i32,
+        s0 as i32, s1 as i32, s2 as i32, s3 as i32) as i64,
       label)
   }
 }

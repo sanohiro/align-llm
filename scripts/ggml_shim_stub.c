@@ -4513,6 +4513,31 @@ int32_t align_ggml_op_rope_neox(
     return align_stub_bind(slots, out, t, sa, sp, ALIGN_STUB_OP_ROPE);
 }
 
+/* Hosted builds can validate this new input shape. Qwen3.5 numeric parity runs
+ * against the pinned real ggml backend; the stub has no M-RoPE kernel.
+ */
+int32_t align_ggml_op_rope_imrope(
+    void *ctx, void *slots, int64_t out, int64_t a, int64_t pos,
+    int32_t n_dims, int32_t n_ctx_orig, int32_t freq_base_bits,
+    int32_t s0, int32_t s1, int32_t s2, int32_t s3) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    align_stub_tensor *sp = align_stub_slot(slots, pos);
+    float freq_base = align_ggml_bits_to_f32(freq_base_bits);
+    (void) out;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (sa == NULL || sp == NULL) { return ALIGN_GGML_SLOT; }
+    if (sa->ne[2] < 1 || sa->ne[2] > INT64_MAX / 4 ||
+        sp->ne[0] != sa->ne[2] * 4 || sp->ne[1] != 1 || sp->ne[2] != 1 || sp->ne[3] != 1 ||
+        sp->type != ALIGN_STUB_TYPE_I32 || n_dims < 2 || n_dims > sa->ne[0] ||
+        (n_dims & 1) != 0 || n_ctx_orig < 1 ||
+        s0 < 0 || s1 < 0 || s2 < 0 || s3 < 0 ||
+        (int64_t) s0 + s1 + s2 + s3 != n_dims / 2 ||
+        !isfinite(freq_base) || freq_base <= 0.0f) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return ALIGN_GGML_UNAVAILABLE;
+}
+
 /* R5D section 3.5: the one **widened** symbol, answered identically here. `mask == -1` is the
  * router's plain softmax; every other value is a slot index that must name a live tensor, so an
  * empty slot is still `ALIGN_GGML_SLOT` and never silently becomes an unmasked softmax.
