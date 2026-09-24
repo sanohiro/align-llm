@@ -4158,6 +4158,54 @@ int32_t align_ggml_op_rms_norm(void *ctx, void *slots, int64_t out, int64_t a, i
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 
+int32_t align_ggml_op_sigmoid(void *ctx, void *slots, int64_t out, int64_t a) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sa->type != GGML_TYPE_F32 || ggml_nelements(sa) > 134217728) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_sigmoid((struct ggml_context *) ctx, sa);
+    return result == NULL ? ALIGN_GGML_INIT : align_ggml_slot_store(slots, out, result);
+}
+
+int32_t align_ggml_op_softplus(void *ctx, void *slots, int64_t out, int64_t a) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sa->type != GGML_TYPE_F32 || ggml_nelements(sa) > 134217728) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_softplus((struct ggml_context *) ctx, sa);
+    return result == NULL ? ALIGN_GGML_INIT : align_ggml_slot_store(slots, out, result);
+}
+
+int32_t align_ggml_op_silu(void *ctx, void *slots, int64_t out, int64_t a) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sa->type != GGML_TYPE_F32 || ggml_nelements(sa) > 134217728) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_silu((struct ggml_context *) ctx, sa);
+    return result == NULL ? ALIGN_GGML_INIT : align_ggml_slot_store(slots, out, result);
+}
+
+int32_t align_ggml_op_scale(
+        void *ctx, void *slots, int64_t out, int64_t a, int32_t factor_bits) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    float factor = align_ggml_bits_to_f32(factor_bits);
+    if (sa->type != GGML_TYPE_F32 || ggml_nelements(sa) > 134217728 || !isfinite(factor)) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_scale((struct ggml_context *) ctx, sa, factor);
+    return result == NULL ? ALIGN_GGML_INIT : align_ggml_slot_store(slots, out, result);
+}
+
+int32_t align_ggml_op_l2_norm(void *ctx, void *slots, int64_t out, int64_t a, int32_t eps_bits) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sa->type != GGML_TYPE_F32 || ggml_nelements(sa) > 134217728 ||
+        !align_ggml_eps_ok(eps_bits)) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_l2_norm((struct ggml_context *) ctx, sa, align_ggml_bits_to_f32(eps_bits));
+    return result == NULL ? ALIGN_GGML_INIT : align_ggml_slot_store(slots, out, result);
+}
+
 int32_t align_ggml_op_mul(void *ctx, void *slots, int64_t out, int64_t a, int64_t b) {
     struct ggml_tensor *sb = align_ggml_slot_tensor(slots, b);
     ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)

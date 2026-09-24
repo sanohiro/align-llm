@@ -99,10 +99,14 @@ ggml bundle. `runtime_qwen35_load_smoke` passes on the real Model IR, GGUF, pack
 Metal bundle: 320 weights uploaded, 84 resident tensors defined, and the tied output omitted
 from the upload byte count. The stub GPU cannot define quantized tensors, so this owner uses
 the real backend. Native Qwen3.5 graph execution, oracle parity, and any speed claim remain
-open. `runtime_qwen35_state` also binds the active resident tensor and exposes a staged
+open. `runtime_qwen35_state_io` also binds the active resident tensor and exposes a staged
 same-shape copy into the inactive tensor via the existing KV slot ABI; the real Metal load owner
 checks active binding shapes across a parity flip. The graph must expand those copy nodes and
-test success-only publication. Next implement the recurrent and full-attention graphs.
+test success-only publication. The one-token recurrent-layer builder now constructs layer 0
+from the real 0.8B weights and executes on pinned Metal with a nonzero synthetic hidden input;
+its output is nonzero and the convolution/DeltaNet copy nodes are included. This is a layer
+operation smoke, not a llama.cpp numeric comparison or full-model result. Next complete the
+full-attention layers, residual/FFN/head, session publication, and pinned oracle comparison.
 The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
 src/main.align` (3,134 functions), `gmake build` with the documented Homebrew
 `LIBRARY_PATH`, `./scripts/check-format`, `git diff --check`, C syntax

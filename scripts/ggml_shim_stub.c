@@ -4374,6 +4374,42 @@ int32_t align_ggml_op_rms_norm(void *ctx, void *slots, int64_t out, int64_t a, i
     return align_stub_bind(slots, out, t, sa, NULL, ALIGN_STUB_OP_RMS_NORM);
 }
 
+static int32_t align_stub_qwen35_unary(
+        void *ctx, void *slots, int64_t out, int64_t a, int32_t eps_bits, int require_eps) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    (void) out;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (sa == NULL) { return ALIGN_GGML_SLOT; }
+    if (sa->type != ALIGN_STUB_TYPE_F32 || align_stub_nbytes(sa) <= 0 ||
+        align_stub_nbytes(sa) > 134217728LL * (int64_t) sizeof(float) ||
+        (require_eps && !align_ggml_eps_ok(eps_bits))) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return ALIGN_GGML_UNAVAILABLE;
+}
+
+int32_t align_ggml_op_sigmoid(void *ctx, void *slots, int64_t out, int64_t a) {
+    return align_stub_qwen35_unary(ctx, slots, out, a, 0, 0);
+}
+
+int32_t align_ggml_op_softplus(void *ctx, void *slots, int64_t out, int64_t a) {
+    return align_stub_qwen35_unary(ctx, slots, out, a, 0, 0);
+}
+
+int32_t align_ggml_op_silu(void *ctx, void *slots, int64_t out, int64_t a) {
+    return align_stub_qwen35_unary(ctx, slots, out, a, 0, 0);
+}
+
+int32_t align_ggml_op_scale(
+        void *ctx, void *slots, int64_t out, int64_t a, int32_t factor_bits) {
+    if (!isfinite(align_ggml_bits_to_f32(factor_bits))) { return ALIGN_GGML_SHAPE; }
+    return align_stub_qwen35_unary(ctx, slots, out, a, 0, 0);
+}
+
+int32_t align_ggml_op_l2_norm(void *ctx, void *slots, int64_t out, int64_t a, int32_t eps_bits) {
+    return align_stub_qwen35_unary(ctx, slots, out, a, eps_bits, 1);
+}
+
 static int32_t align_stub_elementwise(
     void *ctx, void *slots, int64_t out, int64_t a, int64_t b, int32_t op) {
     align_stub_tensor *sa = align_stub_slot(slots, a);

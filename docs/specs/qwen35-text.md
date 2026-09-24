@@ -138,7 +138,7 @@ recurrent layers. Each graph reads the active pair and writes the next pair. Onl
 full step flips parity and publishes the token prefix; a failed or cancelled step leaves the
 active pair and prefix unchanged. The inactive pair may contain partial results and is overwritten
 on the next attempted step. The first session does not retain extra DeltaNet snapshots (`K=1`).
-`runtime_qwen35_state` binds the active resident tensor and stages a same-shape graph copy into
+`runtime_qwen35_state_io` binds the active resident tensor and stages a same-shape graph copy into
 the inactive tensor through the existing GPU KV slot ABI; the graph caller must expand that
 copy node and advance parity only after complete execution and publication. The Metal load
 owner checks active resident bindings before and after a parity flip. Staged writes and rollback
@@ -161,24 +161,38 @@ slots and shapes, and refuses an altered tied-output source offset.
 count before planning 320 backend-aligned weights and 84 resident F32 tensors. Its focused 0.8B
 Metal owner at the exact pinned ggml commit uploads all 320 unique weights, defines all resident
 tensors, and confirms the uploaded byte count excludes the repeated output member. This verifies
-load ownership and allocation only; graph execution and numeric parity remain open.
+load ownership and allocation only; whole-model graph execution and numeric parity remain open.
 The plan must validate the four rope sections from source GGUF, model/pack identity, block roles,
 all state extents and the selected ggml op shapes before graph creation. `ggml_rope_multi`,
 `ggml_ssm_conv`, and `ggml_gated_delta_net` exist at the pin and now have checked shim symbols.
+The one-token recurrent graph also needs direct `ggml_sigmoid`, `ggml_softplus`, `ggml_silu`,
+`ggml_scale`, and `ggml_l2_norm` unary calls. Their shim ABI takes a graph context, slot window,
+output and source slot; scale takes a finite F32 factor, and L2 normalization additionally takes
+finite positive F32 epsilon bits. The shim
+accepts bounded F32 input, checks slot/shape before calling the pinned ggml constructor,
+returns the existing `ALIGN_GGML_*` status, and owns no payload. Align owns the operation order,
+the source slot map, and graph lifetime. The ggml-free stub refuses numeric execution of these
+new operations, as it does for SSM convolution and Gated DeltaNet.
 The first text session retains only the final DeltaNet state, so its ABI fixes the snapshot
 count at one. The ggml-free stub refuses execution of these three numeric operations explicitly;
 passing the shim's shape checks does not establish the native model's numerical correctness.
-Align-owned state, role loading, and graph construction remain implementation work, not an
+The first one-token recurrent-layer builder binds ten recurrent attention weights, forms the
+causal convolution and staged history write, applies Gated DeltaNet and its staged state write,
+then performs gated normalization and output projection. A real pinned-Metal 0.8B owner builds
+and executes layer 0 with a nonzero synthetic hidden vector and reads a nonzero output. This
+establishes a runnable layer path, not parity with llama.cpp or a full-model speed result.
+Align-owned full-model graph construction remains implementation work, not an
 upstream Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the
 tokenizer or Model IR checks.
 
 The local native admission checkpoint `runtime_qwen35_geometry.parse_snapshot` consumes the verified
 Model IR document and reads four `snapshot_i32_array` values from the same GGUF snapshot. It checks
-the model dimensions and section sum before deriving the six full-attention layers, 18
+the model dimensions, finite normalization epsilon and positive RoPE base bit patterns, and
+section sum before deriving the six full-attention layers, 18
 recurrent layers, and per-layer state extents. `runtime_qwen35_geometry_smoke` passes on the
-real 0.8B GGUF and rejects an altered section sum. This is a construction check only; role
-loading, graph execution, state commit, provider routing, and numeric parity are still open.
+real 0.8B GGUF and rejects an altered section sum. Full-model graph execution, state commit,
+provider routing, and numeric parity are still open.
 
 ### 0.8B reference bottleneck checkpoint (2026-09-24)
 

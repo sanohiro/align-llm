@@ -1,0 +1,29 @@
+module runtime_qwen35_state_io
+
+import ggml_ffi
+import runtime_kv
+import runtime_qwen35_geometry
+import runtime_qwen35_state
+
+pub fn bind_read(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry, borrow state: runtime_qwen35_state.State,
+  layer: i64, part: i64, borrow slots: slice<u8>, out: i64,
+) -> Result<(), Error> {
+  index := runtime_qwen35_state.read_index(g, state, layer, part)?
+  ggml_ffi.gpu_kv_slot(owner, index, slots, out) else { return Err(Error.Invalid) }
+  return Ok(())
+}
+
+// The graph caller must expand this copy node. The inactive tensor becomes the read tensor
+// only after the complete step succeeds and finish() advances the session's parity.
+pub fn stage_write(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry, borrow state: runtime_qwen35_state.State,
+  layer: i64, part: i64, kind: i64,
+  borrow slots: slice<u8>, out: i64, source: i64,
+) -> Result<(), Error> {
+  index := runtime_qwen35_state.write_index(g, state, layer, part)?
+  return runtime_kv.write_slot(owner, index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
+    0, slots, out, source)
+}

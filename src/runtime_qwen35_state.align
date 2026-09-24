@@ -1,8 +1,6 @@
 module runtime_qwen35_state
 
-import ggml_ffi
 import runtime_qwen35_geometry
-import runtime_kv
 
 pub CONV := 0
 pub DELTA := 1
@@ -50,29 +48,6 @@ pub fn read_index(
 pub fn write_index(
   borrow g: runtime_qwen35_geometry.Geometry, borrow state: State, layer: i64, part: i64,
 ) -> Result<i64, Error> = recurrent_index(g, layer, part, 1 - state.active)
-
-pub fn bind_read(
-  borrow owner: ggml_ffi.GpuDevice,
-  borrow g: runtime_qwen35_geometry.Geometry, borrow state: State,
-  layer: i64, part: i64, borrow slots: slice<u8>, out: i64,
-) -> Result<(), Error> {
-  index := read_index(g, state, layer, part)?
-  ggml_ffi.gpu_kv_slot(owner, index, slots, out) else { return Err(Error.Invalid) }
-  return Ok(())
-}
-
-// The graph caller must expand this copy node. The inactive tensor becomes the read tensor
-// only after the complete step succeeds and finish() advances the session's parity.
-pub fn stage_write(
-  borrow owner: ggml_ffi.GpuDevice,
-  borrow g: runtime_qwen35_geometry.Geometry, borrow state: State,
-  layer: i64, part: i64, kind: i64,
-  borrow slots: slice<u8>, out: i64, source: i64,
-) -> Result<(), Error> {
-  index := write_index(g, state, layer, part)?
-  return runtime_kv.write_slot(owner, index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
-    0, slots, out, source)
-}
 
 // The caller invokes this only after a complete graph compute and KV publication.
 pub fn finish(borrow mut state: State, succeeded: bool) {

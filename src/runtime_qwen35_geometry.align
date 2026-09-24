@@ -12,6 +12,8 @@ pub Geometry {
   n_ff: i64,
   n_vocab: i64,
   context_length: i64,
+  rms_eps_bits: i64,
+  rope_freq_base_bits: i64,
   full_attention_interval: i64,
   ssm_conv_kernel: i64,
   ssm_state_size: i64,
@@ -33,11 +35,41 @@ fn field(value: json.doc, name: str) -> Result<i64, Error> = match value.get(nam
 
 fn bounded(value: i64, low: i64, high: i64) -> bool = value >= low && value <= high
 
+fn bits32(value: str) -> i64 {
+  bytes := value.bytes()
+  if bytes.len() != 8 { return -1 }
+  mut result := 0
+  mut at := 0
+  loop {
+    if at >= 8 { break }
+    byte := bytes.u8(at) as i64
+    digit := if byte >= 48 && byte <= 57 { byte - 48 } else {
+      if byte >= 97 && byte <= 102 { byte - 87 } else { -1 }
+    }
+    if digit < 0 { return -1 }
+    result = 16 * result + digit
+    at = at + 1
+  }
+  return result
+}
+
+fn positive_finite_bits(value: i64) -> bool =
+value > 0 && value < 2147483648 && (value / 8388608) % 256 != 255
+
 pub fn valid_layer_pattern(borrow g: Geometry) -> bool =
 g.n_layer >= 1 && g.n_layer <= 512
   && g.full_attention_interval >= 1 && g.full_attention_interval <= g.n_layer
   && g.attention_layers == g.n_layer / g.full_attention_interval
   && g.recurrent_layers == g.n_layer - g.attention_layers
+
+pub fn inverse_sqrt_bits(value: i64) -> i64 {
+  if value < 1 { return 0 }
+  result: f32 := (1.0 as f32) / ((value as f32).sqrt())
+  mut image := buffer(4)
+  image.put_f32_le(result)
+  bytes := image.bytes()
+  return bytes.u32_le(0) as i64
+}
 
 // The source GGUF snapshot owns the four section values. Model IR records only their
 // declared type and count, so the caller must pass values read from that same snapshot.
@@ -72,6 +104,10 @@ pub fn parse(text: str, borrow sections: array<i64>) -> Result<Geometry, Error> 
     dt_rank := field(model, "ssm_time_step_rank")?
     inner := field(model, "ssm_inner_size")?
     rope_dims := field(rope, "dim_count")?
+    eps_text := model.get("rms_eps_bits").as_str() else { return Err(Error.Invalid) }
+    base_text := rope.get("freq_base_bits").as_str() else { return Err(Error.Invalid) }
+    rms_eps_bits := bits32(eps_text)
+    rope_freq_base_bits := bits32(base_text)
     if !bounded(n_layer, 1, 512) || !bounded(n_embd, 1, 1048576)
       || !bounded(n_head, 1, 4096) || !bounded(n_head_kv, 1, n_head)
       || !bounded(head_dim, 2, 4096) || !bounded(n_ff, 1, 16777216)
@@ -80,8 +116,11 @@ pub fn parse(text: str, borrow sections: array<i64>) -> Result<Geometry, Error> 
       || !bounded(state_size, 1, 4096) || !bounded(groups, 1, 4096)
       || !bounded(dt_rank, 1, 4096) || !bounded(inner, 1, 16777216)
       || n_head % n_head_kv != 0 || inner % dt_rank != 0
+      || dt_rank % groups != 0
       || inner / dt_rank != state_size
-      || rope_dims < 2 || rope_dims > head_dim || rope_dims % 2 != 0 {
+      || rope_dims < 2 || rope_dims > head_dim || rope_dims % 2 != 0
+      || !positive_finite_bits(rms_eps_bits)
+      || !positive_finite_bits(rope_freq_base_bits) {
       return Err(Error.Invalid)
     }
     mut section_total := 0
@@ -109,6 +148,7 @@ pub fn parse(text: str, borrow sections: array<i64>) -> Result<Geometry, Error> 
         n_layer: n_layer, n_embd: n_embd, n_head: n_head, n_head_kv: n_head_kv,
         head_dim: head_dim, n_ff: n_ff, n_vocab: n_vocab,
         context_length: context_length, full_attention_interval: interval,
+        rms_eps_bits: rms_eps_bits, rope_freq_base_bits: rope_freq_base_bits,
         ssm_conv_kernel: conv_kernel, ssm_state_size: state_size,
         ssm_group_count: groups, ssm_time_step_rank: dt_rank,
         ssm_inner_size: inner, rope_dim_count: rope_dims,

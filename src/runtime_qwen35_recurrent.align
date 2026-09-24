@@ -1,0 +1,161 @@
+module runtime_qwen35_recurrent
+
+import ggml_ffi
+import runtime_qwen35_geometry
+import runtime_qwen35_roles
+import runtime_qwen35_state
+import runtime_qwen35_state_io
+
+// Weight slots 0..9 follow the recurrent attention member order. The input is slot 20.
+// Slots 21..60 are request-local graph nodes; 61 is the projected recurrent result.
+pub INPUT := 20
+pub OUTPUT := 61
+
+fn bind_weights(
+  borrow owner: ggml_ffi.GpuDevice, borrow g: runtime_qwen35_geometry.Geometry,
+  layer: i64, borrow slots: slice<u8>,
+) -> Result<(), Error> {
+  mut row := 0
+  loop {
+    if row >= 10 { break }
+    index := runtime_qwen35_roles.layer_slot(g, layer, row)?
+    ggml_ffi.gpu_weight_slot(owner, index, slots, row) else { return Err(Error.Invalid) }
+    row = row + 1
+  }
+  return Ok(())
+}
+
+pub fn build_one(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  borrow state: runtime_qwen35_state.State,
+  layer: i64, kind: i64, ctx: raw, graph: raw, borrow slots: slice<u8>,
+) -> Result<(), Error> {
+  if !runtime_qwen35_geometry.valid_layer_pattern(g)
+    || layer < 0 || layer >= g.n_layer || runtime_qwen35_state.is_attention(g, layer)
+    || g.ssm_inner_size / g.ssm_time_step_rank != g.ssm_state_size
+    || g.ssm_time_step_rank % g.ssm_group_count != 0
+    || ggml_ffi.handle_absent(ctx) || ggml_ffi.handle_absent(graph)
+    || ggml_ffi.slot_ne(slots, INPUT, 0) != g.n_embd
+    || ggml_ffi.slot_ne(slots, INPUT, 1) != 1 {
+    return Err(Error.Invalid)
+  }
+  bind_weights(owner, g, layer, slots)?
+  channels := g.ssm_inner_size + 2 * g.ssm_group_count * g.ssm_state_size
+  heads := 2 * g.ssm_group_count + g.ssm_time_step_rank
+  scale_bits := runtime_qwen35_geometry.inverse_sqrt_bits(g.ssm_state_size)
+
+  ggml_ffi.op_rms_norm(ctx, slots, 21, INPUT, g.rms_eps_bits, "q35_recurrent_norm") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul(ctx, slots, 22, 21, 0, "q35_recurrent_norm_weight") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul_mat(ctx, slots, 23, 1, 22, "q35_recurrent_qkv") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul_mat(ctx, slots, 24, 2, 22, "q35_recurrent_z") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul_mat(ctx, slots, 25, 6, 22, "q35_recurrent_beta") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_sigmoid(ctx, slots, 26, 25, "q35_recurrent_beta_sigmoid") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul_mat(ctx, slots, 27, 7, 22, "q35_recurrent_alpha") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_add(ctx, slots, 28, 27, 4, "q35_recurrent_dt") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_softplus(ctx, slots, 29, 28, "q35_recurrent_softplus") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul(ctx, slots, 30, 29, 5, "q35_recurrent_gate") else {
+    return Err(Error.Invalid)
+  }
+  runtime_qwen35_state_io.bind_read(owner, g, state, layer, runtime_qwen35_state.CONV, slots, 31)?
+  ggml_ffi.op_reshape_3d(ctx, slots, 32, 23, 1, channels, 1, "q35_recurrent_qkv_conv") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_concat(ctx, slots, 33, 31, 32, 0, "q35_recurrent_conv_input") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_view_2d(ctx, slots, 34, 33, g.ssm_conv_kernel - 1, channels,
+    1, 0, 1, "q35_recurrent_conv_next") else { return Err(Error.Invalid) }
+  runtime_qwen35_state_io.stage_write(owner, g, state, layer, runtime_qwen35_state.CONV,
+    kind, slots, 53, 34)?
+  ggml_ffi.graph_expand(graph, slots, 53, "q35_recurrent_conv_commit") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_ssm_conv(ctx, slots, 35, 33, 3, "q35_recurrent_conv") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_silu(ctx, slots, 36, 35, "q35_recurrent_conv_silu") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_reshape_3d(ctx, slots, 37, 36, g.ssm_state_size, heads, 1,
+    "q35_recurrent_split_shape") else { return Err(Error.Invalid) }
+  ggml_ffi.op_view_2d(ctx, slots, 38, 37, g.ssm_state_size, g.ssm_group_count,
+    1, 1, 0, "q35_recurrent_q") else { return Err(Error.Invalid) }
+  ggml_ffi.op_view_2d(ctx, slots, 39, 37, g.ssm_state_size, g.ssm_group_count,
+    1, 1, g.ssm_group_count, "q35_recurrent_k") else { return Err(Error.Invalid) }
+  ggml_ffi.op_view_2d(ctx, slots, 40, 37, g.ssm_state_size, g.ssm_time_step_rank,
+    1, 1, 2 * g.ssm_group_count, "q35_recurrent_v") else { return Err(Error.Invalid) }
+  ggml_ffi.op_l2_norm(ctx, slots, 41, 38, g.rms_eps_bits, "q35_recurrent_q_norm") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_l2_norm(ctx, slots, 42, 39, g.rms_eps_bits, "q35_recurrent_k_norm") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_reshape_3d(ctx, slots, 43, 41, g.ssm_state_size, g.ssm_group_count, 1,
+    "q35_recurrent_q_shape") else { return Err(Error.Invalid) }
+  ggml_ffi.op_reshape_3d(ctx, slots, 44, 42, g.ssm_state_size, g.ssm_group_count, 1,
+    "q35_recurrent_k_shape") else { return Err(Error.Invalid) }
+  ggml_ffi.op_reshape_3d(ctx, slots, 45, 40, g.ssm_state_size, g.ssm_time_step_rank, 1,
+    "q35_recurrent_v_shape") else { return Err(Error.Invalid) }
+  ggml_ffi.op_reshape_3d(ctx, slots, 46, 26, 1, g.ssm_time_step_rank, 1,
+    "q35_recurrent_beta_shape") else { return Err(Error.Invalid) }
+  ggml_ffi.op_reshape_3d(ctx, slots, 47, 30, 1, g.ssm_time_step_rank, 1,
+    "q35_recurrent_gate_shape") else { return Err(Error.Invalid) }
+  runtime_qwen35_state_io.bind_read(owner, g, state, layer, runtime_qwen35_state.DELTA, slots, 48)?
+  ggml_ffi.op_scale(ctx, slots, 49, 43, scale_bits, "q35_recurrent_q_scale") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_gated_delta_net_final(ctx, slots, 50, 49, 44, 45, 47, 46, 48,
+    "q35_recurrent_delta_net") else { return Err(Error.Invalid) }
+  ggml_ffi.op_view_2d(ctx, slots, 51, 50, g.ssm_inner_size, 1, 1, 1, 0,
+    "q35_recurrent_delta_output") else { return Err(Error.Invalid) }
+  ggml_ffi.op_view_2d(ctx, slots, 52, 50, g.ssm_inner_size, g.ssm_state_size,
+    1, 1, 1, "q35_recurrent_delta_next") else { return Err(Error.Invalid) }
+  ggml_ffi.op_reshape_3d(ctx, slots, 54, 52, g.ssm_state_size, g.ssm_state_size,
+    g.ssm_time_step_rank, "q35_recurrent_delta_next_shape") else { return Err(Error.Invalid) }
+  runtime_qwen35_state_io.stage_write(owner, g, state, layer, runtime_qwen35_state.DELTA,
+    kind, slots, 55, 54)?
+  ggml_ffi.graph_expand(graph, slots, 55, "q35_recurrent_delta_commit") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_reshape_3d(ctx, slots, 56, 51, g.ssm_state_size, g.ssm_time_step_rank, 1,
+    "q35_recurrent_output_shape") else { return Err(Error.Invalid) }
+  ggml_ffi.op_rms_norm(ctx, slots, 57, 56, g.rms_eps_bits, "q35_recurrent_output_norm") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul(ctx, slots, 58, 57, 8, "q35_recurrent_output_norm_weight") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_reshape_3d(ctx, slots, 59, 24, g.ssm_state_size, g.ssm_time_step_rank, 1,
+    "q35_recurrent_z_shape") else { return Err(Error.Invalid) }
+  ggml_ffi.op_silu(ctx, slots, 60, 59, "q35_recurrent_z_silu") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul(ctx, slots, 62, 58, 60, "q35_recurrent_output_gated") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_reshape_3d(ctx, slots, 63, 62, g.ssm_inner_size, 1, 1,
+    "q35_recurrent_output_flat") else { return Err(Error.Invalid) }
+  ggml_ffi.op_mul_mat(ctx, slots, OUTPUT, 9, 63, "q35_recurrent_projection") else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}

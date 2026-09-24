@@ -4,9 +4,13 @@ import ggml_ffi
 import gguf
 import runtime_qwen35_geometry
 import runtime_qwen35_load
+import runtime_qwen35_recurrent
 import runtime_qwen35_state
+import runtime_qwen35_state_io
 import runtime_qwen_load
+import runtime_execution
 import runtime_memory
+import runtime_inputs
 import runtime_kv
 import runtime_weights
 import std.fs
@@ -37,7 +41,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   }
   runtime_memory.admit(owner, runtime_memory.MemoryPlan {
       weights_bytes: plan.weights_bytes, kv_bytes: plan.kv_bytes,
-      workspace_bytes: 1048576, metadata_bytes: 1048576,
+      workspace_bytes: 268435456, metadata_bytes: 2097152,
       staging_bytes: 1048576, legacy_cache_bytes: 0,
     })?
   runtime_memory.allocate(owner)?
@@ -54,17 +58,63 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   slots := slot_storage.bytes()
   ggml_ffi.slots_init(slots, slots.len(), "qwen35_state_slots") else { return Err(Error.Invalid) }
   mut state := runtime_qwen35_state.new()
-  runtime_qwen35_state.bind_read(owner, g, state, 0, runtime_qwen35_state.CONV, slots, 0)?
-  runtime_qwen35_state.bind_read(owner, g, state, 22, runtime_qwen35_state.DELTA, slots, 1)?
+  runtime_qwen35_state_io.bind_read(owner, g, state, 0, runtime_qwen35_state.CONV, slots, 0)?
+  runtime_qwen35_state_io.bind_read(owner, g, state, 22, runtime_qwen35_state.DELTA, slots, 1)?
   if ggml_ffi.slot_ne(slots, 0, 0) != 3 || ggml_ffi.slot_ne(slots, 0, 1) != 6144
     || ggml_ffi.slot_ne(slots, 1, 0) != 128 || ggml_ffi.slot_ne(slots, 1, 2) != 16 {
     return Err(Error.Invalid)
   }
   runtime_qwen35_state.finish(state, true)
-  runtime_qwen35_state.bind_read(owner, g, state, 0, runtime_qwen35_state.CONV, slots, 0)?
+  runtime_qwen35_state_io.bind_read(owner, g, state, 0, runtime_qwen35_state.CONV, slots, 0)?
   if ggml_ffi.slot_ne(slots, 0, 0) != 3 || ggml_ffi.slot_ne(slots, 0, 1) != 6144 {
     return Err(Error.Invalid)
   }
+  runtime_inputs.begin(owner, 1)?
+  hidden := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 0, n_dims: 2, ne0: g.n_embd, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  if hidden != 0 { return Err(Error.Invalid) }
+  runtime_inputs.finish(owner)?
+  ctx := ggml_ffi.gpu_graph_context_open(owner, ggml_ffi.GPU_GRAPH_PREFILL, 1048576)
+  if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
+  graph := ggml_ffi.graph_new(ctx)
+  if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
+  ggml_ffi.slots_init(slots, slots.len(), "qwen35_recurrent_slots") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, 0, slots, runtime_qwen35_recurrent.INPUT) else {
+    return Err(Error.Invalid)
+  }
+  runtime_qwen35_recurrent.build_one(owner, g, state, 0, ggml_ffi.GPU_GRAPH_PREFILL,
+    ctx, graph, slots)?
+  if ggml_ffi.slot_ne(slots, runtime_qwen35_recurrent.OUTPUT, 0) != g.n_embd
+    || ggml_ffi.slot_ne(slots, runtime_qwen35_recurrent.OUTPUT, 1) != 1
+    || ggml_ffi.graph_node_count(graph) < 3 {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.slot_mark_output(slots, runtime_qwen35_recurrent.OUTPUT,
+    "qwen35_recurrent_output") else { return Err(Error.Invalid) }
+  ggml_ffi.graph_expand(graph, slots, runtime_qwen35_recurrent.OUTPUT,
+    "qwen35_recurrent_output") else { return Err(Error.Invalid) }
+  key := "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+  mut hidden_image := buffer.filled(g.n_embd * 4, 0 as u8)
+  mut hidden_view := hidden_image.bytes()
+  hidden_view.set_u32_le(0, 1065353216 as u32)
+  runtime_inputs.update(owner, 0, 0, hidden_view)?
+  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+  mut result_image := buffer.filled(g.n_embd * 4, 0 as u8)
+  result := result_image.bytes()
+  ggml_ffi.gpu_slot_get(owner, slots, runtime_qwen35_recurrent.OUTPUT,
+    result, 0, result.len(), "qwen35_recurrent_output") else { return Err(Error.Invalid) }
+  mut byte_index := 0
+  mut nonzero := false
+  loop {
+    if byte_index >= result.len() { break }
+    if result[byte_index] != 0 { nonzero = true }
+    byte_index = byte_index + 1
+  }
+  if !nonzero { return Err(Error.Invalid) }
   print("qwen35 load: PASS")
   return Ok(())
 }

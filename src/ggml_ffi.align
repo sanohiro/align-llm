@@ -459,6 +459,11 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_slot_mark_output(slots: slice<u8>, index: i64) -> i32
   fn align_ggml_op_get_rows(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_rms_norm(ctx: raw, slots: slice<u8>, out: i64, a: i64, eps_bits: i32) -> i32
+  fn align_ggml_op_sigmoid(ctx: raw, slots: slice<u8>, out: i64, a: i64) -> i32
+  fn align_ggml_op_softplus(ctx: raw, slots: slice<u8>, out: i64, a: i64) -> i32
+  fn align_ggml_op_silu(ctx: raw, slots: slice<u8>, out: i64, a: i64) -> i32
+  fn align_ggml_op_scale(ctx: raw, slots: slice<u8>, out: i64, a: i64, factor_bits: i32) -> i32
+  fn align_ggml_op_l2_norm(ctx: raw, slots: slice<u8>, out: i64, a: i64, eps_bits: i32) -> i32
   fn align_ggml_op_mul(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_add(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_mul_mat(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
@@ -1847,6 +1852,42 @@ pub fn op_rms_norm(
 ) -> Result<(), Fault> {
   unsafe {
     return r5_result(align_ggml_op_rms_norm(ctx, slots, out, a, eps_bits as i32) as i64, label)
+  }
+}
+
+pub fn op_sigmoid(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe { return r5_result(align_ggml_op_sigmoid(ctx, slots, out, a) as i64, label) }
+}
+
+pub fn op_softplus(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe { return r5_result(align_ggml_op_softplus(ctx, slots, out, a) as i64, label) }
+}
+
+pub fn op_silu(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe { return r5_result(align_ggml_op_silu(ctx, slots, out, a) as i64, label) }
+}
+
+pub fn op_scale(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, factor_bits: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(
+      align_ggml_op_scale(ctx, slots, out, a, factor_bits as i32) as i64, label)
+  }
+}
+
+pub fn op_l2_norm(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, eps_bits: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(
+      align_ggml_op_l2_norm(ctx, slots, out, a, eps_bits as i32) as i64, label)
   }
 }
 
