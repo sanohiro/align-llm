@@ -4538,6 +4538,60 @@ int32_t align_ggml_op_rope_imrope(
     return ALIGN_GGML_UNAVAILABLE;
 }
 
+int32_t align_ggml_op_ssm_conv(
+    void *ctx, void *slots, int64_t out, int64_t input, int64_t kernel) {
+    align_stub_tensor *sx = align_stub_slot(slots, input);
+    align_stub_tensor *weight = align_stub_slot(slots, kernel);
+    (void) out;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (sx == NULL || weight == NULL) { return ALIGN_GGML_SLOT; }
+    if (sx->type != ALIGN_STUB_TYPE_F32 || weight->type != ALIGN_STUB_TYPE_F32 ||
+        sx->ne[0] < weight->ne[0] || weight->ne[0] < 2 ||
+        sx->ne[0] > 65536 || sx->ne[1] > 65536 ||
+        sx->ne[0] * sx->ne[1] > 134217728 ||
+        sx->ne[1] != weight->ne[1] || sx->ne[2] != 1 || sx->ne[3] != 1 ||
+        weight->ne[2] != 1 || weight->ne[3] != 1) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return ALIGN_GGML_UNAVAILABLE;
+}
+
+int32_t align_ggml_op_gated_delta_net_final(
+    void *ctx, void *slots, int64_t out, int64_t q, int64_t k, int64_t v,
+    int64_t gate, int64_t beta, int64_t state) {
+    align_stub_tensor *sq = align_stub_slot(slots, q);
+    align_stub_tensor *sk = align_stub_slot(slots, k);
+    align_stub_tensor *sv = align_stub_slot(slots, v);
+    align_stub_tensor *sg = align_stub_slot(slots, gate);
+    align_stub_tensor *sb = align_stub_slot(slots, beta);
+    align_stub_tensor *ss = align_stub_slot(slots, state);
+    (void) out;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (sq == NULL || sk == NULL || sv == NULL || sg == NULL || sb == NULL || ss == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (sq->type != ALIGN_STUB_TYPE_F32 || sk->type != ALIGN_STUB_TYPE_F32 ||
+        sv->type != ALIGN_STUB_TYPE_F32 || sg->type != ALIGN_STUB_TYPE_F32 ||
+        sb->type != ALIGN_STUB_TYPE_F32 || ss->type != ALIGN_STUB_TYPE_F32 ||
+        sv->ne[0] < 1 || sv->ne[0] > 4096 || sv->ne[1] < 1 || sv->ne[1] > 4096 ||
+        sv->ne[2] < 1 || sv->ne[2] > 65536 || sv->ne[3] != 1 ||
+        sv->ne[0] * sv->ne[1] * (sv->ne[2] + sv->ne[0]) > 134217728 ||
+        sq->ne[0] != sv->ne[0] || sk->ne[0] != sv->ne[0] ||
+        sq->ne[1] < 1 || sk->ne[1] < 1 ||
+        sv->ne[1] % sq->ne[1] != 0 || sv->ne[1] % sk->ne[1] != 0 ||
+        sq->ne[2] != sv->ne[2] || sk->ne[2] != sv->ne[2] ||
+        sq->ne[3] != 1 || sk->ne[3] != 1 ||
+        sg->ne[0] != 1 || sb->ne[0] != 1 ||
+        sg->ne[1] != sv->ne[1] || sb->ne[1] != sv->ne[1] ||
+        sg->ne[2] != sv->ne[2] || sb->ne[2] != sv->ne[2] ||
+        sg->ne[3] != 1 || sb->ne[3] != 1 ||
+        ss->ne[0] != sv->ne[0] || ss->ne[1] != sv->ne[0] ||
+        ss->ne[2] != sv->ne[1] || ss->ne[3] != 1) {
+        return ALIGN_GGML_SHAPE;
+    }
+    return ALIGN_GGML_UNAVAILABLE;
+}
+
 /* R5D section 3.5: the one **widened** symbol, answered identically here. `mask == -1` is the
  * router's plain softmax; every other value is a slot index that must name a live tensor, so an
  * empty slot is still `ALIGN_GGML_SLOT` and never silently becomes an unmasked softmax.

@@ -3,6 +3,7 @@ module runtime_qwen35_geometry_smoke
 import std.fs
 import gguf
 import runtime_qwen35_geometry
+import runtime_qwen35_state
 
 fn expect_failure(text: str, borrow sections: array<i64>) -> Result<(), Error> {
   match runtime_qwen35_geometry.parse(text, sections) {
@@ -11,12 +12,18 @@ fn expect_failure(text: str, borrow sections: array<i64>) -> Result<(), Error> {
   }
 }
 
+fn mark(borrow mut seen: slice<u8>, index: i64) -> Result<(), Error> {
+  if index < 0 || index >= seen.len() || seen[index] != 0 { return Err(Error.Invalid) }
+  seen[index] = 1
+  return Ok(())
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 3 { return Err(Error.Invalid) }
   source := fs.read_file(args[1])?
   snapshot := gguf.open_snapshot(args[2])?
   sections := gguf.snapshot_i32_array(snapshot, "qwen35.rope.dimension_sections")?
-  geometry := runtime_qwen35_geometry.parse_snapshot(source, snapshot)?
+  mut geometry := runtime_qwen35_geometry.parse_snapshot(source, snapshot)?
   if geometry.n_layer != 24 || geometry.attention_layers != 6
     || geometry.recurrent_layers != 18 || geometry.conv_elements_per_layer != 18432
     || geometry.state_elements_per_layer != 262144
@@ -60,6 +67,66 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   mut crossing := buffer.filled(32, 0 as u8)
   mut crossing_view := crossing.bytes()
   match runtime_qwen35_geometry.write_text_positions(2147483647, 2, crossing_view) {
+    Ok(_) => { return Err(Error.Invalid) },
+    Err(_) => {},
+  }
+  if runtime_qwen35_state.resident_count(geometry) != 84
+    || runtime_qwen35_state.attention_index(geometry, 3, runtime_qwen35_state.KEY)? != 0
+    || runtime_qwen35_state.attention_index(geometry, 7, runtime_qwen35_state.VALUE)? != 3
+    || runtime_qwen35_state.recurrent_index(geometry, 0, runtime_qwen35_state.CONV, 0)? != 12
+    || runtime_qwen35_state.recurrent_index(geometry, 4, runtime_qwen35_state.CONV, 0)? != 24
+    || runtime_qwen35_state.recurrent_index(geometry, 8, runtime_qwen35_state.DELTA, 1)? != 39
+    || runtime_qwen35_state.recurrent_index(geometry, 22, runtime_qwen35_state.DELTA, 1)? != 83 {
+    return Err(Error.Invalid)
+  }
+  mut state_slots := buffer.filled(84, 0 as u8)
+  mut seen := state_slots.bytes()
+  mut layer := 0
+  loop {
+    if layer >= geometry.n_layer { break }
+    if runtime_qwen35_state.is_attention(geometry, layer) {
+      mark(seen, runtime_qwen35_state.attention_index(geometry, layer, runtime_qwen35_state.KEY)?)?
+      mark(seen, runtime_qwen35_state.attention_index(geometry, layer, runtime_qwen35_state.VALUE)?)?
+    } else {
+      mut part := 0
+      loop {
+        if part >= 2 { break }
+        mut parity := 0
+        loop {
+          if parity >= 2 { break }
+          mark(seen, runtime_qwen35_state.recurrent_index(geometry, layer, part, parity)?)?
+          parity = parity + 1
+        }
+        part = part + 1
+      }
+    }
+    layer = layer + 1
+  }
+  mut slot := 0
+  loop {
+    if slot >= seen.len() { break }
+    if seen[slot] != 1 { return Err(Error.Invalid) }
+    slot = slot + 1
+  }
+  mut state := runtime_qwen35_state.new()
+  if runtime_qwen35_state.read_index(geometry, state, 0, runtime_qwen35_state.CONV)? != 12
+    || runtime_qwen35_state.write_index(geometry, state, 0, runtime_qwen35_state.CONV)? != 13 {
+    return Err(Error.Invalid)
+  }
+  runtime_qwen35_state.finish(state, false)
+  if state.active != 0 { return Err(Error.Invalid) }
+  runtime_qwen35_state.finish(state, true)
+  if state.active != 1
+    || runtime_qwen35_state.read_index(geometry, state, 0, runtime_qwen35_state.CONV)? != 13
+    || runtime_qwen35_state.write_index(geometry, state, 0, runtime_qwen35_state.CONV)? != 12 {
+    return Err(Error.Invalid)
+  }
+  geometry.full_attention_interval = 0
+  if runtime_qwen35_state.resident_count(geometry) != -1
+    || runtime_qwen35_state.is_attention(geometry, 3) {
+    return Err(Error.Invalid)
+  }
+  match runtime_qwen35_state.recurrent_index(geometry, 0, runtime_qwen35_state.CONV, 0) {
     Ok(_) => { return Err(Error.Invalid) },
     Err(_) => {},
   }

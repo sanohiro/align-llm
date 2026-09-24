@@ -479,6 +479,11 @@ extern "C" link("align_ggml_shim") {
     ctx: raw, slots: slice<u8>, out: i64, a: i64, pos: i64,
     n_dims: i32, n_ctx_orig: i32, freq_base_bits: i32,
     s0: i32, s1: i32, s2: i32, s3: i32) -> i32
+  fn align_ggml_op_ssm_conv(
+    ctx: raw, slots: slice<u8>, out: i64, input: i64, kernel: i64) -> i32
+  fn align_ggml_op_gated_delta_net_final(
+    ctx: raw, slots: slice<u8>, out: i64, q: i64, k: i64, v: i64,
+    gate: i64, beta: i64, state: i64) -> i32
   fn align_ggml_op_soft_max_ext(
     ctx: raw, slots: slice<u8>, out: i64, a: i64, mask: i64,
     scale_bits: i32, max_bias_bits: i32) -> i32
@@ -1943,6 +1948,25 @@ pub fn op_rope_imrope(
       align_ggml_op_rope_imrope(
         ctx, slots, out, a, pos, n_dims as i32, n_ctx_orig as i32, freq_base_bits as i32,
         s0 as i32, s1 as i32, s2 as i32, s3 as i32) as i64,
+      label)
+  }
+}
+
+pub fn op_ssm_conv(
+  ctx: raw, borrow slots: slice<u8>, out: i64, input: i64, kernel: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_ssm_conv(ctx, slots, out, input, kernel) as i64, label)
+  }
+}
+
+pub fn op_gated_delta_net_final(
+  ctx: raw, borrow slots: slice<u8>, out: i64, q: i64, k: i64, v: i64,
+  gate: i64, beta: i64, state: i64, label: str,
+) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(
+      align_ggml_op_gated_delta_net_final(ctx, slots, out, q, k, v, gate, beta, state) as i64,
       label)
   }
 }

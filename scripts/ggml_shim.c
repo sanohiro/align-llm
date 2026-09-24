@@ -4381,6 +4381,73 @@ int32_t align_ggml_op_rope_imrope(
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 
+int32_t align_ggml_op_ssm_conv(
+    void *ctx, void *slots, int64_t out, int64_t input, int64_t kernel) {
+    struct ggml_tensor *weight = align_ggml_slot_tensor(slots, kernel);
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, input)
+    if (weight == NULL) { return ALIGN_GGML_SLOT; }
+    if (!ggml_is_3d(sa) || !ggml_is_matrix(weight) ||
+        sa->type != GGML_TYPE_F32 || weight->type != GGML_TYPE_F32 ||
+        sa->ne[0] < weight->ne[0] || weight->ne[0] < 2 ||
+        sa->ne[0] > 65536 || sa->ne[1] > 65536 ||
+        sa->ne[0] * sa->ne[1] > 134217728 ||
+        sa->ne[1] != weight->ne[1] || sa->ne[2] != 1 ||
+        sa->nb[0] != sizeof(float) || sa->nb[1] != (size_t) sa->ne[0] * sizeof(float) ||
+        weight->nb[0] != sizeof(float) ||
+        weight->nb[1] != (size_t) weight->ne[0] * sizeof(float)) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_ssm_conv((struct ggml_context *) ctx, sa, weight);
+    if (result == NULL) { return ALIGN_GGML_INIT; }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+/* The first Qwen3.5 text session retains only the final DeltaNet state (K=1).
+ * Check all six operands before calling ggml, whose graph constructor asserts.
+ */
+int32_t align_ggml_op_gated_delta_net_final(
+    void *ctx, void *slots, int64_t out, int64_t q, int64_t k, int64_t v,
+    int64_t gate, int64_t beta, int64_t state) {
+    struct ggml_tensor *sq = align_ggml_slot_tensor(slots, q);
+    struct ggml_tensor *sk = align_ggml_slot_tensor(slots, k);
+    struct ggml_tensor *sv = align_ggml_slot_tensor(slots, v);
+    struct ggml_tensor *sg = align_ggml_slot_tensor(slots, gate);
+    struct ggml_tensor *sb = align_ggml_slot_tensor(slots, beta);
+    struct ggml_tensor *ss = align_ggml_slot_tensor(slots, state);
+    struct ggml_tensor *result = NULL;
+    if (ctx == NULL) { return ALIGN_GGML_INIT; }
+    if (sq == NULL || sk == NULL || sv == NULL || sg == NULL || sb == NULL || ss == NULL) {
+        return ALIGN_GGML_SLOT;
+    }
+    if (sq->type != GGML_TYPE_F32 || sk->type != GGML_TYPE_F32 ||
+        sv->type != GGML_TYPE_F32 || sg->type != GGML_TYPE_F32 ||
+        sb->type != GGML_TYPE_F32 || ss->type != GGML_TYPE_F32 ||
+        !ggml_is_contiguous_rows(sq) || !ggml_is_contiguous_rows(sk) ||
+        !ggml_is_contiguous_rows(sv) || !ggml_is_contiguous(sg) ||
+        !ggml_is_contiguous(sb) || !ggml_is_contiguous(ss)) {
+        return ALIGN_GGML_SHAPE;
+    }
+    if (sv->ne[0] < 1 || sv->ne[0] > 4096 || sv->ne[1] < 1 || sv->ne[1] > 4096 ||
+        sv->ne[2] < 1 || sv->ne[2] > 65536 || sv->ne[3] != 1 ||
+        sv->ne[0] * sv->ne[1] * (sv->ne[2] + sv->ne[0]) > 134217728 ||
+        sq->ne[0] != sv->ne[0] || sk->ne[0] != sv->ne[0] ||
+        sq->ne[1] < 1 || sk->ne[1] < 1 ||
+        sv->ne[1] % sq->ne[1] != 0 || sv->ne[1] % sk->ne[1] != 0 ||
+        sq->ne[2] != sv->ne[2] || sk->ne[2] != sv->ne[2] ||
+        sq->ne[3] != 1 || sk->ne[3] != 1 ||
+        sg->ne[0] != 1 || sb->ne[0] != 1 ||
+        sg->ne[1] != sv->ne[1] || sb->ne[1] != sv->ne[1] ||
+        sg->ne[2] != sv->ne[2] || sb->ne[2] != sv->ne[2] ||
+        sg->ne[3] != 1 || sb->ne[3] != 1 ||
+        ss->ne[0] != sv->ne[0] || ss->ne[1] != sv->ne[0] ||
+        ss->ne[2] != sv->ne[1] || ss->ne[3] != 1) {
+        return ALIGN_GGML_SHAPE;
+    }
+    result = ggml_gated_delta_net((struct ggml_context *) ctx, sq, sk, sv, sg, sb, ss, 1);
+    if (result == NULL) { return ALIGN_GGML_INIT; }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
 /* R5D section 3.5: the one **widened** symbol. `mask == ALIGN_GGML_NO_MASK` is
  * `ggml_soft_max_ext(ctx, a, NULL, scale, bias)` — the plain softmax the router's 64-way gate is —
  * and every other value is a slot index that must name a live tensor exactly as before. The

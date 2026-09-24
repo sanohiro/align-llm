@@ -128,12 +128,25 @@ For the first real 0.8B geometry, `ssm_inner_size=2048`, `ssm_group_count=16`,
 `ssm_state_size=128`, `ssm_time_step_rank=16`, and `ssm_conv_kernel=4`. Each recurrent layer has
 `conv_channels=2048+2*16*128=6144`, a three-position convolution history (18,432 elements), and
 a `128*128*16=262,144` element DeltaNet state. These are per-session state, not model weights.
+For the first one-sequence text session, retain six attention KV pairs and two copies each of
+the 18 recurrent layers' convolution history and DeltaNet state: 12 + 18 * 4 = 84 resident
+F32 tensors. A recurrent layer's convolution state has shape `[3, 6144, 1]` and its DeltaNet
+state has shape `[128, 128, 16, 1]`. `runtime_qwen35_state` owns one active parity for all
+recurrent layers. Each graph reads the active pair and writes the next pair. Only a successful
+full step flips parity and publishes the token prefix; a failed or cancelled step leaves the
+active pair and prefix unchanged. The inactive pair may contain partial results and is overwritten
+on the next attempted step. The first session does not retain extra DeltaNet snapshots (`K=1`).
+The owning smoke must check layer-to-state indices across the 3/4 and 7/8 block boundaries,
+84 unique allocations, a successful flip, and unchanged active indices on failure before the
+full model oracle is attempted.
 The plan must validate the four rope sections from source GGUF, model/pack identity, block roles,
 all state extents and the selected ggml op shapes before graph creation. `ggml_rope_multi`,
-`ggml_ssm_conv`, and `ggml_gated_delta_net` exist at the pin; only the M-RoPE shim symbol
-has been added so far. Completing the other thin checked ABI wrappers and Align-owned state
-is implementation work, not an upstream
-Align language request. A same-pin reference transcript should use the 0.8B model and at least
+`ggml_ssm_conv`, and `ggml_gated_delta_net` exist at the pin and now have checked shim symbols.
+The first text session retains only the final DeltaNet state, so its ABI fixes the snapshot
+count at one. The ggml-free stub refuses execution of these three numeric operations explicitly;
+passing the shim's shape checks does not establish the native model's numerical correctness.
+Align-owned state, role loading, and graph construction remain implementation work, not an
+upstream Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the
 tokenizer or Model IR checks.
 

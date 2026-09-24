@@ -59,8 +59,7 @@ was repaired with two synthetic refusals and the affected owners passed again.
 
 Native text investigation: the pinned `qwen35.cpp` and `delta-net-base.cpp` graph confirms six
 full-attention and 18 recurrent layers with a shared post-attention norm/FFN residual order.
-The current shim has an IMROPE `ggml_rope_multi` wrapper but no `ggml_ssm_conv` or
-`ggml_gated_delta_net` wrappers;
+The current shim has checked IMROPE, SSM convolution, and final-state DeltaNet wrappers;
 the existing session graph supports only Qwen2 or OLMoE and has no recurrent state ownership.
 `docs/specs/qwen35-text.md` records the exact 0.8B state geometry and next acceptance oracle.
 The local native admission checkpoint in `src/runtime_qwen35_geometry.align` reads the Model IR
@@ -74,7 +73,18 @@ Local checkpoint verification: `gmake fmt`, `./scripts/check-format`, and
 `./scripts/alignc run src/runtime_qwen35_geometry_smoke.align
 /Users/hiro/models/qwen35-0.8b-model-ir.json
 /Users/hiro/models/Qwen3.5-0.8B-Q4_0.gguf` PASS; `git diff --check` PASS. The next native
-step is the hybrid role/load plan, SSM convolution and DeltaNet wrappers, and explicit state commit.
+step is the hybrid role/load plan, graph construction, and explicit state commit. The new SSM
+and DeltaNet wrappers check pinned ggml operand shapes and types before its assert-based graph
+constructors; the hosted stub refuses their numeric execution.
+`runtime_qwen35_state` now maps the six attention KV pairs and both copies of each recurrent
+layer's convolution and DeltaNet state to 84 unique resident tensor indices. Its active parity
+changes only after a successful step; the real 0.8B geometry smoke covers all indices, boundary
+layers, an unsuccessful step, a successful flip, and malformed interval refusal. The next owner
+must allocate those shapes, load the role-specific weights, construct both graph paths, and
+compare prefill plus multistep decode against pinned llama.cpp before profiling. The focused
+geometry smoke, both C shim syntax checks, `ggml_ffi` check, format check, and the ggml-free
+`run-ggml-spike-smoke` pass with the documented Homebrew library path. No native Qwen3.5
+numeric result or speed claim is established by this checkpoint.
 The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
 src/main.align` (3,134 functions), `gmake build` with the documented Homebrew
 `LIBRARY_PATH`, `./scripts/check-format`, `git diff --check`, C syntax
