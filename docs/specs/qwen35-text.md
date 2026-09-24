@@ -388,6 +388,194 @@ pairs with exact generated text, missed the material floor, and was reverted. Te
 probes placed retained-session prefill near 200 ms and decode near 300 ms; the same-pin llama.cpp
 diagnostic placed its prefill and first token near 180 ms and remaining decode near 300 ms. These
 are one-host diagnostics, not a faster-than-llama.cpp claim.
+After #297, a separate Apple M1 diagnostic used identical 200 prompt IDs and 16 greedy output
+tokens with matching text. Five retained requests after two warm requests measured medians of
+519.44 ms for align-llm and 478.13 ms for pinned llama.cpp. The runs were sequential rather than
+alternating pairs. A 15-second host sample of repeated align-llm requests placed approximately
+84% of the main-thread samples in Metal command-buffer completion waits; this cannot identify
+which GPU kernels consumed the interval. Obtain shader-level or equivalent graph-operation timing
+before selecting a new compute optimization, and compare contemporary llama.cpp separately.
+A separate five-pair alternating diagnostic with 200 identical prompt IDs and 32 identical
+generated tokens used two warm requests per process. Align-llm/llama.cpp median complete-request
+times were 851.45/805.13 ms, with align-llm slower in all five pairs. The earlier sequential
+32-output comparison had the opposite ordering and is discarded as speed evidence. Metal graph
+debug logs showed 187 quantized matrix multiplications and 18 Gated DeltaNet operations in each
+decode graph on both paths; graph node counts alone cannot attribute GPU time. No faster-than-
+llama.cpp claim follows from these diagnostics.
+Contemporary llama.cpp HEAD `53ed051ce5e8193652e449f43216ca3859454f49` built with Metal
+and produced the same 200 prompt IDs and 32-token text. Five alternating pairs on the Apple M1
+measured align-llm/current llama.cpp medians of 841.30/748.39 ms; align-llm was slower in all
+five. This is a separate reference from the pinned `bb4caa7` comparison. A scratch rebuild of
+the existing shim against the contemporary ggml headers and bundle exposed a changed private
+Metal graph-optimization ABI: its callback now must register allocation dependencies. The old
+two-argument invocation asserts at graph preparation. Omitting optimization in an isolated
+diagnostic yielded correct 32-token text but a warmed 845.24 ms median, so merely replacing the
+backend binary is not a speed solution. The new optimizer registered dependencies on this dense
+Qwen3.5 graph. Any adoption must preserve them through the workspace allocator and requalify
+CPU, Metal, and CUDA consumers before a speed or compatibility claim. The contemporary ggml
+scheduler adds `GGML_OP_NONE` dependency nodes to its allocation graph after Metal optimization;
+the shim currently calls a private backend vtable and allocates its graph directly through
+`ggml_gallocr`. A supported scheduler integration or equivalent dependency-preserving allocator
+must be designed and qualified before updating the production pin.
+An instrumented retained Align run used dyld interposition around
+`align_gpu_graph_compute`, `ggml_backend_graph_compute`, and
+`ggml_backend_tensor_get` without changing source or output. Four identical
+200-prompt/32-output requests took 845-859 ms each. For the last three requests,
+the two prefill graphs took 187-188 ms, the 31 decode graphs took 603-617 ms,
+and 33 full-logit reads took about 3 ms, totaling 791-804 ms in graph compute.
+Interposition adds measurement overhead and these are sequential diagnostics,
+not a paired speed claim. They rule out full-logit readback as the primary wall
+cost. A follow-up five-pair alternating same-pin probe instrumented Align's synchronous
+`ggml_backend_graph_compute` and llama.cpp's scheduler compute plus synchronization,
+using the third identical 200-prompt/32-output request after two warm requests per
+process. Output text matched on every pair. Align/llama.cpp medians were 762.73/710.02 ms
+request wall, 743.41/687.10 ms graph execution, 196.48/178.23 ms prefill, and
+546.73/508.76 ms for the 31 decode steps. Align was slower in all five pairs.
+The absolute times differ from earlier uninstrumented pairs under changing host
+conditions, but the paired phase gap shows that same-pin graph execution accounts
+for most of this measured request difference. The graph timings include scheduler
+and synchronization work; they do not identify an individual GPU kernel. Align
+uses two prefill chunks for 200 tokens while this llama.cpp case uses one, and its
+decode graph has a fixed padded attention view. These graph differences are candidates
+for the phase gaps, not proven causes. Five alternating contemporary llama.cpp default/Metal-optimization-
+disabled pairs used the third request after two warm requests per process. Their
+medians were 747.07/754.01 ms, and default won three of five. This does not show
+that Metal graph optimization explains the gap to align-llm.
+
+The next bounded decode candidate passes the fixed rounded width to the existing indexed KV
+write, so its returned view covers the resident padded prefix and the Flash Attention mask
+continues to exclude unwritten positions. This removes the per-layer temporary padding path
+without changing the KV ABI, row index, valid prefix, graph key, or output contract. The
+candidate must pass four-step full-vector parity, the retained real-model owner including
+request reset, and a five-pair 200-prompt/32-output same-pin control comparison. Allow at
+most 1,800 seconds for implementation and owner checks and 900 seconds for measurement.
+Ship a performance claim only with at least 15% lower paired median, four of five wins,
+and no greater than 5% prompt or startup regression; otherwise revert the executable change.
+The candidate passed the real six-request generation owner with exact output, but five
+alternating instrumented 200-prompt/32-output control/candidate pairs measured
+768.23/766.71 ms request medians and three candidate wins. Decode graph medians were
+545.07/546.38 ms. It missed the 15% and four-win floors, so the source change was
+reverted. This shows that padding the indexed KV write view is not the main decode gap.
+
+The pinned Metal graph debug stream for one decode has the same 187 `MUL_MAT`, 18
+`GATED_DELTA_NET`, and six `FLASH_ATTN_EXT` operations on Align and llama.cpp.
+It shows 18 versus six `CONT` and 42 versus 36 `CPY` operations respectively;
+llama.cpp also has more `GET_ROWS` operations, so total node count is not a cost
+ranking. The extra Align continuations are in the six full-attention blocks.
+The optimized per-unit LLVM IR for `runtime_qwen35_generation` shows a builder,
+SHA-256, hex encoding, and string clone for `key` on every decode iteration.
+The optimized `runtime_generation.greedy` path loads four `f32` logits at a time
+and uses vector compares/selects without copying an aligned input. The compiler
+warns about a 184-byte geometry copy at session creation, not on the decode loop.
+These are compiler-output observations, not proof that key creation causes the
+Metal graph-time gap.
+
+A second bounded graph-order candidate registers the independent attention Q, V,
+and K projection roots before the resident KV writes, matching the pinned llama.cpp
+`build_attn` expansion order. It changes graph registration only and must preserve
+the four-step full-logit oracle, the six-request real owner, topology/memory admission,
+and paired output text. Allow at most 1,800 seconds for implementation and owners
+and 900 seconds for five alternating 200-prompt/32-output pairs. Require at least
+15% lower paired request median, four of five wins, and no greater than 5% prompt
+or startup regression for a material optimization; otherwise revert the change.
+The six-request real owner passed after the graph-order change. Five alternating
+control/candidate pairs measured 784.79/788.69 ms request medians and three
+candidate wins; decode graph medians were 561.29/561.20 ms. The candidate missed
+the floor and was reverted. Registration order alone did not close the gap.
+The pinned debug logs marked 194 Align versus 286 llama.cpp nodes as concurrent
+across their respective decode graph groups, but a separate five-pair
+default/concurrency-disabled diagnostic did not give a consistent causal result:
+Align medians were 801.07/782.26 ms with two default wins, while llama.cpp medians
+were 732.42/740.00 ms with four default wins. Order, thermal state, and changed
+kernel scheduling limit that toggle experiment; the node labels cannot be read
+as elapsed GPU time.
+The same pinned ggml Metal graph-optimization toggle was also paired five times
+per implementation, alternating default and disabled, with exact output text.
+Align default/disabled medians were 776.13/794.68 ms with four default wins;
+llama.cpp medians were 737.93/751.05 ms with five default wins. The optimizer
+helps both paths under this diagnostic and does not explain why Align is slower.
+In the pinned decode debug graph, the only differing operation counts are Align/
+llama.cpp `CONT` 18/6, `CPY` 42/36, `GET_ROWS` 1/37, and `MUL` 42/43.
+The detailed Metal tensor trace identifies that intervening `CPY` as the
+256-element attention mask conversion from F32 to F16, not a KV-cache copy.
+`runtime_qwen35_attention.build_many` calls `runtime_attention.prepare_mask`
+in each of the six full-attention layers; the shim implements that call with
+`ggml_cast`. The input mask is shared, but the graph currently converts it six
+times. The additional twelve `CONT` operations are explicit `ggml_cont_3d`
+requests for K and V after permutation in those layers: the indexed KV-write
+shim currently requires a contiguous source tensor. Both implementations
+also materialize the attention gate once per layer. The shim's `slot_copy`
+copies a tensor handle only. The other 36 `CPY` operations write two recurrent
+state tensors in each of 18 layers and are present in both graphs. These are
+application graph and ggml storage-layout choices, not observed Align compiler
+copies or evidence of a missing language feature. Counts alone do not assign
+the measured decode latency gap; the padded-view candidate above did not help.
+
+The evaluated bounded candidate converted the shared F32 attention mask to F16 once
+per graph in `runtime_qwen35_model`, then passed that borrowed F16 tensor handle
+to every full-attention layer. In the candidate,
+`runtime_qwen35_attention.build_many` required the prepared mask at its existing
+`MASK` slot; its shape, values, graph lifetime,
+allocation owner, and error result were unchanged. No persisted format or cache
+identity changed. Construction bound the prepared handle before the first
+attention layer; successful prefill and decode reused it; invalid shape and
+failed graph construction retained the existing refusal and cleanup path. The
+real six-request generation owner covers the affected model, attention, and
+session boundaries, including reset and malformed request recovery. A Metal
+graph trace confirmed that the six F32-to-F16 mask `CPY` nodes became one.
+Allow at most 1,800 seconds for implementation and owners and 900 seconds for
+five alternating 200-prompt/32-output same-pin control/candidate pairs with
+exact output text. Require at least 15% lower paired request median, four of
+five wins, and no more than 5% prompt or startup regression for a material
+optimization; otherwise revert the executable candidate.
+The real six-request generation owner passed against pinned llama.cpp. The
+decode Metal graph reduced `CPY` from 42 to 37 while `CONT` stayed at 18.
+Five alternating control/candidate 200-prompt/32-output pairs with identical
+text measured 752.80/786.32 ms request medians and three candidate wins;
+prefill medians were 189.41/201.78 ms and decode graph medians were
+535.75/558.65 ms. Host conditions varied across pairs. The candidate missed
+the 15% and four-win floors and was reverted. Removing five 256-element mask
+conversions did not close the same-pin execution gap.
+
+Another bounded candidate used the pinned llama.cpp attention-cache layout
+for the six full-attention layers: resident K and V each have logical shape
+`[head_dim * kv_heads, capacity, 1]`, with all heads of one token adjacent.
+`runtime_qwen35_load` owns the resident allocation, and
+`runtime_qwen35_attention` reshapes the contiguous projected K/V to that
+write shape and presents the written prefix to Flash Attention as a strided
+`[head_dim, width, kv_heads, 1]` permutation. The indexed KV-write ABI,
+position validation, F16 policy, graph key, total resident bytes, and
+success-only state publication remain unchanged; no persisted artifact or
+schema changes. Prefill, decode, rounded masked tail, request reset, and
+malformed-input recovery must pass the real six-request generation owner.
+The graph trace must show twelve fewer K/V `CONT` nodes in decode and the same
+six Flash Attention and 18 recurrent operations. Allow 1,800 seconds for the
+candidate and owners and 900 seconds for five alternating same-pin
+200-prompt/32-output control/candidate pairs. Ship a material speed claim only
+at 15% lower paired request median, four of five wins, and no more than 5%
+prompt or startup regression; otherwise revert the executable candidate.
+The real six-request generation owner passed against pinned llama.cpp, and the
+decode graph changed from 18 to six `CONT` nodes while preserving six Flash
+Attention and 18 Gated DeltaNet nodes. A detailed trace confirmed that the
+Flash Attention K/V strides now match llama.cpp on the three active dimensions.
+Five alternating control/candidate 200-prompt/32-output pairs with identical
+text measured 772.08/774.50 ms request medians and two candidate wins;
+prefill medians were 188.45/189.48 ms and decode graph medians were
+551.60/552.89 ms. The change missed the 15% and four-win floors and was
+reverted. Eliminating the twelve K/V materializations did not close the gap.
+An Apple M1 Metal System Trace diagnostic split both pinned backends into eight
+command buffers per graph in disposable builds. Both still produced the same
+200-prompt/32-output text. The short GPU intervals were roughly 1.2–1.4 ms
+for Align and 1.0–1.3 ms for llama.cpp; the recurring longer intervals were
+roughly 5.6 ms for both. This split changes command-submission behavior, and
+Xcode's trace exported no shader-profiler rows on this host, so these intervals
+do not identify a slower kernel or support a production change. In the normal
+unsplit debug graph, all 187 decode matrix multiplications matched the pinned
+llama.cpp reference by quantized weight type and shape and by F32 input shape
+and stride. The 18 Gated DeltaNet and 18 convolution nodes also matched on
+their principal input shapes and strides. The remaining same-pin GPU execution
+gap is unresolved; preserve the exact baseline and revisit it when kernel-level
+timing or a specific operation-level hypothesis is available.
 The first measured seam is retained F16 K/V for the six full-attention layers. The control
 retains F32 K/V and casts its fixed 256-token views to F16 before each Flash Attention call;
 the candidate uses the already-qualified cached-F16 policy at allocation and indexed-write

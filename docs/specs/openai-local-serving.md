@@ -15,6 +15,19 @@ must extend its qualified one-system/one-user template to ordered system, user, 
 history before multi-turn HTTP acceptance. The measured native optimization gate precedes
 this capability; serving performance is measured separately and cannot inherit a CLI result.
 
+The history prerequisite adds `main --prepare-history GGUF MESSAGES_JSON` as a directly
+testable consumer of the same retained tokenizer used by serving. The file is a JSON array
+of 1–128 `{ "role": "system|user|assistant", "content": "text" }` objects, with at most one
+leading system, alternating user/assistant turns, and a final user. It emits token IDs as
+a JSON array or fails with `Invalid`. The owned file contents and rendered prompt are each
+bounded to 1 MiB; the tokenizer owns the output IDs and EOG set, and does not alter the
+existing GGUF or pack identity. Only the admitted Qwen3.5 template is accepted. The renderer
+uses the template's trimmed content, completes prior assistant turns with `<|im_end|>`, and
+appends the disabled-thinking assistant generation prefix. It uses no new cache or schema
+version. The narrow owner compares real-file two-turn token IDs with the pinned llama.cpp
+tokenizer and rejects malformed role order and oversized input. The serving owner later
+tests these IDs in native generation and across HTTP requests.
+
 The fixed Align revision `5c7af9e5` ships `std.http` `serve`, `accept`, `respond`, and
 `respond_stream` with an owned request context and response/stream builders. Its
 `http_stream.send_event` frames one SSE event in one write, including the lazy response head

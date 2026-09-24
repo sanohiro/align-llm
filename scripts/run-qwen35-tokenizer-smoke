@@ -30,6 +30,19 @@ PROMPT_CASES = (
     ("vertical-tab", "\vSystem note\v", "\vSay hi\v"),
     ("unicode-space", "\u3000System note\u3000", "\u3000Say hi\u3000"),
 )
+HISTORY_CASES = (
+    ("two-turn", [
+        {"role": "system", "content": "  You are helpful.\n"},
+        {"role": "user", "content": " Hello "},
+        {"role": "assistant", "content": " Hi there. "},
+        {"role": "user", "content": " What next? "},
+    ]),
+    ("escaped-no-system", [
+        {"role": "user", "content": "Write \"hello\".\n"},
+        {"role": "assistant", "content": "<think>hidden</think>\n\nHere it is."},
+        {"role": "user", "content": "日本語でもう一度"},
+    ]),
+)
 
 
 def run(args: list[str]) -> bytes:
@@ -94,7 +107,40 @@ def main() -> None:
                                        "--ids", "--no-bos"]))
             if actual != expected:
                 raise RuntimeError(f"{label}: prompt ids {actual!r} differ from llama.cpp {expected!r}")
-    print(f"Qwen3.5 tokenizer PASS: {len(CASES)} token and {len(PROMPT_CASES)} prompt cases at {MODEL_SHA256}")
+        for label, messages in HISTORY_CASES:
+            messages_path = work / f"{label}-messages.json"
+            rendered_path = work / f"{label}-rendered.txt"
+            messages_path.write_text(json.dumps(messages, ensure_ascii=False), encoding="utf-8")
+            rendered = ""
+            for message in messages:
+                content = message["content"].strip(" \t\n\v\f\r")
+                if message["role"] == "assistant" and "</think>" in content:
+                    content = content.split("</think>")[-1].lstrip("\n")
+                rendered += f"<|im_start|>{message['role']}\n{content}<|im_end|>\n"
+            rendered += "<|im_start|>assistant\n<think>\n\n</think>\n\n"
+            rendered_path.write_text(rendered, encoding="utf-8")
+            actual = json.loads(run([str(ROOT / "main"), "--prepare-history", str(model),
+                                     str(messages_path)]))
+            expected = json.loads(run([str(reference), "-m", str(model), "-f", str(rendered_path),
+                                       "--ids", "--no-bos"]))
+            if actual != expected:
+                raise RuntimeError(f"{label}: history ids {actual!r} differ from llama.cpp {expected!r}")
+        invalid_histories = (
+            [{"role": "assistant", "content": "orphan"}],
+            [{"role": "user", "content": "unfinished"}, {"role": "assistant", "content": "reply"}],
+            [{"role": "user", "content": "one"}, {"role": "user", "content": "two"}],
+            [{"role": "user", "content": "x"}] * 129,
+            [{"role": "user", "content": "x" * (1048576 + 1)}],
+        )
+        for index, messages in enumerate(invalid_histories):
+            path = work / f"invalid-history-{index}.json"
+            path.write_text(json.dumps(messages), encoding="utf-8")
+            completed = subprocess.run([str(ROOT / "main"), "--prepare-history", str(model), str(path)],
+                                       cwd=ROOT, capture_output=True, timeout=30, check=False)
+            if completed.returncode == 0 or completed.stdout:
+                raise RuntimeError(f"invalid history {index} was accepted")
+    print(f"Qwen3.5 tokenizer PASS: {len(CASES)} token, {len(PROMPT_CASES)} prompt, "
+          f"{len(HISTORY_CASES)} history, and {len(invalid_histories)} refusal cases at {MODEL_SHA256}")
 
 
 if __name__ == "__main__":
