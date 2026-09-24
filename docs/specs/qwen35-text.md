@@ -127,6 +127,13 @@ Align language request. A same-pin reference transcript should use the 0.8B mode
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the
 tokenizer or Model IR checks.
 
+The local native admission checkpoint `runtime_qwen35_geometry.parse` consumes the verified
+Model IR document and four `snapshot_i32_array` values from the same GGUF snapshot. It checks
+the model dimensions and section sum before deriving the six full-attention layers, 18
+recurrent layers, and per-layer state extents. `runtime_qwen35_geometry_smoke` passes on the
+real 0.8B GGUF and rejects an altered section sum. This is a construction check only; role
+loading, graph execution, state commit, provider routing, and numeric parity are still open.
+
 ### 0.8B reference bottleneck checkpoint (2026-09-24)
 
 Before implementing an optimization, the pinned `bb4caa7` llama.cpp reference was built with

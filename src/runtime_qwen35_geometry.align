@@ -1,0 +1,113 @@
+module runtime_qwen35_geometry
+
+import core.json
+
+pub Geometry {
+  n_layer: i64,
+  n_embd: i64,
+  n_head: i64,
+  n_head_kv: i64,
+  head_dim: i64,
+  n_ff: i64,
+  n_vocab: i64,
+  context_length: i64,
+  full_attention_interval: i64,
+  ssm_conv_kernel: i64,
+  ssm_state_size: i64,
+  ssm_group_count: i64,
+  ssm_time_step_rank: i64,
+  ssm_inner_size: i64,
+  rope_dim_count: i64,
+  rope_sections: array<i64>,
+  attention_layers: i64,
+  recurrent_layers: i64,
+  conv_elements_per_layer: i64,
+  state_elements_per_layer: i64,
+}
+
+fn field(value: json.doc, name: str) -> Result<i64, Error> = match value.get(name).as_i64() {
+  Some(number) => Ok(number),
+  None => Err(Error.Invalid),
+}
+
+fn bounded(value: i64, low: i64, high: i64) -> bool = value >= low && value <= high
+
+// The source GGUF snapshot owns the four section values. Model IR records only their
+// declared type and count, so the caller must pass values read from that same snapshot.
+pub fn parse(text: str, borrow sections: array<i64>) -> Result<Geometry, Error> {
+  if sections.len() != 4 { return Err(Error.Invalid) }
+  arena {
+    document := json.doc(text)?
+    kind := document.get("kind").as_str() else { return Err(Error.Invalid) }
+    if kind != "R1_MODEL_IR" || field(document, "schema_version")? != 2 {
+      return Err(Error.Invalid)
+    }
+    model := document.get("model")
+    arch := model.get("arch").as_str() else { return Err(Error.Invalid) }
+    if arch != "qwen35" { return Err(Error.Invalid) }
+    rope := model.get("rope")
+    scaling_ok := match rope.get("scaling_type").kind() { Null => true, _ => false }
+    if field(rope, "type")? != 40 || !scaling_ok {
+      return Err(Error.Invalid)
+    }
+    n_layer := field(model, "n_layer")?
+    n_embd := field(model, "n_embd")?
+    n_head := field(model, "n_head")?
+    n_head_kv := field(model, "n_head_kv")?
+    head_dim := field(model, "head_dim")?
+    n_ff := field(model, "n_ff")?
+    n_vocab := field(model, "n_vocab")?
+    context_length := field(model, "context_length")?
+    interval := field(model, "full_attention_interval")?
+    conv_kernel := field(model, "ssm_conv_kernel")?
+    state_size := field(model, "ssm_state_size")?
+    groups := field(model, "ssm_group_count")?
+    dt_rank := field(model, "ssm_time_step_rank")?
+    inner := field(model, "ssm_inner_size")?
+    rope_dims := field(rope, "dim_count")?
+    if !bounded(n_layer, 1, 512) || !bounded(n_embd, 1, 1048576)
+      || !bounded(n_head, 1, 4096) || !bounded(n_head_kv, 1, n_head)
+      || !bounded(head_dim, 2, 4096) || !bounded(n_ff, 1, 16777216)
+      || !bounded(n_vocab, 1, 4194304) || !bounded(context_length, 1, 134217728)
+      || !bounded(interval, 1, n_layer) || !bounded(conv_kernel, 2, 128)
+      || !bounded(state_size, 1, 4096) || !bounded(groups, 1, 4096)
+      || !bounded(dt_rank, 1, 4096) || !bounded(inner, 1, 16777216)
+      || n_head % n_head_kv != 0 || inner % dt_rank != 0
+      || rope_dims < 2 || rope_dims > head_dim || rope_dims % 2 != 0 {
+      return Err(Error.Invalid)
+    }
+    mut section_total := 0
+    mut at := 0
+    loop {
+      if at >= 4 { break }
+      if sections[at] < 0 || sections[at] > head_dim / 2 { return Err(Error.Invalid) }
+      section_total = section_total + sections[at]
+      at = at + 1
+    }
+    if section_total * 2 != rope_dims { return Err(Error.Invalid) }
+    conv_channels := inner + 2 * groups * state_size
+    conv_elements := (conv_kernel - 1) * conv_channels
+    state_elements := (inner / dt_rank) * (inner / dt_rank) * dt_rank
+    if conv_elements > 16777216 || state_elements > 67108864 { return Err(Error.Invalid) }
+    attention_layers := n_layer / interval
+    mut copied: array_builder<i64> := array_builder()
+    at = 0
+    loop {
+      if at >= 4 { break }
+      copied.push(sections[at])
+      at = at + 1
+    }
+    return Ok(Geometry {
+        n_layer: n_layer, n_embd: n_embd, n_head: n_head, n_head_kv: n_head_kv,
+        head_dim: head_dim, n_ff: n_ff, n_vocab: n_vocab,
+        context_length: context_length, full_attention_interval: interval,
+        ssm_conv_kernel: conv_kernel, ssm_state_size: state_size,
+        ssm_group_count: groups, ssm_time_step_rank: dt_rank,
+        ssm_inner_size: inner, rope_dim_count: rope_dims,
+        rope_sections: copied.build(), attention_layers: attention_layers,
+        recurrent_layers: n_layer - attention_layers,
+        conv_elements_per_layer: conv_elements,
+        state_elements_per_layer: state_elements,
+      })
+  }
+}

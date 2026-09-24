@@ -1,0 +1,35 @@
+module runtime_qwen35_geometry_smoke
+
+import std.fs
+import gguf
+import runtime_qwen35_geometry
+
+fn expect_failure(text: str, borrow sections: array<i64>) -> Result<(), Error> {
+  match runtime_qwen35_geometry.parse(text, sections) {
+    Ok(_) => Err(Error.Invalid),
+    Err(_) => Ok(()),
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 3 { return Err(Error.Invalid) }
+  source := fs.read_file(args[1])?
+  snapshot := gguf.open_snapshot(args[2])?
+  sections := gguf.snapshot_i32_array(snapshot, "qwen35.rope.dimension_sections")?
+  geometry := runtime_qwen35_geometry.parse(source, sections)?
+  if geometry.n_layer != 24 || geometry.attention_layers != 6
+    || geometry.recurrent_layers != 18 || geometry.conv_elements_per_layer != 18432
+    || geometry.state_elements_per_layer != 262144
+    || sections[0] != 11 || sections[1] != 11 || sections[2] != 10 || sections[3] != 0 {
+    return Err(Error.Invalid)
+  }
+  mut wrong: array_builder<i64> := array_builder()
+  wrong.push(11)
+  wrong.push(11)
+  wrong.push(11)
+  wrong.push(0)
+  invalid_sections := wrong.build()
+  expect_failure(source, invalid_sections)?
+  print("qwen35 geometry: PASS")
+  return Ok(())
+}

@@ -52,8 +52,16 @@ full-attention and 18 recurrent layers with a shared post-attention norm/FFN res
 The current shim has no `ggml_rope_multi`, `ggml_ssm_conv`, or `ggml_gated_delta_net` wrappers;
 the existing session graph supports only Qwen2 or OLMoE and has no recurrent state ownership.
 `docs/specs/qwen35-text.md` records the exact 0.8B state geometry and next acceptance oracle.
-No native graph or provider result is claimed yet. The prompt command is an independently useful
-publication candidate; the native consumer and its owner tests remain next work.
+The local native admission checkpoint in `src/runtime_qwen35_geometry.align` reads the Model IR
+geometry and the four sections supplied from the same GGUF snapshot, checks bounded shapes, and
+derives six attention and 18 recurrent layers with 18,432 convolution and 262,144 DeltaNet state
+elements per recurrent layer. Its real-file smoke passes. No native graph or provider result is
+claimed yet; this local checkpoint is not a publication candidate on its own.
+Local checkpoint verification: `gmake fmt`, `./scripts/check-format`, and
+`./scripts/alignc run src/runtime_qwen35_geometry_smoke.align
+/Users/hiro/models/qwen35-0.8b-model-ir.json
+/Users/hiro/models/Qwen3.5-0.8B-Q4_0.gguf` PASS; `git diff --check` PASS. The next native
+step is the hybrid role/load plan and thin ggml op wrappers, followed by explicit state commit.
 
 Reference bottleneck diagnosis: pinned llama.cpp `bb4caa7` on Apple M1, Qwen3.5-0.8B Q4_0,
 three repetitions: CPU 464.98 prompt / 55.32 generation tok/s; Metal 1180.77 / 61.85 with
