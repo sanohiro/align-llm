@@ -510,6 +510,32 @@ state tensors in each of 18 layers and are present in both graphs. These are
 application graph and ggml storage-layout choices, not observed Align compiler
 copies or evidence of a missing language feature. Counts alone do not assign
 the measured decode latency gap; the padded-view candidate above did not help.
+
+The evaluated bounded candidate converted the shared F32 attention mask to F16 once
+per graph in `runtime_qwen35_model`, then passed that borrowed F16 tensor handle
+to every full-attention layer. In the candidate,
+`runtime_qwen35_attention.build_many` required the prepared mask at its existing
+`MASK` slot; its shape, values, graph lifetime,
+allocation owner, and error result were unchanged. No persisted format or cache
+identity changed. Construction bound the prepared handle before the first
+attention layer; successful prefill and decode reused it; invalid shape and
+failed graph construction retained the existing refusal and cleanup path. The
+real six-request generation owner covers the affected model, attention, and
+session boundaries, including reset and malformed request recovery. A Metal
+graph trace confirmed that the six F32-to-F16 mask `CPY` nodes became one.
+Allow at most 1,800 seconds for implementation and owners and 900 seconds for
+five alternating 200-prompt/32-output same-pin control/candidate pairs with
+exact output text. Require at least 15% lower paired request median, four of
+five wins, and no more than 5% prompt or startup regression for a material
+optimization; otherwise revert the executable candidate.
+The real six-request generation owner passed against pinned llama.cpp. The
+decode Metal graph reduced `CPY` from 42 to 37 while `CONT` stayed at 18.
+Five alternating control/candidate 200-prompt/32-output pairs with identical
+text measured 752.80/786.32 ms request medians and three candidate wins;
+prefill medians were 189.41/201.78 ms and decode graph medians were
+535.75/558.65 ms. Host conditions varied across pairs. The candidate missed
+the 15% and four-win floors and was reverted. Removing five 256-element mask
+conversions did not close the same-pin execution gap.
 The first measured seam is retained F16 K/V for the six full-attention layers. The control
 retains F32 K/V and casts its fixed 256-token views to F16 before each Flash Attention call;
 the candidate uses the already-qualified cached-F16 policy at allocation and indexed-write

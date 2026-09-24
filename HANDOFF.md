@@ -98,6 +98,11 @@ Next actions in priority order:
    state. These arise in the align-llm graph/shim and do not establish an Align
    language gap. Continue with operation-level GPU timing or a tightly bounded
    shared-mask/attention ablation before another production optimization.
+   The shared-mask candidate passed the six-request real owner and reduced decode
+   `CPY` from 42 to 37, but five alternating control/candidate pairs measured
+   752.80/786.32 ms request medians and three candidate wins. It missed the
+   material speed floor and was reverted. The remaining K/V `CONT` operations
+   are a larger graph difference but still lack operation-level cost evidence.
    Five alternating
    contemporary llama.cpp default/Metal-optimization-disabled pairs, using the third request
    after two warm requests per process, had 747.07/754.01 ms medians and three default wins.
