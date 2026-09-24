@@ -33,7 +33,9 @@ Next actions in priority order:
    runtime, beginning with a real `POST /v1/chat/completions` request. The existing OpenAI provider
    is a client. `docs/specs/roadmap.md` owns this new delivery order and
    `docs/specs/openai-local-serving.md` now owns the initial endpoint contract. Extend the
-   qualified prompt renderer to message history before multi-turn serving acceptance.
+   qualified prompt renderer to message history before multi-turn serving acceptance. Pinned
+   `std.http` already sends streaming responses and outbound providers already consume SSE;
+   the missing piece is a native per-token yield (`provider_runtime.stream` currently refuses).
 4. Select a middle-size Qwen3.5 model before Qwen3.8-27B. No speed claim is active.
 
 Latest local verification: `gmake build` PASS with the documented Homebrew `LIBRARY_PATH`;
