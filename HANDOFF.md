@@ -2,24 +2,55 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Local Qwen3.5 serving guide (2026-09-25)
+## Qwen3.5 2B operation-level diagnosis (2026-09-25)
 
-Branch: `agent/qwen35-2b-perf-next`, based on merged PR #300
-(`c0b30c61`). The 2B source adoption, native generation, HTTP/SSE owner,
-and five-pair same-pin measurement merged in #300 after final-head preflight,
-one clean comprehensive review, and all three hosted checks passed. The
-2B Align request median remained 1355.28 ms versus pinned llama.cpp 1306.84 ms;
-the phase gap lies mostly in graph execution, with no kernel-level cause or
-candidate meeting the declared 15% floor. No faster-than-llama.cpp claim is
-active. The root `main` worktree's unrelated `docs/align-requests.md` edit
-remains untouched.
+Branch: `agent/qwen35-next` at merged `main` `7c42bb44`. The 2B adoption and
+five-pair same-pin baseline merged in #300; the local OpenAI-compatible chat
+guide merged in #301. The baseline was Align 1355.28 ms versus pinned
+llama.cpp 1306.84 ms for a 200-token prompt and 32-token output on Apple M1,
+with Align slower in all five pairs. Instrumented graph medians were
+1307.37/1253.79 ms. No faster-than-llama.cpp claim is active. The root `main`
+worktree's unrelated `docs/align-requests.md` edit remains untouched.
 
-The current consumer is a tested setup guide for the local 2B OpenAI-compatible
-endpoint, linked from README. The exact guide build and server command ran
-on Apple M1; `/v1/models`, normal chat, and SSE `[DONE]` succeeded. Next:
-run the Markdown classifier preflight, publish and merge the guide, then
-choose a specific operation-level performance hypothesis or a later roadmap
-consumer. CPU/CUDA 2B qualification and large models remain deferred.
+The pinned Metal decode debug graphs have the same 187 `MUL_MAT`, 18
+`GATED_DELTA_NET`, 18 `SSM_CONV`, and six `FLASH_ATTN_EXT` nodes; all matrix
+product weight types/shapes and F32 input shapes/strides match. Flash Attention
+uses head-major K/V strides `[2,512,1179648]` in Align and token-major
+`[2,1024,512]` in llama.cpp, selecting `ns10/ns20=256` and `512` kernel
+specializations respectively. A disposable six-attention pinned-Metal graph
+with the two exact layouts and identical output measured five alternating
+20-invocation pairs: median 0.524/0.540 ms (head/token), three head-major wins.
+This isolated result does not account for the approximately 54 ms complete
+graph gap. The Metal SSM batch specialization `128`/`256` arises from Align's
+128-token versus llama.cpp's 200-token prefill; both use the same unbatched
+SSM kernel during decode. Concurrency-disabled paired diagnostics preserved
+output but varied with host conditions: Align default won four of five paired
+graph timings (median paired advantage 19 ms), while llama.cpp default won
+only two of five. They do not identify a single causal operation. An eight
+command-buffer llama.cpp probe changed output and timing drastically, so its
+split trace is invalid. Apple M1 exposes stage-boundary GPU counters but not
+dispatch-boundary counters; existing Xcode traces have no shader rows.
+
+The user requested a direct GPU implementation probe. A standalone native
+Metal Q4_0 matvec benchmark now compares its independent compute path with
+the pinned ggml/Metal reference on three 2B decode shapes. One full-output
+check per shape passed after warm-up. Five pairs of 20 synchronized
+invocations per shape measured ggml/native medians of 0.5160/0.6286 ms
+(`[2048,6144]`),
+0.4752/0.6071 ms (`[6144,2048]`), and 0.3246/0.3520 ms (`[2048,2048]`)
+on Apple M1. Native lost all 15 timing pairs. The reproducible source and
+measurement limits are in `scripts/bench-metal-q4-matvec.mm` and
+`docs/specs/qwen35-text.md`. One comprehensive Codex review found an
+overstated output-check count in the documentation; the record now states the
+actual one full-output check per shape. This is a developer benchmark, not an
+executable runtime candidate.
+
+Next: run the executable pre-publication classifier with the standalone
+benchmark as owner, then publish and merge the developer benchmark. A production custom
+GPU seam would still need a winning kernel, exact end-to-end output owner,
+and the existing 15% request floor. Do not ship a K/V layout, mask-copy, or
+concurrency change from node counts alone. CPU/CUDA 2B qualification and
+large models remain deferred.
 
 ## Completed Qwen3.5 dense-model checkpoint (2026-09-24)
 
