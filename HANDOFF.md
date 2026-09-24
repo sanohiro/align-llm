@@ -90,8 +90,14 @@ Next actions in priority order:
    (five default wins). The optimizer helps both and is not the cause of the gap.
    The decode debug graph's only differing operation counts are Align/llama.cpp
    `CONT` 18/6, `CPY` 42/36, `GET_ROWS` 1/37, and `MUL` 42/43; actual kernel
-   duration remains unavailable. Continue with operation-level GPU timing or a
-   tightly bounded attention/state ablation before another production optimization.
+   duration remains unavailable. A detailed Metal tensor trace identifies the six
+   excess `CPY` operations as repeated F32-to-F16 conversions of the same
+   attention mask, one per full-attention layer. The twelve excess `CONT`
+   operations are explicit K/V permutation materializations; `slot_copy` only
+   transfers tensor handles. The shared 36 `CPY` operations update recurrent
+   state. These arise in the align-llm graph/shim and do not establish an Align
+   language gap. Continue with operation-level GPU timing or a tightly bounded
+   shared-mask/attention ablation before another production optimization.
    Five alternating
    contemporary llama.cpp default/Metal-optimization-disabled pairs, using the third request
    after two warm requests per process, had 747.07/754.01 ms medians and three default wins.

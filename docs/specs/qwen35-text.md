@@ -496,10 +496,20 @@ llama.cpp medians were 737.93/751.05 ms with five default wins. The optimizer
 helps both paths under this diagnostic and does not explain why Align is slower.
 In the pinned decode debug graph, the only differing operation counts are Align/
 llama.cpp `CONT` 18/6, `CPY` 42/36, `GET_ROWS` 1/37, and `MUL` 42/43.
-The first full-attention block has a `CPY` between KV `SET_ROWS` and Flash
-Attention on Align, whereas llama.cpp directly supplies its updated cache to
-Flash Attention. The padded-view candidate above did not improve request time,
-so this count difference cannot yet be assigned the measured decode gap.
+The detailed Metal tensor trace identifies that intervening `CPY` as the
+256-element attention mask conversion from F32 to F16, not a KV-cache copy.
+`runtime_qwen35_attention.build_many` calls `runtime_attention.prepare_mask`
+in each of the six full-attention layers; the shim implements that call with
+`ggml_cast`. The input mask is shared, but the graph currently converts it six
+times. The additional twelve `CONT` operations are explicit `ggml_cont_3d`
+requests for K and V after permutation in those layers: the indexed KV-write
+shim currently requires a contiguous source tensor. Both implementations
+also materialize the attention gate once per layer. The shim's `slot_copy`
+copies a tensor handle only. The other 36 `CPY` operations write two recurrent
+state tensors in each of 18 layers and are present in both graphs. These are
+application graph and ggml storage-layout choices, not observed Align compiler
+copies or evidence of a missing language feature. Counts alone do not assign
+the measured decode latency gap; the padded-view candidate above did not help.
 The first measured seam is retained F16 K/V for the six full-attention layers. The control
 retains F32 K/V and casts its fixed 256-token views to F16 before each Flash Attention call;
 the candidate uses the already-qualified cached-F16 policy at allocation and indexed-write
