@@ -1,6 +1,7 @@
 module runtime_qwen35_geometry
 
 import core.json
+import gguf
 
 pub Geometry {
   n_layer: i64,
@@ -110,4 +111,9 @@ pub fn parse(text: str, borrow sections: array<i64>) -> Result<Geometry, Error> 
         state_elements_per_layer: state_elements,
       })
   }
+}
+
+pub fn parse_snapshot(text: str, borrow snapshot: gguf.GgufSnapshot) -> Result<Geometry, Error> {
+  sections := gguf.snapshot_i32_array(snapshot, "qwen35.rope.dimension_sections")?
+  return parse(text, sections)
 }

@@ -16,7 +16,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   source := fs.read_file(args[1])?
   snapshot := gguf.open_snapshot(args[2])?
   sections := gguf.snapshot_i32_array(snapshot, "qwen35.rope.dimension_sections")?
-  geometry := runtime_qwen35_geometry.parse(source, sections)?
+  geometry := runtime_qwen35_geometry.parse_snapshot(source, snapshot)?
   if geometry.n_layer != 24 || geometry.attention_layers != 6
     || geometry.recurrent_layers != 18 || geometry.conv_elements_per_layer != 18432
     || geometry.state_elements_per_layer != 262144
