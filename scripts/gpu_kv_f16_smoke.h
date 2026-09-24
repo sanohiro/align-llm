@@ -150,8 +150,14 @@ static void retained_f16_kv(ggml_backend_dev_t device) {
         assert(align_gpu_kv_write_prefix(&state, 0, 0, 0, 0, 2, slots, 2, 0) == ALIGN_GPU_ALLOCATION);
     }
     assert(ggml_used_mem(ctx) == exhausted);
+    assert(align_gpu_kv_zero_all(NULL) == ALIGN_GPU_CONFIG);
+    ggml_backend_tensor_get(align_gpu_kv_at(&state, 0), observed, 0, sizeof(observed));
+    assert(memcmp(observed, expected, sizeof(expected)) == 0);
+    assert(align_gpu_kv_zero_all(&state) == 0);
+    ggml_backend_tensor_get(align_gpu_kv_at(&state, 0), observed, 0, sizeof(observed));
+    for (int i = 0; i < 10; ++i) { assert(observed[i] == 0); }
     align_gpu_memory_release(&state);
     assert(state.kv_buffer == NULL && state.metadata_storage == NULL);
     ggml_backend_free(state.backend);
-    puts("GPU F16 KV: PASS (incremental rounding, prefix preservation, overwrite, tail, padding, refusal, cleanup)");
+    puts("GPU F16 KV: PASS (incremental rounding, prefix preservation, overwrite, tail, padding, KV reset, refusal, cleanup)");
 }

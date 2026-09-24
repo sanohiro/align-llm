@@ -267,51 +267,56 @@ fn generate_mode(config: model.ProviderConfig, request: model.GenerationRequest,
       device := runtime_device.open(options)?
       ids := if qwen35 {
         g := runtime_qwen35_geometry.parse(geometry_view, qwen35_sections)?
-        runtime_qwen35_generation.generate(device, generation_options,
-          config.runtime_pack_path, runtime_source_identity, geometry_view, g,
-          prepared.token_ids, prepared.eog_token_ids,
-          if forced { forced_ids.len() + 1 } else { request.max_tokens }, forced_ids)?
-      } else if mode == 2 {
-        if olmoe {
-          runtime_generation.generate_olmoe_diagnostic(
-            device, generation_options, config.runtime_pack_path, runtime_source_identity,
-            geometry_view,
-            prepared.token_ids, prepared.eog_token_ids, request.max_tokens,
-            config.runtime_cache_budget_bytes, request.seed, stream, forced_ids)?
-        } else {
-          runtime_generation.generate_qwen_diagnostic(
-            device, generation_options, config.runtime_pack_path, runtime_source_identity,
-            geometry_view,
-            prepared.token_ids, prepared.eog_token_ids, request.max_tokens, stream, forced_ids)?
-        }
-      } else if mode == 1 {
-        if olmoe {
-          runtime_generation.generate_olmoe_observed(
-            device, generation_options, config.runtime_pack_path, runtime_source_identity,
-            geometry_view,
-            prepared.token_ids, prepared.eog_token_ids, request.max_tokens,
-            config.runtime_cache_budget_bytes, request.seed, stream)?
-        } else {
-          runtime_generation.generate_qwen_observed(
-            device, generation_options, config.runtime_pack_path, runtime_source_identity,
-            geometry_view,
-            prepared.token_ids, prepared.eog_token_ids, request.max_tokens, stream)?
-        }
+        mut session := runtime_qwen35_generation.create_session(device, generation_options,
+          config.runtime_pack_path, runtime_source_identity, geometry.clone(), g)?
+        generated := runtime_qwen35_generation.generate_session(session, prepared.token_ids,
+          prepared.eog_token_ids, request.max_tokens)?
+        if mode == 1 { observation = runtime_observation.capture(session.owner)? }
+        generated
       } else {
-        if olmoe {
-          runtime_generation.generate_olmoe(
-            device, generation_options, config.runtime_pack_path, runtime_source_identity,
-            geometry_view,
-            prepared.token_ids, prepared.eog_token_ids, request.max_tokens,
-            config.runtime_cache_budget_bytes, request.seed)?
+        generated := if mode == 2 {
+          if olmoe {
+            runtime_generation.generate_olmoe_diagnostic(
+              device, generation_options, config.runtime_pack_path, runtime_source_identity,
+              geometry_view,
+              prepared.token_ids, prepared.eog_token_ids, request.max_tokens,
+              config.runtime_cache_budget_bytes, request.seed, stream, forced_ids)?
+          } else {
+            runtime_generation.generate_qwen_diagnostic(
+              device, generation_options, config.runtime_pack_path, runtime_source_identity,
+              geometry_view,
+              prepared.token_ids, prepared.eog_token_ids, request.max_tokens, stream, forced_ids)?
+          }
+        } else if mode == 1 {
+          if olmoe {
+            runtime_generation.generate_olmoe_observed(
+              device, generation_options, config.runtime_pack_path, runtime_source_identity,
+              geometry_view,
+              prepared.token_ids, prepared.eog_token_ids, request.max_tokens,
+              config.runtime_cache_budget_bytes, request.seed, stream)?
+          } else {
+            runtime_generation.generate_qwen_observed(
+              device, generation_options, config.runtime_pack_path, runtime_source_identity,
+              geometry_view,
+              prepared.token_ids, prepared.eog_token_ids, request.max_tokens, stream)?
+          }
         } else {
-          runtime_generation.generate_qwen(
-            device, generation_options, config.runtime_pack_path, runtime_source_identity,
-            geometry_view,
-            prepared.token_ids, prepared.eog_token_ids, request.max_tokens)?
+          if olmoe {
+            runtime_generation.generate_olmoe(
+              device, generation_options, config.runtime_pack_path, runtime_source_identity,
+              geometry_view,
+              prepared.token_ids, prepared.eog_token_ids, request.max_tokens,
+              config.runtime_cache_budget_bytes, request.seed)?
+          } else {
+            runtime_generation.generate_qwen(
+              device, generation_options, config.runtime_pack_path, runtime_source_identity,
+              geometry_view,
+              prepared.token_ids, prepared.eog_token_ids, request.max_tokens)?
+          }
         }
+        if mode == 1 { observation = runtime_observation.capture(device)? }
+        generated
       }
-      if mode == 1 { observation = runtime_observation.capture(device)? }
       ids
     }
     None => {
@@ -480,6 +485,116 @@ fn worker_generate(borrow mut generation: runtime_generation.Session,
   return Ok(response.to_string())
 }
 
+fn worker_qwen35(borrow mut generation: runtime_qwen35_generation.Session,
+  borrow tokenizer: tokenizer_qwen2.GenerationTokenizer,
+  borrow prepared: tokenizer_qwen2.GenerationPromptResult,
+  borrow request: runtime_session_request.Request, model_path: str,
+  started: i64) -> Result<string, Error> {
+  mut ids := runtime_qwen35_generation.generate_session(generation, prepared.token_ids,
+    prepared.eog_token_ids, request.max_tokens)?
+  if ids.len() < 1 || ids.len() > request.max_tokens { return Err(Error.Invalid) }
+  stopped := contains_id(prepared.eog_token_ids, ids[ids.len() - 1])
+  if !stopped && ids.len() != request.max_tokens { return Err(Error.Invalid) }
+  count := ids.len() - if stopped { 1 } else { 0 }
+  if stopped { truncate_ids(ids, count) }
+  decoded := tokenizer_qwen2.decode_retained(tokenizer, ids,
+    tokenizer_qwen2.DecodeSpecials.SkipControl)?
+  if !tokenizer_ok(decoded.status) || decoded.text.len() > 262144 { return Err(Error.Invalid) }
+  text_view: str := decoded.text
+  record := result.GenerationRecord {
+    schema_version: 2, operation: "generate", provider: "align-runtime", model: model_path,
+    endpoint: "", status: "ok", output: text_view, prompt_tokens: prepared.token_ids.len(),
+    completion_tokens: count, total_tokens: prepared.token_ids.len() + count,
+    token_count_exact: true, elapsed_ns: time.instant() - started, error: "", error_code: -1,
+  }
+  encoded := json.encode_bounded(record, 2097088)?
+  response := builder()
+  response.write("{\"schema_version\":1,\"status\":\"ok\",\"result\":")
+  response.write(encoded)
+  response.write("}")
+  return Ok(response.to_string())
+}
+
+fn run_qwen35_session(config: model.ProviderConfig,
+  options: runtime_options.RuntimeOptions,
+  snapshot: gguf.GgufSnapshot,
+  borrow mut observation: SessionObservation,
+) -> Result<(), Error> {
+  if config.runtime_cache_budget_bytes != 0 || options.backend != "metal" {
+    return Err(Error.Invalid)
+  }
+  geometry := read_geometry(config.runtime_geometry_path)?
+  recorded: GeometryPath := json.decode(geometry)?
+  if !valid_path(recorded.path) { return Err(Error.Invalid) }
+  ir := frontend_qwen35.build_model_ir(snapshot.table, recorded.path)
+  if !ir_ok(ir.status) || geometry != ir.document { return Err(Error.Invalid) }
+  source := alignpack.verify_source_identity_snapshot(snapshot, config.runtime_pack_path)?
+  identity := runtime_pack_identity.SourceIdentity {
+    file_size: source.file_size, data_offset: source.data_offset,
+    tensor_count: source.tensor_count, kv_count: source.kv_count,
+    version: source.version, alignment: source.alignment,
+    total_tensor_bytes: source.total_tensor_bytes,
+    header_region_sha256: source.header_region_sha256.clone(),
+  }
+  sections := gguf.snapshot_i32_array(snapshot, "qwen35.rope.dimension_sections")?
+  g := runtime_qwen35_geometry.parse(geometry, sections)?
+  tokenizer := tokenizer_qwen2.load_generation_snapshot(snapshot)?
+  retained_options := runtime_options.RuntimeOptions {
+    schema_version: options.schema_version, backend: options.backend.clone(),
+    device: options.device.clone(), backend_bundle: options.backend_bundle.clone(),
+    placement: options.placement.clone(), host_budget_bytes: options.host_budget_bytes,
+    device_budget_bytes: options.device_budget_bytes, prefetch: options.prefetch.clone(),
+  }
+  device := runtime_device.open(options)?
+  mut generation := runtime_qwen35_generation.create_session(device, retained_options,
+    config.runtime_pack_path, identity, geometry, g)?
+  observation.weight_uploads_before = ggml_ffi.gpu_weight_state(generation.owner, ggml_ffi.GPU_WEIGHT_UPLOADED)
+  runtime_session_io.write_frame("{\"schema_version\":1,\"status\":\"ready\"}")?
+  loop {
+    incoming := runtime_session_io.read_frame()?
+    match incoming {
+      None => { break },
+      Some(body) => {
+        document := body.bytes().as_str()?
+        started := time.instant()
+        decoded := runtime_session_request.decode(document)
+        match decoded {
+          Err(_) => { runtime_session_io.write_frame("{\"schema_version\":1,\"status\":\"invalid\"}")? },
+          Ok(request) => {
+            valid_model := request.temperature == 0.0 && match request.seed { None => true, Some(_) => false }
+            prepared: Result<tokenizer_qwen2.GenerationPromptResult, Error> := if valid_model {
+              tokenizer_qwen2.prepare_retained(tokenizer, request.system, request.user)
+            } else { Err(Error.Invalid) }
+            match prepared {
+              Err(_) => { runtime_session_io.write_frame("{\"schema_version\":1,\"status\":\"invalid\"}")? },
+              Ok(prompt) => {
+                if prompt.token_ids.len() < 1 || prompt.token_ids.len() > 2048
+                  || prompt.token_ids.len() + request.max_tokens - 1 > 2175
+                  || prompt.token_ids.len() + request.max_tokens - 1 > generation.capacity {
+                  runtime_session_io.write_frame("{\"schema_version\":1,\"status\":\"invalid\"}")?
+                } else {
+                  match worker_qwen35(generation, tokenizer, prompt, request, config.model, started) {
+                    Ok(response) => { runtime_session_io.write_frame(response)? },
+                    Err(error) => {
+                      runtime_session_io.write_frame("{\"schema_version\":1,\"status\":\"failed\"}")?
+                      return Err(error)
+                    },
+                  }
+                }
+              },
+            }
+          },
+        }
+      },
+    }
+  }
+  runtime_device.synchronize(generation.owner)?
+  observation.reserved_host_bytes = ggml_ffi.gpu_host_reserved(generation.owner)
+  observation.native_host_peak = ggml_ffi.gpu_observation_state(generation.owner, ggml_ffi.GPU_OBSERVATION_HOST_PEAK)
+  observation.weight_uploads_after = ggml_ffi.gpu_weight_state(generation.owner, ggml_ffi.GPU_WEIGHT_UPLOADED)
+  return Ok(())
+}
+
 pub SessionObservation {
   reserved_host_bytes: i64,
   native_host_peak: i64,
@@ -508,6 +623,9 @@ pub fn run_session_observed(config: model.ProviderConfig,
   snapshot := gguf.open_snapshot(config.model)?
   table_ok := match snapshot.table.status { Ok => true, Error => false }
   if !table_ok { return Err(Error.Invalid) }
+  if snapshot.table.architecture_present && snapshot.table.architecture == "qwen35" {
+    return run_qwen35_session(config, options, snapshot, observation)
+  }
   olmo := snapshot.table.architecture == "olmoe"
   if (!olmo && snapshot.table.architecture != "qwen2")
     || (olmo && config.runtime_cache_budget_bytes <= 0)

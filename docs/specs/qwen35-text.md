@@ -95,11 +95,11 @@ as interchangeable.
 
 | Phase | Implementation owner | Exact regression target |
 | --- | --- | --- |
-| Construction | `tokenizer_qwen2` supplies the already-qualified `qwen35` prompt identity; `runtime_bundle` and `runtime_generation` derive the hybrid geometry, role table, KV and recurrent state sizes before device allocation. | `scripts/run-qwen35-generation-smoke` compares real-file tokenizer metadata, prompt ids, and rejected geometry. |
-| Success | `runtime_qwen35` builds full-attention layers and Gated DeltaNet layers using the pinned ggml operations; `provider_runtime` routes the native request, and `runtime_generation` commits full-attention KV plus recurrent state after a successful step. | `scripts/run-qwen35-generation-smoke` compares real 0.8B prefill and at least two decode tokens with the pinned llama.cpp oracle and checks provider text and token counts. |
-| Failure and malformed input | `runtime_bundle` rejects missing roles, invalid rope sections, unsupported quantization, or state dimensions before graph allocation; `runtime_generation` propagates compute and state-update failures. | The same owner changes one role/section and injects one compute failure, asserting an error and no response. |
-| Early exit and rollback | The session retains its prior committed KV and recurrent state until a step succeeds; an EOG, cancellation, or error releases in-flight graph/input/output buffers without advancing either state. | The same owner compares a failed or early-ended session with a fresh session on the next request. |
-| Cleanup | `runtime_generation` and `runtime_session_io` release session KV, recurrent state, graph, and device allocations on every terminal path; `provider_runtime` closes the request. | The same owner runs two consecutive requests and checks state isolation and allocation counts. |
+| Construction | `tokenizer_qwen2` supplies the qualified `qwen35` prompt identity; `runtime_qwen35_geometry`, `runtime_qwen35_load`, and `runtime_qwen35_generation` validate geometry and allocate hybrid state before acknowledging the session. | `scripts/run-qwen35-generation-smoke` uses the source-bound real pack and model geometry; the geometry and load owners check invalid metadata and state sizing. |
+| Success | `runtime_qwen35_model` builds full-attention and Gated DeltaNet layers; `runtime_qwen35_generation` executes prompt chunks and retains decode parity graphs; `provider_runtime` routes one-shot and framed requests. | `scripts/run-qwen35-generation-smoke` compares three greedy tokens for 31-, 200-, and 330-token prompts with pinned llama.cpp and verifies six retained requests. |
+| Failure and malformed input | `provider_runtime` rejects malformed framing, unsupported sampling, and invalid prompt bounds before state mutation; `runtime_qwen35_generation` poisons a session after execution failure, and the worker terminates after a failed frame. | The real generation owner checks unsupported sampling followed by a valid request. A focused execution-failure injection remains deferred because no new failure mechanism is introduced by this session route; the existing GPU owner covers compute failure. |
+| Early exit and rollback | A completed request clears the resident KV before the next request; max-one and EOG exits end without further decode. Execution failure closes the session instead of promising rollback of in-flight GPU writes. | The real generation owner checks a max-one request followed by a full request with identical output to a fresh one-shot result. |
+| Cleanup | `runtime_qwen35_generation` invalidates the transient prefill graph; owned device and retained decode graphs release when the worker exits. | The same owner closes the six-request worker after exact output checks; the GPU attention owner checks KV reset and refusal. |
 | Reused modules | `ggml_ffi` exposes only thin wrappers for shipped pinned ggml operations, with owner state and shapes in Align; existing Qwen2/OLMoE dispatch remains explicit. | `scripts/run-layer-forward-smoke`, `scripts/run-tokenizer-smoke`, and `scripts/run-runtime-provider-smoke` remain regression owners. |
 
 ### Pinned reference mapping for the native boundary
@@ -303,9 +303,11 @@ and greedily decodes with two parity graphs. `scripts/run-qwen35-generation-smok
 compares its output and token counts with the pinned Metal llama.cpp oracle for
 31-, 200-, and 330-token prompts, each with three generated tokens; all pass.
 The latter two cases cross a chunk boundary and a 256-to-512 attention-width
-boundary. This verifies a single request at a time. `--runtime-session`, state
-isolation across requests, failure injection, a complete-request speed comparison,
-and contemporary llama.cpp comparison remain open before native text publication.
+boundary. The retained `--runtime-session` now uses one weight load and clears its resident
+state between requests. Six requests, including malformed-sampling recovery and max-one early
+exit, match the same-pin oracle. Execution-failure injection, a strict complete-request speed
+comparison, and a contemporary llama.cpp comparison remain open for later qualification; no
+faster-than-llama.cpp claim is active.
 
 Align-owned full-model graph construction remains implementation work, not an
 upstream Align language request. A same-pin reference transcript should use the 0.8B model and at least
@@ -351,6 +353,41 @@ separately. The material floor is at least 15% lower median paired generation la
 least four of five pairs faster, and no more than 5% prompt or startup regression. Preparation
 is capped at 3,600 seconds and the paired experiment at 900 seconds, with a 120-second request
 limit. A missing parity result or invalid receipt is an unmeasured outcome, not a speedup.
+An evaluated candidate was a GPU argmax node after the output projection. Its control reads and
+scans all 248,320 F32 logits after each step; the candidate reads one I32 token id. Keep the
+full-logit owner path for exact vector parity. Require identical generated ids and text on the
+31-, 200-, and 330-token real prompts, including retained requests. Use the same 3,600-second
+preparation and 900-second paired-measurement ceilings and the 15% generation-latency floor
+above before calling it a material optimization; record full-request latency separately.
+The candidate was reverted after review found that reading only an index drops the existing
+nonfinite-logit refusal. Its observed complete-request latency also did not meet the material
+floor. The retained session continues to read F32 logits and use the checked greedy selector.
+The following prefill experiment raised the native chunk ceiling from 128 to 256 tokens so a
+200-token coding prompt uses one graph. Its acceptance is exact 31-, 200-, and 330-token
+provider and retained-session token parity, a passing 128-token full-vector owner, and no
+unsupported Flash probe. Compare the 200-token/16-token request against the unchanged
+128-token-chunk control in five alternating pairs under the same preparation, measurement,
+15% material floor, and 5% regression limit. Revert the larger chunk if it fails parity or
+the paired floor.
+On Apple M1 with the same source/model and five alternating retained 200-prompt/16-generation
+requests after two warm requests per process, the 128/256 controls measured 496.70/495.02 ms
+median. The 256 graph won three of five pairs, missed the 15% floor, and was reverted. The
+generated text matched in all ten measured calls. This was an experiment, not a shipping speed
+claim or a same-pin llama.cpp comparison.
+The next prefill experiment omitted the output normalization, vocabulary projection, and argmax
+for every prompt chunk except the last. Intermediate chunks must still execute and commit all
+recurrent and attention state nodes. Its control is the owner-tested 128-token session above;
+the candidate must preserve exact generated IDs and text on the 31-, 200-, and 330-token
+prompts, including retained requests. Compare the 200-token/16-token request in five alternating
+pairs under the same 3,600-second preparation and 900-second measurement ceilings. Require the
+15% paired generation-latency floor, four of five wins, and at most 5% prompt or startup
+regression for a material speed claim. Record the same-pin llama.cpp result separately.
+On the Apple M1, the control/candidate 200-prompt/16-generation medians were 521.16/515.26 ms
+after two warm requests in each of five alternating pairs. The candidate won three of five
+pairs with exact generated text, missed the material floor, and was reverted. Temporary timing
+probes placed retained-session prefill near 200 ms and decode near 300 ms; the same-pin llama.cpp
+diagnostic placed its prefill and first token near 180 ms and remaining decode near 300 ms. These
+are one-host diagnostics, not a faster-than-llama.cpp claim.
 The first measured seam is retained F16 K/V for the six full-attention layers. The control
 retains F32 K/V and casts its fixed 256-token views to F16 before each Flash Attention call;
 the candidate uses the already-qualified cached-F16 policy at allocation and indexed-write

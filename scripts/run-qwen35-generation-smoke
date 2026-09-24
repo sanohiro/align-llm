@@ -10,6 +10,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from gpu_session_client import InvalidRequest, Session
+
 
 ROOT = Path(__file__).resolve().parents[1]
 MODEL_SHA256 = "57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf"
@@ -52,6 +54,7 @@ def main() -> None:
         work = Path(temporary)
         system_path = work / "system.txt"
         system_path.write_text(SYSTEM, encoding="utf-8")
+        expected_results = {}
         for label, user, prompt_length in CASES:
             user_path = work / f"{label}-user.txt"
             user_path.write_text(user, encoding="utf-8")
@@ -68,6 +71,7 @@ def main() -> None:
             expected_path.write_text(json.dumps(expected), encoding="utf-8")
             expected_text = run([str(ROOT / "main"), "--detokenize", str(model),
                                  str(expected_path), "render-control"]).decode("utf-8")
+            expected_results[label] = (expected_text, prompt_length)
             result_path = work / f"{label}-result.json"
             run([str(ROOT / "main"), "--provider", "align-runtime", str(model), str(pack),
                  str(geometry), user, str(result_path), "3", "--runtime-options", str(options)],
@@ -79,6 +83,36 @@ def main() -> None:
                     or actual["total_tokens"] != prompt_length + 3):
                 raise RuntimeError(f"{label}: provider result differs from pinned llama.cpp: {actual!r}")
             print(f"{label}: {prompt_length} prompt tokens, 3 matching greedy tokens")
+        command = [str(ROOT / "main"), "--runtime-session", str(model), str(pack),
+                   str(geometry), str(options), "0"]
+        with Session(command, timeout=180, env=environment) as session:
+            for label in ("short", "wider-attention", "short"):
+                user = next(value for name, value, _ in CASES if name == label)
+                request = dict(schema_version=1, system=SYSTEM, user=user,
+                               max_tokens=3, temperature=0.0, seed=None)
+                actual = session.generate(request)
+                expected_text, prompt_length = expected_results[label]
+                if (actual["output"] != expected_text or actual["prompt_tokens"] != prompt_length
+                        or actual["completion_tokens"] != 3):
+                    raise RuntimeError(f"{label}: retained session result differs: {actual!r}")
+            try:
+                session.generate(dict(request, temperature=0.3, seed=42))
+            except InvalidRequest:
+                pass
+            else:
+                raise RuntimeError("retained session accepted unsupported sampling")
+            actual = session.generate(dict(request, user="Hello"))
+            if actual["output"] != expected_results["short"][0]:
+                raise RuntimeError("retained session did not recover after invalid input")
+            first_only = session.generate(dict(request, user="Hello", max_tokens=1))
+            if (first_only["prompt_tokens"] != expected_results["short"][1]
+                    or first_only["completion_tokens"] != 1
+                    or not expected_results["short"][0].startswith(first_only["output"])):
+                raise RuntimeError("single-token early exit did not preserve session state")
+            repeated = session.generate(dict(request, user="Hello"))
+            if repeated["output"] != expected_results["short"][0]:
+                raise RuntimeError("retained session leaked state after early exit")
+        print("session: six requests agree with llama.cpp and recover after invalid input")
 
 
 if __name__ == "__main__":

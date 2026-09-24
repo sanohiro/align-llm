@@ -4,13 +4,15 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Qwen3.5 text capability checkpoint (2026-09-24)
 
-Branch: `agent/qwen35-next`, based on merged PR #296 (`53d5a183`). Active user priority is
+Branch: `agent/qwen35-next`, current local checkpoint `6486a6e3` after merged PR #296
+(`53d5a183`). Active user priority is
 staged Qwen3.5 native text correctness and measured optimization on small and middle-size models,
 then a normally usable OpenAI-compatible local endpoint. Large models, including Qwen3.8-27B and
 Qwen3.5-35B-A3B, are deferred. `docs/specs/qwen35-text.md`
 owns the model contract; `docs/specs/roadmap.md` owns the delivery order. This branch has
 unpublished local geometry-admission and HTTP-contract checkpoints; neither is a standalone
-publication candidate.
+publication candidate. The current uncommitted retained-session batch is the active executable
+candidate; its final preflight, comprehensive review, and publication remain open.
 
 The first independently usable boundary is merged: `--model-ir`, `--pack`, and
 `--pack-verify` accept a real Qwen3.5-0.8B Q4_0 GGUF. Its SHA-256 is recorded in the plan;
@@ -25,13 +27,18 @@ paired prompt cases, reference bottleneck diagnostics, review disposition, final
 and all three hosted checks. Native `align-runtime` generation is the active boundary.
 
 Next actions in priority order:
-1. Implement the text-only native Qwen3.5 hybrid recurrent/attention session with the
-   recurrent-state closure matrix and pinned llama.cpp oracle in `docs/specs/qwen35-text.md`.
-2. Qualify 0.8B prefill, multistep decode, and provider output. Profile the passing native session
-   against the reference bottleneck checkpoint, then select and measure one optimization under
-   its declared paired floor. Also compare real output and speed with both same-pin and
-   contemporary llama.cpp as separate references under the fixed model and request protocol.
-   GPU kernel attribution needs a separate trace with shader rows.
+1. Finish the retained Qwen3.5 session candidate: format, run the real generation and GPU KV
+   owners plus Python boundary guard, complete one comprehensive review, run executable preflight,
+   and publish after checks pass. The batch reuses decode graphs and clears resident KV in one backend
+   call while retaining full-vector finite-logit validation. The six-request real smoke passes against pinned
+   llama.cpp, including malformed-input recovery and max-one early exit.
+2. Continue the 0.8B prefill bottleneck investigation and perform a strict same-pin and
+   contemporary llama.cpp complete-request comparison with identical prompt IDs, generation
+   length, warmup, and outputs. A five-pair 256-token chunk trial and a five-pair state-only
+   intermediate prefill trial both missed the 15% floor and were reverted. The latter measured
+   521.16/515.26 ms control/candidate medians and three candidate wins. Temporary timing placed
+   retained prefill near 200 ms and decode near 300 ms. No faster-than-llama.cpp claim is active.
+   GPU kernel attribution still needs a trace with shader rows.
 3. Settle and implement an Align-owned OpenAI-compatible local HTTP endpoint on the passing 0.8B
    runtime, beginning with a real `POST /v1/chat/completions` request. The existing OpenAI provider
    is a client. `docs/specs/roadmap.md` owns this new delivery order and

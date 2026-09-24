@@ -152,32 +152,21 @@ pub fn define_resident(
     at = at + 1
   }
   runtime_kv.finish(owner)?
-  // Fixed-width decode views include masked future rows. Initialize them so the backend
-  // never observes undefined resident bytes while attention skips those rows.
-  mut attention_index := 0
-  attention_elements := mul(mul(g.head_dim, kv_capacity)?, g.n_head_kv)?
-  mut attention_zero := buffer.filled(attention_elements * if attention_type == 1 { 2 } else { 4 }, 0 as u8)
-  attention_zero_bytes := attention_zero.bytes()
-  loop {
-    if attention_index >= 2 * g.attention_layers { break }
-    runtime_kv.update(owner, attention_index, 0, attention_zero_bytes)?
-    attention_index = attention_index + 1
+  zero_resident(owner, g, kv_capacity)?
+  return Ok(())
+}
+
+pub fn zero_resident(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  kv_capacity: i64,
+) -> Result<(), Error> {
+  count := runtime_qwen35_state.resident_count(g)
+  if count < 1 || kv_capacity < 1 || kv_capacity > g.context_length {
+    return Err(Error.Invalid)
   }
-  // The first graph reads parity zero. Backend allocations have no zero-fill guarantee.
-  mut recurrent_index := 2 * g.attention_layers
-  loop {
-    if recurrent_index >= count { break }
-    mut elements := 0
-    if (recurrent_index - 2 * g.attention_layers) % 4 < 2 {
-      elements = g.conv_elements_per_layer
-    } else {
-      elements = g.state_elements_per_layer
-    }
-    mut zero := buffer.filled(elements * 4, 0 as u8)
-    zero_bytes := zero.bytes()
-    runtime_kv.update(owner, recurrent_index, 0, zero_bytes)?
-    recurrent_index = recurrent_index + 2
-  }
+  // The shim owns one KV buffer and clears it after synchronization.
+  runtime_kv.zero_all(owner)?
   return Ok(())
 }
 

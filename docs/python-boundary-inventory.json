@@ -3294,7 +3294,7 @@
     {
       "path": "scripts/run-qwen35-generation-smoke",
       "classification": "INDEPENDENT_ORACLE",
-      "behavior": "Compare real Qwen3.5 Align provider output and token counts with pinned llama.cpp greedy output.",
+      "behavior": "Compare real Qwen3.5 Align one-shot and retained-session output and token counts with pinned llama.cpp greedy output.",
       "reachability": "Focused developer qualification only; never part of normal product execution.",
       "substitution": "Invokes the product and an independent llama.cpp oracle; does not implement shipping inference.",
       "python_reason": "Independent paired model output comparison remains outside Align product execution.",

@@ -2713,6 +2713,18 @@ int32_t align_gpu_kv_update(
     return ALIGN_GPU_OK;
 }
 
+int32_t align_gpu_kv_zero_all(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->shape_planning || !state->kv_finished
+            || !state->memory_allocated || state->kv_buffer == NULL
+            || state->kv_bytes < 1 || state->kv_bytes > INT64_MAX - state->kv_updated_bytes) {
+        return ALIGN_GPU_CONFIG;
+    }
+    memset(state->kv_buffer, 0, (size_t) state->kv_bytes);
+    state->kv_updated_bytes += state->kv_bytes;
+    return ALIGN_GPU_OK;
+}
+
 int32_t align_gpu_kv_slot(void *owner, int64_t index, void *slots, int64_t out) {
     align_stub_tensor *tensor =
         align_gpu_stub_kv_at((struct align_gpu_device_state *) owner, index);
