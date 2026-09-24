@@ -181,6 +181,10 @@ causal convolution and staged history write, applies Gated DeltaNet and its stag
 then performs gated normalization and output projection. A real pinned-Metal 0.8B owner builds
 and executes layer 0 with a nonzero synthetic hidden vector and reads a nonzero output. This
 establishes a runnable layer path, not parity with llama.cpp or a full-model speed result.
+The common one-token block tail adds the attention result to the layer input, applies the
+post-attention RMS normalization and its weight, computes a parallel SiLU-gated FFN, and adds
+the FFN result to the first residual. The same Metal owner executes this complete recurrent
+block tail with the real layer-0 weights; numeric oracle parity remains a later gate.
 Align-owned full-model graph construction remains implementation work, not an
 upstream Align language request. A same-pin reference transcript should use the 0.8B model and at least
 one prompt that crosses prefill and two decode steps. No performance result is inferred from the

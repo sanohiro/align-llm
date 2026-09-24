@@ -1,0 +1,64 @@
+module runtime_qwen35_ffn
+
+import ggml_ffi
+import runtime_qwen35_geometry
+import runtime_qwen35_roles
+
+// The caller supplies the layer input and its attention result. Slots 70..81 are local.
+pub INPUT := 68
+pub ATTENTION := 69
+pub OUTPUT := 81
+
+pub fn build_one(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  layer: i64, ctx: raw, borrow slots: slice<u8>,
+) -> Result<(), Error> {
+  if !runtime_qwen35_geometry.valid_layer_pattern(g)
+    || layer < 0 || layer >= g.n_layer
+    || ggml_ffi.handle_absent(ctx)
+    || ggml_ffi.slot_ne(slots, INPUT, 0) != g.n_embd
+    || ggml_ffi.slot_ne(slots, INPUT, 1) != 1
+    || ggml_ffi.slot_ne(slots, ATTENTION, 0) != g.n_embd
+    || ggml_ffi.slot_ne(slots, ATTENTION, 1) != 1 {
+    return Err(Error.Invalid)
+  }
+  base := runtime_qwen35_roles.layer_count(g, layer) - 4
+  mut row := 0
+  loop {
+    if row >= 4 { break }
+    index := runtime_qwen35_roles.layer_slot(g, layer, base + row)?
+    ggml_ffi.gpu_weight_slot(owner, index, slots, 70 + row) else {
+      return Err(Error.Invalid)
+    }
+    row = row + 1
+  }
+  ggml_ffi.op_add(ctx, slots, 74, INPUT, ATTENTION, "q35_attention_residual") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_rms_norm(ctx, slots, 75, 74, g.rms_eps_bits, "q35_post_attention_norm") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul(ctx, slots, 76, 75, 70, "q35_post_attention_weight") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul_mat(ctx, slots, 77, 71, 76, "q35_ffn_gate") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_silu(ctx, slots, 78, 77, "q35_ffn_gate_silu") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul_mat(ctx, slots, 79, 72, 76, "q35_ffn_up") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul(ctx, slots, 80, 78, 79, "q35_ffn_gated") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_mul_mat(ctx, slots, 82, 73, 80, "q35_ffn_down") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.op_add(ctx, slots, OUTPUT, 74, 82, "q35_ffn_residual") else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}

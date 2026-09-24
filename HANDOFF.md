@@ -105,8 +105,10 @@ checks active binding shapes across a parity flip. The graph must expand those c
 test success-only publication. The one-token recurrent-layer builder now constructs layer 0
 from the real 0.8B weights and executes on pinned Metal with a nonzero synthetic hidden input;
 its output is nonzero and the convolution/DeltaNet copy nodes are included. This is a layer
-operation smoke, not a llama.cpp numeric comparison or full-model result. Next complete the
-full-attention layers, residual/FFN/head, session publication, and pinned oracle comparison.
+operation smoke, not a llama.cpp numeric comparison or full-model result.
+The same real Metal smoke now executes the layer-0 post-attention residual, normalization,
+SwiGLU FFN, and second residual with real weights. The synthetic block output is nonzero.
+Next complete the full-attention layers, head, session publication, and pinned oracle comparison.
 The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
 src/main.align` (3,134 functions), `gmake build` with the documented Homebrew
 `LIBRARY_PATH`, `./scripts/check-format`, `git diff --check`, C syntax
