@@ -2,7 +2,45 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Qwen3.5 text capability checkpoint (2026-09-24)
+## Active local OpenAI serving capability (2026-09-24)
+
+Branch: `agent/openai-serving-next`, based on merged PR #298 (`77f42a55`), with
+the serving candidate at `21a1d0da` plus the final review repair. The
+Qwen3.5-0.8B multi-turn history prerequisite is merged. The active consumer is
+loopback-only `--serve-openai` with non-stream and per-token SSE chat over one
+retained native Metal session. Code, real-model owner, plan map and backend parity
+are in progress; no serving PR is published yet. The root `main`
+worktree's unrelated `docs/align-requests.md` modification remains untouched.
+
+Next actions: commit the final narrow review repair, rerun exact-head
+`scripts/pre-pr` with the serving owner, publish and merge after checks, then
+refresh main and select the next small-model capability.
+Align Request 120 records that pinned `std.http.accept()` allocates the whole
+request body before application validation, so the current 1 MiB HTTP body cap
+is post-read. The endpoint stays loopback-only until Align supplies a bounded
+inbound accept and the consumer verifies it. The existing same-pin Metal
+speed gap versus llama.cpp remains unresolved; no faster-than-llama.cpp claim
+is active. CUDA and CPU Qwen3.5 serving are unmeasured/deferred in
+`docs/backend-parity.md`.
+
+The current real owner has passed pinned llama.cpp two-turn three-token output,
+SSE parity and termination, wrong-model/unsupported-input refusals, and one
+disconnect followed by a correct fresh request. A sample on Apple M1 observed
+0.735 s startup, 0.114 s non-stream completion, 0.064 s first stream content
+and 0.099 s stream completion; this is a functional owner observation, not a
+speed claim or paired benchmark. `gmake build`, `gmake fmt`, and
+`python3 scripts/check-python-boundary` and the serving owner passed; the
+existing Qwen3.5 generation owner also passed after the first review repair.
+Executable `scripts/pre-pr` passed at `21a1d0da`; the final review found one
+unsafe graph-invalidation swallow and one unimplementable resource-specific
+HTTP 503 promise. Both were corrected in `fbdf3370`, whose exact-head preflight
+passed. A final full-diff review found one prefill-graph cleanup failure path;
+the current narrow repair sends the error before terminating and needs a new
+exact-head preflight. Compute-failure injection, descriptor-growth
+measurement, SDK integration, and paired native-CLI serving timing are explicit
+deferrals in `docs/specs/openai-local-serving.md`.
+
+## Prior Qwen3.5 text capability checkpoint (2026-09-24)
 
 Branch: `agent/qwen35-prefill-next`, based on merged PR #297 (`8080f542`). Active user priority is
 staged Qwen3.5 native text correctness and measured optimization on small and middle-size models,

@@ -16777,3 +16777,39 @@ These results supersede historical statements above that final evaluator/repair 
 not implemented. Request lifecycle remains individual: R84/R85/R87/R88 are client-verified;
 R86 remains ALIGN_MERGED with its nonblocking optional-move negative. Earlier requests retain
 any separately named owner requirements; these integration results do not silently close them.
+
+### Request 120: bound inbound `std.http` request bodies before allocation (2026-09-24)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: remote or untrusted OpenAI-compatible serving; loopback-only Qwen3.5 text serving continues with the documented admission limit
+Independent work that may continue: loopback-only text chat, tokenizer parity, native model optimization, and dense-model support
+Resume condition: Align ships an explicit server request-body cap, align-llm updates `.align-revision`, and the real HTTP owner verifies over-limit refusal before allocation
+Align commit or pull request: tracking [sanohiro/align#1171](https://github.com/sanohiro/align/issues/1171); no implementation; pinned `5c7af9e54108fbe3a7b3d698c96a6dbc2da3e9c3`
+align-llm verification: `scripts/run-openai-serving-smoke` plus an over-limit request and bounded-memory observation at the adopted pin
+
+The pinned `std.http` `http_server.accept()` parses and retains the whole request before
+returning `http_request_ctx`. The sibling implementation at `crates/align_runtime/src/lib.rs`
+uses 32 KiB reads with a 256 KiB head and a 1 GiB request-body limit; the shipped
+surface in `docs/impl/std-design/http.md` exposes `serve` and `accept` but no inbound
+body-limit setter or bounded accept. `src/openai_serving.align` can reject a body above
+1 MiB only after `accept()` has already read and allocated it. The application-owned
+limit is therefore a response validation bound, not a memory-admission bound. A
+loopback-only endpoint can ship with that declared limit; an untrusted bind cannot.
+
+Proposed Align surface: `srv.max_request_body_bytes(limit: i64)` on the owned
+`http_server`, configured before its first `accept()`, analogous to the existing
+HTTP client response-body cap. A positive limit bounds both Content-Length admission
+and incremental receive, closes only the offending connection, and returns an
+ordinary `Error.Invalid` from `accept()` without losing the listener. Zero restores
+the current default. The server owns the bound and its receive buffer; no application
+copy or new parser is required. Exact syntax can follow the standard-library owner,
+but the limit must be enforced before allocating or reading beyond it.
+
+Acceptance: a same-process listener handles a normal request, refuses declared and
+incrementally received over-limit requests without allocating beyond the configured
+bound, then handles another normal request. Cover malformed Content-Length and EOF,
+request context cleanup, and the default behavior when no bound is configured in
+Align's server tests. The align-llm consumer sets 1 MiB before accepting and verifies
+a large body refusal followed by a normal chat, including memory observation.

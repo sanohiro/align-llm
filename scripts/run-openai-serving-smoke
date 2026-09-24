@@ -1,0 +1,215 @@
+#!/usr/bin/env python3
+"""Real-model HTTP and SSE comparison against the pinned llama.cpp oracle."""
+
+from __future__ import annotations
+
+import http.client
+import json
+import os
+import socket
+import subprocess
+import tempfile
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+MODEL_ID = "qwen35-0.8b"
+MESSAGES = [
+    {"role": "system", "content": "You are a coding assistant. Return a concise answer."},
+    {"role": "user", "content": "Hello"},
+    {"role": "assistant", "content": "Hi!"},
+    {"role": "user", "content": "Name one Python data structure."},
+]
+
+
+def execute(argv: list[str], env: dict[str, str] | None = None) -> bytes:
+    result = subprocess.run(argv, cwd=ROOT, env=env, capture_output=True, timeout=180)
+    if result.returncode:
+        raise AssertionError(f"{argv[0]} failed: {result.stderr[-1200:]!r}")
+    return result.stdout
+
+
+def request(port: int, method: str, path: str, body: object = None,
+            *, raw: str | None = None) -> tuple[int, dict, bytes, float]:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
+    payload = raw if raw is not None else (json.dumps(body) if body is not None else None)
+    headers = {"Content-Type": "application/json"} if payload is not None else {}
+    started = time.perf_counter()
+    connection.request(method, path, payload, headers)
+    response = connection.getresponse()
+    first = time.perf_counter() - started
+    data = response.read()
+    status = response.status
+    fields = dict(response.getheaders())
+    connection.close()
+    return status, fields, data, first
+
+
+def assert_error(port: int, body: object, status: int, code: str) -> None:
+    actual, _, data, _ = request(port, "POST", "/v1/chat/completions", body)
+    parsed = json.loads(data)
+    assert (actual, parsed["error"]["code"]) == (status, code), (actual, parsed)
+
+
+def stream_request(port: int, body: dict, *, disconnect: bool = False) -> tuple[list[dict], float, float]:
+    connection = http.client.HTTPConnection("127.0.0.1", port, timeout=40)
+    started = time.perf_counter()
+    connection.request("POST", "/v1/chat/completions", json.dumps(body),
+                       {"Content-Type": "application/json"})
+    response = connection.getresponse()
+    assert response.status == 200 and response.getheader("Content-Type").startswith("text/event-stream"), (response.status, response.read())
+    events: list[dict] = []
+    done = False
+    first_token = 0.0
+    while True:
+        line = response.readline()
+        if not line:
+            break
+        if not line.startswith(b"data: "):
+            continue
+        value = line[6:].strip()
+        if value == b"[DONE]":
+            done = True
+            break
+        event = json.loads(value)
+        events.append(event)
+        if event["choices"][0]["delta"].get("content") and not first_token:
+            first_token = time.perf_counter() - started
+            if disconnect:
+                connection.close()
+                return events, first_token, time.perf_counter() - started
+    completion = time.perf_counter() - started
+    connection.close()
+    assert done and first_token > 0, (done, events)
+    return events, first_token, completion
+
+
+def main() -> None:
+    model = Path(os.environ["QWEN35_GGUF"]).resolve()
+    pack = Path(os.environ["QWEN35_ALIGNPACK"]).resolve()
+    geometry = Path(os.environ["QWEN35_MODEL_IR"]).resolve()
+    options = Path(os.environ["QWEN35_RUNTIME_OPTIONS"]).resolve()
+    oracle = Path(os.environ["QWEN35_LLAMA_ORACLE"]).resolve()
+    env = os.environ.copy()
+    env["DYLD_LIBRARY_PATH"] = os.environ["QWEN35_LIB_PATH"]
+    oracle_env = env.copy()
+    oracle_env.pop("DYLD_LIBRARY_PATH", None)
+    with tempfile.TemporaryDirectory(prefix="openai-serving-") as temporary:
+        work = Path(temporary)
+        history = work / "messages.json"
+        history.write_text(json.dumps(MESSAGES), encoding="utf-8")
+        ids = json.loads(execute([str(ROOT / "main"), "--prepare-history", str(model), str(history)]))
+        prompt = work / "prompt.json"
+        prompt.write_text(json.dumps(ids) + "\n", encoding="utf-8")
+        expected_ids = json.loads(execute([str(oracle), str(model), "--greedy-ids",
+                                           str(prompt), "3"], oracle_env))
+        output_ids = work / "output.json"
+        output_ids.write_text(json.dumps(expected_ids), encoding="utf-8")
+        expected = execute([str(ROOT / "main"), "--detokenize", str(model),
+                            str(output_ids), "render-control"]).decode("utf-8")
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.close()
+        command = [str(ROOT / "main"), "--serve-openai", str(model), str(pack),
+                   str(geometry), str(options), "0", MODEL_ID, str(port)]
+        with (work / "server.log").open("wb") as log:
+            started = time.perf_counter()
+            server = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=log)
+            try:
+                while True:
+                    if server.poll() is not None:
+                        raise AssertionError(f"server exited {server.returncode}: {Path(log.name).read_text()[-1200:]}")
+                    try:
+                        status, _, models, _ = request(port, "GET", "/v1/models")
+                        break
+                    except (ConnectionError, OSError, http.client.HTTPException):
+                        if time.perf_counter() - started > 60:
+                            raise AssertionError("server startup exceeded 60 seconds")
+                        time.sleep(0.1)
+                startup = time.perf_counter() - started
+                assert status == 200 and [x["id"] for x in json.loads(models)["data"]] == [MODEL_ID]
+                chat = {"model": MODEL_ID, "messages": MESSAGES, "max_tokens": 3, "temperature": 0}
+                status, _, payload, normal_latency = request(port, "POST", "/v1/chat/completions", chat)
+                completion = json.loads(payload)
+                assert status == 200, completion
+                choice = completion["choices"][0]
+                assert choice["message"] == {"role": "assistant", "content": expected}, (choice, expected)
+                assert choice["finish_reason"] == "length", choice
+                assert completion["usage"] == {"prompt_tokens": len(ids), "completion_tokens": 3,
+                                                "total_tokens": len(ids) + 3}, completion
+                streamed = dict(chat, stream=True)
+                events, ttft, stream_latency = stream_request(port, streamed)
+                assert events[0]["choices"][0]["delta"]["role"] == "assistant"
+                assert "".join(x["choices"][0]["delta"].get("content") or "" for x in events) == expected
+                assert events[-1]["choices"][0]["finish_reason"] == "length"
+                assert all(x["model"] == MODEL_ID and x["object"] == "chat.completion.chunk" for x in events)
+                japanese = dict(chat, messages=MESSAGES[:-1] + [
+                    {"role": "user", "content": "日本語で短く挨拶してください。"}
+                ], max_tokens=48)
+                status, _, payload, _ = request(port, "POST", "/v1/chat/completions", japanese)
+                assert status == 200
+                japanese_text = json.loads(payload)["choices"][0]["message"]["content"]
+                japanese_events, _, _ = stream_request(port, dict(japanese, stream=True))
+                assert "".join(x["choices"][0]["delta"].get("content") or ""
+                               for x in japanese_events) == japanese_text
+                assert japanese_events[-1]["choices"][0]["finish_reason"] in ("length", "stop")
+                assert_error(port, dict(chat, model="wrong"), 404, "model_not_found")
+                assert_error(port, dict(chat, temperature=0.1), 400, "invalid_request")
+                assert_error(port, dict(chat, messages=[{"role": "assistant", "content": "bad"}]),
+                             400, "invalid_messages")
+                assert_error(port, dict(chat, tools=[]), 400, "invalid_request")
+                oversized_history = MESSAGES[:-1] + [{"role": "user", "content": "hello " * 1950}]
+                history.write_text(json.dumps(oversized_history), encoding="utf-8")
+                long_ids = json.loads(execute([str(ROOT / "main"), "--prepare-history",
+                                               str(model), str(history)]))
+                assert len(long_ids) <= 2048 and 2175 < len(long_ids) + 256 - 1 <= 2304
+                assert_error(port, dict(chat, messages=oversized_history, max_tokens=256),
+                             400, "context_length")
+                status, _, payload, _ = request(port, "POST", "/v1/chat/completions", raw='{"model":"x","model":"x"}')
+                assert status == 400 and json.loads(payload)["error"]["code"] == "invalid_request"
+                status, _, payload, _ = request(port, "GET", "/v1/chat/completions")
+                assert status == 405 and json.loads(payload)["error"]["code"] == "method_not_allowed"
+                status, _, payload, _ = request(port, "GET", "/absent")
+                assert status == 404 and json.loads(payload)["error"]["code"] == "not_found"
+                long_chat = dict(chat, messages=MESSAGES[:-1] + [
+                    {"role": "user", "content": "Write the integers from 1 to 1000 in order."}
+                ], max_tokens=512, stream=True)
+                stream_request(port, long_chat, disconnect=True)
+                status, _, payload, _ = request(port, "POST", "/v1/chat/completions", chat)
+                assert status == 200 and json.loads(payload)["choices"][0]["message"]["content"] == expected
+                print(f"serving: pinned oracle parity, SSE, refusals, disconnect and recovery PASS; "
+                      f"startup={startup:.3f}s nonstream={normal_latency:.3f}s "
+                      f"ttft={ttft:.3f}s stream={stream_latency:.3f}s")
+            finally:
+                server.terminate()
+                try:
+                    server.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    server.kill()
+                    server.wait(timeout=10)
+        refused = subprocess.run(command[:3] + [str(work / "missing.alignpack")] + command[4:],
+                                 cwd=ROOT, env=env, capture_output=True, timeout=30)
+        assert refused.returncode != 0, "invalid pack unexpectedly started a listener"
+        with (work / "restart.log").open("wb") as log:
+            restarted = subprocess.Popen(command, cwd=ROOT, env=env, stdout=log, stderr=log)
+            try:
+                deadline = time.monotonic() + 60
+                while True:
+                    try:
+                        status, _, _, _ = request(port, "GET", "/v1/models")
+                        assert status == 200
+                        break
+                    except (ConnectionError, OSError, http.client.HTTPException):
+                        assert restarted.poll() is None and time.monotonic() < deadline
+                        time.sleep(0.1)
+                status, _, payload, _ = request(port, "POST", "/v1/chat/completions", chat)
+                assert status == 200 and json.loads(payload)["choices"][0]["message"]["content"] == expected
+            finally:
+                restarted.terminate()
+                restarted.wait(timeout=10)
+        print("startup refusal and shutdown/restart PASS")
+
+
+if __name__ == "__main__":
+    main()

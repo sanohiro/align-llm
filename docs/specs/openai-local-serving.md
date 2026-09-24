@@ -1,8 +1,8 @@
 # Local OpenAI-compatible serving
 
-Status: planned after the Qwen3.5-0.8B native correctness and optimization gate in
-`roadmap.md`. This is the inbound local server contract. `provider_openai` is an outbound
-client and does not implement it.
+Status: Qwen3.5-0.8B local serving implemented on the retained Metal session. The
+real-model owner checks two-turn chat and streaming against pinned llama.cpp.
+`provider_openai` remains an outbound client.
 
 ## First usable consumer and prerequisites
 
@@ -59,7 +59,7 @@ and exact token counts. Do not add another transport or SSE framework.
 | Routes | `POST /v1/chat/completions` and `GET /v1/models`. Other paths return 404; other methods on a known path return 405. `/v1/models` lists exactly the configured model id. |
 | Request | UTF-8 `application/json` body ≤ 1 MiB; exact configured `model`; 1–128 ordered text messages with at most one leading `system`, alternating `user`/`assistant`, and final `user`; optional `stream` default false; optional `temperature` default 0 and required to remain 0; optional `max_tokens` default 256, range 1–4096 and bounded again by remaining context. Reject tools, images, audio, unknown role/content variants, nonzero temperature, and unsupported generation fields explicitly before tokenization or native allocation. |
 | Response | `stream:false`: HTTP 200 JSON `chat.completion` with id, created timestamp, model id, one assistant choice with `finish_reason`, and exact prompt/completion/total token `usage`. `stream:true`: HTTP 200 `text/event-stream`, ordered `chat.completion.chunk` deltas, a final finish chunk, then `data: [DONE]`. No fabricated usage on an incomplete stream. |
-| Errors | Before response headers, malformed JSON/schema/body → 400, wrong model → 404, unsupported but well-formed option → 400, native resource exhaustion → 503, internal generation failure → 500. Error bodies use `{ "error": { "message", "type", "code" } }` with stable machine-readable code. After SSE headers, send an error event when transport permits, then close without `[DONE]`. No partial result is recorded as success. |
+| Errors | Before response headers, malformed JSON/schema/body → 400, wrong model → 404, unsupported but well-formed option → 400, native generation failure → 500. The current backend ABI reports native failures without a stable resource-exhaustion class, so a distinct 503 response is deferred until that class is available. Error bodies use `{ "error": { "message", "type", "code" } }` with stable machine-readable code. After SSE headers, send an error event when transport permits, then close without `[DONE]`. No partial result is recorded as success. |
 | Ownership and concurrency | One Align process owns the listener, one loaded model, native device, and a single active generation session. Requests are serialized in the first capability. Each request owns parsed JSON, prompt ids, per-request KV/recurrent state, response buffers, and a stream if selected; cleanup runs on success, EOG, malformed input, disconnect, and compute failure. Loaded immutable weights survive between requests. |
 | Identity/version | `MODEL_ID` is the exact external id and must match every request. Pack and Model IR bind to the source GGUF as the existing provider requires. The HTTP JSON has the Chat Completions object names; it introduces no persisted schema. Existing result and model formats keep their versions. |
 | Validation order | Validate CLI and source/pack/geometry, load and verify native model, then bind. For each request: method/path, content type/body bound, JSON syntax and unique keys, model and message/option subset, prompt/context length, native admission, generation, response serialization. Invalid requests do not alter session state. |
@@ -74,13 +74,53 @@ subset and supplies a curl example only after the endpoint passes its owner test
 
 | Phase | Implementation and exact regression |
 | --- | --- |
-| Construction | `main` parses the serving command; `provider_runtime` verifies source/pack/geometry and creates a native Qwen3.5 session before `std.http.serve`. `scripts/run-openai-serving-smoke` tests real 0.8B startup and bad pack/options refusal with no listener left behind. |
+| Construction | `main` parses the serving command; `provider_runtime` verifies source/pack/geometry and creates a native Qwen3.5 session before `std.http.serve`. `scripts/run-openai-serving-smoke` tests real 0.8B startup, missing-pack refusal, and restart. Bad options are covered by the existing runtime-options owner; a serving-specific case is deferred. |
 | Success | An Align HTTP module decodes ordered messages and invokes the same qualified native session. The native generation owner exposes each committed token; the HTTP module passes one JSON delta per token to the shipped `http_stream.send_event`, then sends `[DONE]` and calls `finish`. The owner sends non-stream and stream two-turn requests through an OpenAI-compatible client and compares text/tokens to the pinned native oracle. |
 | Malformed and unsupported input | The HTTP module bounds and validates method, path, content type, duplicate keys, model, roles, options, and context. The owner asserts exact 400/404/405 error envelopes and no native call for each malformed class. |
-| Early exit and failure | The HTTP module observes disconnect/EOG/compute error; the native session retains only committed state until response success. The owner injects a compute failure and disconnect, then checks the next request against a fresh session. |
-| Cleanup | Dropping request context, stream, graph and request state releases owned resources; shutdown drops listener and model. The owner runs repeated requests and a shutdown/restart cycle without state or descriptor growth. |
+| Early exit and failure | The HTTP module observes disconnect/EOG/compute error; the native session retains only committed state until response success. The owner disconnects during a long stream and checks the next request against a fresh session. Compute-failure injection into the real 0.8B serving path remains deferred until the backend has a scoped test seam. |
+| Cleanup | Dropping request context, stream, graph and request state releases owned resources; shutdown drops listener and model. The owner runs repeated requests and a shutdown/restart cycle, verifying state isolation. A measured descriptor-growth bound remains deferred. |
 | Reused modules | `tokenizer_qwen2` owns Qwen3.5 chat rendering; `runtime_generation` owns inference and state; shipped `std.http.respond_stream`/`http_stream.send_event` own HTTP and SSE framing. Existing outbound SSE consumers remain unchanged. Existing tokenizer, generation, and runtime provider owners pass unchanged. |
 
-The implementation map is open until the native consumer and prompt-history owner pass. Before
-publication, map every applicable ledger and matrix cell to the final diff and exact passing
-evidence or an explicit deferral here. A separate design-only pull request is not planned.
+## Implementation map and current limits
+
+`src/main.align` parses the command; `provider_runtime.serve_openai` verifies the GGUF,
+pack, Model IR and runtime options and loads one Qwen3.5 Metal session before binding.
+`src/openai_serving.align` owns strict request parsing, route and model admission,
+response envelopes, and SSE framing. `runtime_qwen35_generation.begin_stream`,
+`stream_next`, `stream_finish`, and `recover_failed_request` own token yield and
+per-request session cleanup. A failed native operation is reported as HTTP 500 before
+headers or as an SSE error event after headers; recoverable failures clear resident
+state before another request. If graph cleanup fails, the server sends HTTP 500
+before headers or an SSE error event when possible, then terminates rather than
+readmitting an invalid session. A nonrecoverable device failure also terminates.
+The backend ABI currently returns success/failure for allocation and compute operations;
+it cannot distinguish resource exhaustion from other native errors. The server therefore
+returns the stable `generation_failed` HTTP 500 before headers for those failures.
+
+`scripts/run-openai-serving-smoke` starts the real 0.8B server, compares a two-turn
+three-token response to the pinned llama.cpp greedy oracle, verifies usage and SSE
+content/finish/[DONE], rejects wrong models, unsupported options, malformed history,
+duplicate keys and wrong routes/methods, disconnects mid-stream and verifies the next
+request is isolated. It records startup, non-stream completion, stream time to first
+content token and total stream latency on the same host. The existing Qwen3.5
+generation and history owners remain independent regressions.
+This is a wire-level OpenAI-compatible HTTP owner using the Python standard-library
+client. An external SDK integration and paired native-CLI latency comparison remain
+deferred; the recorded HTTP timing is diagnostic and carries no serving speed claim.
+
+The `std.http` server's `accept()` reads the entire Content-Length body with a 1 GiB
+library cap before passing a request context to Align. The application rejects bodies
+above 1 MiB, but cannot enforce that cap before allocation. This loopback-only
+resource-admission limitation is tracked as Align Request 120. Public or untrusted
+binding is deferred; the CLI exposes no remote bind. A bounded server accept primitive
+must precede such a boundary. This is a known exception to the ledger's pre-read
+body bound, not a claim that the current server enforces it during receive.
+
+Example after building and supplying the matching bundle through runtime options:
+
+```sh
+./main --serve-openai MODEL.gguf MODEL.alignpack model-ir.json runtime-options.json 0 qwen35-0.8b 8080
+curl http://127.0.0.1:8080/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen35-0.8b","messages":[{"role":"user","content":"Hello"}],"max_tokens":32}'
+```
