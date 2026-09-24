@@ -29,7 +29,9 @@ Next actions in priority order:
    recurrent-state closure matrix and pinned llama.cpp oracle in `docs/specs/qwen35-text.md`.
 2. Qualify 0.8B prefill, multistep decode, and provider output. Profile the passing native session
    against the reference bottleneck checkpoint, then select and measure one optimization under
-   its declared paired floor. GPU kernel attribution needs a separate trace with shader rows.
+   its declared paired floor. Also compare real output and speed with both same-pin and
+   contemporary llama.cpp as separate references under the fixed model and request protocol.
+   GPU kernel attribution needs a separate trace with shader rows.
 3. Settle and implement an Align-owned OpenAI-compatible local HTTP endpoint on the passing 0.8B
    runtime, beginning with a real `POST /v1/chat/completions` request. The existing OpenAI provider
    is a client. `docs/specs/roadmap.md` owns this new delivery order and
@@ -97,7 +99,10 @@ ggml bundle. `runtime_qwen35_load_smoke` passes on the real Model IR, GGUF, pack
 Metal bundle: 320 weights uploaded, 84 resident tensors defined, and the tied output omitted
 from the upload byte count. The stub GPU cannot define quantized tensors, so this owner uses
 the real backend. Native Qwen3.5 graph execution, oracle parity, and any speed claim remain
-open. Next implement the recurrent and full-attention graphs and connect state publication.
+open. `runtime_qwen35_state` also binds the active resident tensor and exposes a staged
+same-shape copy into the inactive tensor via the existing KV slot ABI; the real Metal load owner
+checks active binding shapes across a parity flip. The graph must expand those copy nodes and
+test success-only publication. Next implement the recurrent and full-attention graphs.
 The IMROPE input/ABI checkpoint passed the real-file geometry smoke, `./scripts/alignc check
 src/main.align` (3,134 functions), `gmake build` with the documented Homebrew
 `LIBRARY_PATH`, `./scripts/check-format`, `git diff --check`, C syntax

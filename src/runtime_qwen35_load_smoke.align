@@ -4,6 +4,7 @@ import ggml_ffi
 import gguf
 import runtime_qwen35_geometry
 import runtime_qwen35_load
+import runtime_qwen35_state
 import runtime_qwen_load
 import runtime_memory
 import runtime_kv
@@ -47,6 +48,21 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     || runtime_weights.state(owner, ggml_ffi.GPU_WEIGHT_UPLOADED_BYTES) != payload_bytes
     || runtime_kv.state(owner, ggml_ffi.GPU_KV_CREATED) != 84
     || runtime_kv.state(owner, ggml_ffi.GPU_KV_FINISHED) != 1 {
+    return Err(Error.Invalid)
+  }
+  mut slot_storage := buffer.filled(1040, 0 as u8)
+  slots := slot_storage.bytes()
+  ggml_ffi.slots_init(slots, slots.len(), "qwen35_state_slots") else { return Err(Error.Invalid) }
+  mut state := runtime_qwen35_state.new()
+  runtime_qwen35_state.bind_read(owner, g, state, 0, runtime_qwen35_state.CONV, slots, 0)?
+  runtime_qwen35_state.bind_read(owner, g, state, 22, runtime_qwen35_state.DELTA, slots, 1)?
+  if ggml_ffi.slot_ne(slots, 0, 0) != 3 || ggml_ffi.slot_ne(slots, 0, 1) != 6144
+    || ggml_ffi.slot_ne(slots, 1, 0) != 128 || ggml_ffi.slot_ne(slots, 1, 2) != 16 {
+    return Err(Error.Invalid)
+  }
+  runtime_qwen35_state.finish(state, true)
+  runtime_qwen35_state.bind_read(owner, g, state, 0, runtime_qwen35_state.CONV, slots, 0)?
+  if ggml_ffi.slot_ne(slots, 0, 0) != 3 || ggml_ffi.slot_ne(slots, 0, 1) != 6144 {
     return Err(Error.Invalid)
   }
   print("qwen35 load: PASS")

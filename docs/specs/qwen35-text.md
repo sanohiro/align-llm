@@ -138,6 +138,11 @@ recurrent layers. Each graph reads the active pair and writes the next pair. Onl
 full step flips parity and publishes the token prefix; a failed or cancelled step leaves the
 active pair and prefix unchanged. The inactive pair may contain partial results and is overwritten
 on the next attempted step. The first session does not retain extra DeltaNet snapshots (`K=1`).
+`runtime_qwen35_state` binds the active resident tensor and stages a same-shape graph copy into
+the inactive tensor through the existing GPU KV slot ABI; the graph caller must expand that
+copy node and advance parity only after complete execution and publication. The Metal load
+owner checks active resident bindings before and after a parity flip. Staged writes and rollback
+still require the native graph owner.
 The owning smoke must check layer-to-state indices across the 3/4 and 7/8 block boundaries,
 84 unique allocations, a successful flip, and unchanged active indices on failure before the
 full model oracle is attempted.
@@ -206,6 +211,14 @@ separately. The material floor is at least 15% lower median paired generation la
 least four of five pairs faster, and no more than 5% prompt or startup regression. Preparation
 is capped at 3,600 seconds and the paired experiment at 900 seconds, with a 120-second request
 limit. A missing parity result or invalid receipt is an unmeasured outcome, not a speedup.
+After parity, run a separate five-pair same-model comparison against `llama.cpp` at the pinned
+ggml revision and report a contemporary llama.cpp revision as a second, separately labeled
+reference. Fix the GGUF hash, token IDs, generated output, context, sampler, backend, GPU
+offload, Flash Attention setting, and warm/cold condition for each pair. Report prompt,
+generation, complete request, and startup results without combining them. A native-control
+versus candidate improvement does not establish a llama.cpp speedup; the real reference pairs
+must show it for the named case. Preserve the older Qwen2 campaign's distinction between
+same-ggml and current-reference results when interpreting Qwen3.5.
 
 ## First-boundary implementation map
 
