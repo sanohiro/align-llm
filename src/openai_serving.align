@@ -285,10 +285,14 @@ pub fn run(generation: runtime_qwen35_generation.Session,
                                 prompt.token_ids, prompt.eog_token_ids, request.max_tokens)
                               match started {
                                 Err(_) => {
+                                  mut fatal := false
                                   if !active.healthy {
-                                    runtime_qwen35_generation.recover_failed_request(active)?
+                                    match runtime_qwen35_generation.recover_failed_request(active) {
+                                      Ok(_) => {}, Err(_) => { fatal = true },
+                                    }
                                   }
                                   error_response(ctx, 500, "generation_failed", "Generation failed")?
+                                  if fatal { return Err(Error.Invalid) }
                                 },
                                 Ok(_) => {
                                   id_builder := builder()
@@ -343,8 +347,11 @@ pub fn run(generation: runtime_qwen35_generation.Session,
                                         }
                                         token = match next { None => { break }, Some(value) => value }
                                       }
+                                      mut fatal := false
                                       if failed {
-                                        runtime_qwen35_generation.recover_failed_request(active)?
+                                        match runtime_qwen35_generation.recover_failed_request(active) {
+                                          Ok(_) => {}, Err(_) => { fatal = true },
+                                        }
                                       } else {
                                         runtime_qwen35_generation.stream_finish(active)?
                                       }
@@ -370,6 +377,7 @@ pub fn run(generation: runtime_qwen35_generation.Session,
                                           }
                                         }
                                       }
+                                      if fatal { return Err(Error.Invalid) }
                                     },
                                   }
                                 },
@@ -378,10 +386,14 @@ pub fn run(generation: runtime_qwen35_generation.Session,
                               attempted := native_generate(active, tokenizer, prompt, request.max_tokens)
                               match attempted {
                                 Err(_) => {
+                                  mut fatal := false
                                   if !active.healthy {
-                                    runtime_qwen35_generation.recover_failed_request(active)?
+                                    match runtime_qwen35_generation.recover_failed_request(active) {
+                                      Ok(_) => {}, Err(_) => { fatal = true },
+                                    }
                                   }
                                   error_response(ctx, 500, "generation_failed", "Generation failed")?
+                                  if fatal { return Err(Error.Invalid) }
                                 },
                                 Ok(generated) => {
                                   mut choices: array_builder<Choice> := array_builder(1)

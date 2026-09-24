@@ -90,7 +90,9 @@ response envelopes, and SSE framing. `runtime_qwen35_generation.begin_stream`,
 `stream_next`, `stream_finish`, and `recover_failed_request` own token yield and
 per-request session cleanup. A failed native operation is reported as HTTP 500 before
 headers or as an SSE error event after headers; recoverable failures clear resident
-state before another request. A nonrecoverable device failure terminates the process.
+state before another request. If graph cleanup fails, the server sends HTTP 500
+before headers or an SSE error event when possible, then terminates rather than
+readmitting an invalid session. A nonrecoverable device failure also terminates.
 The backend ABI currently returns success/failure for allocation and compute operations;
 it cannot distinguish resource exhaustion from other native errors. The server therefore
 returns the stable `generation_failed` HTTP 500 before headers for those failures.

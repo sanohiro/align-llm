@@ -12,10 +12,9 @@ retained native Metal session. Code, real-model owner, plan map and backend pari
 are in progress; no serving PR is published yet. The root `main`
 worktree's unrelated `docs/align-requests.md` modification remains untouched.
 
-Next actions: commit the final review repair, rerun exact-head `scripts/pre-pr`
-with the serving owner, complete the final review of the respecified native-error
-status, publish and merge after checks, then refresh main and select the next
-small-model capability.
+Next actions: commit the final narrow review repair, rerun exact-head
+`scripts/pre-pr` with the serving owner, publish and merge after checks, then
+refresh main and select the next small-model capability.
 Align Request 120 records that pinned `std.http.accept()` allocates the whole
 request body before application validation, so the current 1 MiB HTTP body cap
 is post-read. The endpoint stays loopback-only until Align supplies a bounded
@@ -34,8 +33,10 @@ speed claim or paired benchmark. `gmake build`, `gmake fmt`, and
 existing Qwen3.5 generation owner also passed after the first review repair.
 Executable `scripts/pre-pr` passed at `21a1d0da`; the final review found one
 unsafe graph-invalidation swallow and one unimplementable resource-specific
-HTTP 503 promise. Both are corrected in the current repair, and the exact-head
-preflight must be rerun after commit. Compute-failure injection, descriptor-growth
+HTTP 503 promise. Both were corrected in `fbdf3370`, whose exact-head preflight
+passed. A final full-diff review found one prefill-graph cleanup failure path;
+the current narrow repair sends the error before terminating and needs a new
+exact-head preflight. Compute-failure injection, descriptor-growth
 measurement, SDK integration, and paired native-CLI serving timing are explicit
 deferrals in `docs/specs/openai-local-serving.md`.
 
