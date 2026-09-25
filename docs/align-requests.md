@@ -1495,14 +1495,14 @@ reload. Acceptance is IR shape, closed by a new arch-neutral owner
 
 ### Request 108: attach `!range` to slice/array length loads so a length is known non-negative (2026-09-18)
 
-Status: ALIGN_MERGED; named scan repaired, uncached borrowed-header residual remains
+Status: ALIGN_MERGED; uncached borrowed-header residual fixed in Align, consumer measurement pending
 Priority: medium
 Blocking: no
 Blocked gate or slice: none
 Independent work that may continue: all other loop and kernel work; nothing in align-llm can express this fact from source
-Resume condition: preserve the length fact on uncached borrowed-header loads, then repeat the residual and consumer measurements
-Align commit or pull request: [sanohiro/align#1111](https://github.com/sanohiro/align/pull/1111) (merge commit `e26a0f48f3b8eade2e5dd14c27f4c21a0e47985b`); residual correction [sanohiro/align#1166](https://github.com/sanohiro/align/pull/1166), merge `a6c8ce57`; closed issue [sanohiro/align#1080](https://github.com/sanohiro/align/issues/1080)
-align-llm verification: same-source syntactic clamp census 50 at `d9b0df32` -> 45 at `5c7af9e5`, superseding the earlier unreproduced count of 13; named `kv_plane$all_zero` is vectorized without a clamp, but the uncached-header residual below remains; greedy/sampler owners and scripts/run-tokenizer-smoke pass
+Resume condition: repin to Align `829e1da8` and repeat the named residual and consumer measurements
+Align commit or pull request: [sanohiro/align#1111](https://github.com/sanohiro/align/pull/1111) (merge commit `e26a0f48f3b8eade2e5dd14c27f4c21a0e47985b`); residual corrections [sanohiro/align#1166](https://github.com/sanohiro/align/pull/1166), merge `a6c8ce57`, and [sanohiro/align#1170](https://github.com/sanohiro/align/pull/1170), merge `829e1da8`; [sanohiro/align#1080](https://github.com/sanohiro/align/issues/1080) closed after provider verification
+align-llm verification: same-source syntactic clamp census 50 at `d9b0df32` -> 45 at `5c7af9e5`, superseding the earlier unreproduced count of 13; named `kv_plane$all_zero` is vectorized without a clamp, but the uncached-header residual remained at that pin; the `829e1da8` correction has not yet been measured in align-llm; greedy/sampler owners and scripts/run-tokenizer-smoke pass
 
 Discovered during the Mac-native binary optimization audit of length clamps (`src/kv_plane.align`, `src/tokenizer_qwen2.align`, `src/moe_decode_step.align`):
 1. A slice or array `len` field is non-negative by construction, but the load that materializes it carries no metadata, so LLVM must assume it can be negative. Every loop bounded by `len` pays an `llvm.smax(len, 0)` clamp, every two-length loop additionally pays `llvm.umin`, and the vectorizer picks a narrower width because the trip count is not provably positive.
@@ -1592,8 +1592,22 @@ exact identified `d9b0df32` reference image and 45 at `5c7af9e5`; the earlier
 count of 13 does not reproduce and is superseded for this comparison. The
 historic 351 baseline was not revalidated. These syntactic counts do not
 attribute every remaining clamp to a view length; the named residual has
-direct IR evidence. The new finding is recorded locally with an upstream
-comment draft; it has not been posted to #1080 during this audit.
+direct IR evidence. The finding was posted to reopened Align issue #1080.
+
+### Align uncached-header correction (2026-09-23)
+
+PR [#1170](https://github.com/sanohiro/align/pull/1170), merge `829e1da8`,
+splits uncached typed borrowed headers into scalar pointer and length loads at
+each use. The length load receives `!range` without enabling the separately
+gated cache, TBAA, or `noalias`. The exact allocation-plus-scan fixture has
+the range fact in raw and optimized IR and no `llvm.smax.i64` in its
+`allocated` function. Align also compiled the real
+`runtime_sampler.select_values` source locally: its borrowed `slice<f32>`
+length loads carry `!range` in both stages. A separate `smax(x, 1)` remains
+in that optimized function, so this is no full-image count or throughput
+claim. The 45-test `loop_facts` owner, bounded gate, Clippy, and Linux
+x86_64/ARM64/macOS CI passed. Request 108 remains `ALIGN_MERGED` pending
+consumer adoption and measurement, as specified in the resume condition above.
 
 ### Request 109: fuse the bounds check into one unsigned compare and eliminate monotone-induction in-loop checks (2026-09-18)
 
