@@ -448,7 +448,10 @@ its outstanding Linux owners remain active.
 
 ## Linux real-ggml qualification checkpoint
 
-Branch: `agent/linux-real-ggml-qualifications`, based on `main` `6149e993`.
+Original branch: `agent/linux-real-ggml-qualifications`, based on `main`
+`6149e993`, merged in PR #291. The focused profile A/B was run from an
+isolated checkout of that same source; its result is recorded on
+`agent/request103-linux-profile-disposition` for publication.
 Active capability: qualify the pending Linux real-ggml decode owners at managed
 Align `d9b0df32` on Linux x86_64 under WSL2. Both owners ran real models and
 failed their C' single-shot prefill comparisons; neither is accepted as a pass.
@@ -471,15 +474,21 @@ Completed work:
   two timing sites to Bash `time -p` and fixes the resolved-path extraction;
   the second full owner run used the timing repair. A focused one-prompt,
   16-step rerun passes with the identity parser repair and the MRD owner.
+- A bounded prompt-3, k=16 dev/release A/B on the same `6149e993` source,
+  Align `d9b0df32`, GGUF, transcript, pack and ggml object reproduces the
+  15741/4149 prefill/decode argmax split in both profiles. Both profiles have
+  identical decode hashes, identical prefill hashes and identical f32 bits at
+  logits 15741 and 4149 within each path. The Linux discrepancy does not
+  depend on Align's dev-versus-release optimization setting. No full owner
+  pass or scalar-ABI attribution follows from this focused comparison.
 
 Next actions in priority order:
 1. Diagnose the dense C' disagreement at k=1 with one bounded prefill/decode
    comparison, then classify it as ggml numeric behavior or a client defect.
-2. Diagnose OLMoE prompt 3 k=16's argmax swap, including the two near-tied
-   logits and the C' tolerance rule. Repeat only affected owners after a fix
-   or an explicitly revised acceptance rule.
-3. Run exact-head publication preflight and publish the reviewed Linux
-   measurement disposition when the candidate is stable.
+2. Publish the focused Linux A/B and Request 103 state in the reviewed
+   documentation PR. Align issue #1075 has the complete data and owns the
+   provider disposition. If a concrete correction changes the consumer
+   boundary, repeat its affected owner once at the merged pin.
 
 Latest durable verification:
 - `scripts/align-toolchain verify`: PASS at `d9b0df32`.
@@ -489,6 +498,9 @@ Latest durable verification:
 - `scripts/run-moe-decode-step`: FAIL C' at prompt 3 k=16; prompts 1 and 2 PASS.
 - `ALIGN_LLM_MOE_DECODE_STEP_PROMPTS=1 scripts/run-moe-decode-step`: PASS at
   16 steps with the timing and library-identity repairs, including MRD.
+- Focused prompt-3 k=16 `ggml-spike` dev/release A/B: both builds PASS their
+  decode and single-shot prefill invocations; both reproduce C' argmax
+  15741/4149 with byte-identical hashes and named logit bits across profiles.
 - `bash -n scripts/run-moe-decode-step` and `git diff --check`: PASS.
 
 Blockers and decisions:
