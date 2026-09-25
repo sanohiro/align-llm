@@ -51,6 +51,32 @@ def assert_error(port: int, body: object, status: int, code: str) -> None:
     assert (actual, parsed["error"]["code"]) == (status, code), (actual, parsed)
 
 
+def rss_kib(pid: int) -> int:
+    output = execute(["ps", "-o", "rss=", "-p", str(pid)]).strip()
+    return int(output)
+
+
+def assert_declared_body_cap(port: int, pid: int) -> tuple[int, int]:
+    before = rss_kib(pid)
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as connection:
+        connection.settimeout(5)
+        connection.sendall(
+            b"POST /v1/chat/completions HTTP/1.1\r\n"
+            b"Host: 127.0.0.1\r\n"
+            b"Content-Type: application/json\r\n"
+            b"Content-Length: 16777216\r\n"
+            b"Connection: close\r\n\r\n"
+        )
+        # No body bytes are sent. Refusal must precede body receive and close this connection.
+        try:
+            assert connection.recv(1) == b"", "declared over-limit request was not closed early"
+        except ConnectionResetError:
+            pass
+    after = rss_kib(pid)
+    assert after - before < 16 * 1024, (before, after)
+    return before, after
+
+
 def stream_request(port: int, body: dict, *, disconnect: bool = False) -> tuple[list[dict], float, float]:
     connection = http.client.HTTPConnection("127.0.0.1", port, timeout=40)
     started = time.perf_counter()
@@ -148,6 +174,9 @@ def main() -> None:
                 assert choice["finish_reason"] == expected_finish, choice
                 assert completion["usage"] == {"prompt_tokens": len(ids), "completion_tokens": expected_count,
                                                 "total_tokens": len(ids) + expected_count}, completion
+                body_cap_rss = assert_declared_body_cap(port, server.pid)
+                status, _, payload, _ = request(port, "POST", "/v1/chat/completions", chat)
+                assert status == 200 and json.loads(payload)["choices"][0]["message"]["content"] == expected
                 streamed = dict(chat, stream=True)
                 events, ttft, stream_latency = stream_request(port, streamed)
                 assert events[0]["choices"][0]["delta"]["role"] == "assistant"
@@ -190,7 +219,8 @@ def main() -> None:
                 assert status == 200 and json.loads(payload)["choices"][0]["message"]["content"] == expected
                 print(f"serving: pinned oracle parity, SSE, refusals, disconnect and recovery PASS; "
                       f"startup={startup:.3f}s nonstream={normal_latency:.3f}s "
-                      f"ttft={ttft:.3f}s stream={stream_latency:.3f}s")
+                      f"ttft={ttft:.3f}s stream={stream_latency:.3f}s "
+                      f"body_cap_rss_kib={body_cap_rss[0]}->{body_cap_rss[1]}")
             finally:
                 server.terminate()
                 try:

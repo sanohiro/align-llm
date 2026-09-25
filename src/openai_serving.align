@@ -239,6 +239,7 @@ pub fn run(generation: runtime_qwen35_generation.Session,
   }
   mut active := generation
   srv := http.serve("127.0.0.1", port)?
+  srv.max_request_body_bytes(MAX_BODY)
   loop {
     incoming := srv.accept()
     match incoming {

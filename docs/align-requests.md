@@ -671,6 +671,16 @@ fixed-array indexed stores to dynamic builder results in release single-unit
 and per-unit execution; its LLVM records contain inline `[38 x i64]` and
 `[72 x i64]` fields. These results do not turn the failed Linux owner into PASS.
 
+### Align issue disposition (2026-09-25)
+
+Align issue #1065 is closed: the fixed-array RFC's inline storage and zero
+Qwen decode-table heap-array construction are delivered. The controlled
+pre/post-migration comparison reproduced the same C′ mismatch with identical
+decode and prefill hashes, so the failure predates `[i64; N]` adoption.
+`scripts/run-decode-step` remains failed on Linux, Request 94 remains
+`ALIGN_MERGED`, and no performance claim or new Linux rerun follows from
+closing the language-feature issue.
+
 ### Request 95: default ThinLTO on --profile release or cross-module function inlining (2026-09-17)
 
 Status: ALIGN_MERGED
@@ -817,6 +827,15 @@ their corresponding old/new benchmark binaries are byte-identical and the
 samples drift, so no performance change is claimed. The
 [audit report](../eval/benchmarks/codex-binary-audit-2026-09-23/README.md)
 contains exact identities, the census tool, all samples and scope limits.
+
+### Align issue disposition (2026-09-25)
+
+Align issue #1066 is closed after Plan 74's admitted-body capability and the
+named `cached_f16`/`fused`/`handle_absent` sites were verified. The same-source
+283-site count remains above the suggested `<100` aggregate target; that target
+was client evidence outside the accepted admission contract, not a PASS.
+Request 95 stays `ALIGN_MERGED` with the explicit future policy-extension scope
+above. No further consumer rerun is requested for this issue disposition.
 
 ### Request 96: fix invalid empty !dbg metadata attachment in align_codegen_llvm dropdeep loop (2026-09-17)
 
@@ -16820,16 +16839,16 @@ any separately named owner requirements; these integration results do not silent
 
 ### Request 120: bound inbound `std.http` request bodies before allocation (2026-09-24)
 
-Status: PROPOSED
+Status: ALIGN_LLM_VERIFIED
 Priority: medium
 Blocking: no
-Blocked gate or slice: remote or untrusted OpenAI-compatible serving; loopback-only Qwen3.5 text serving continues with the documented admission limit
+Blocked gate or slice: none for request-body memory admission; OpenAI-compatible serving remains loopback-only by its product contract
 Independent work that may continue: loopback-only text chat, tokenizer parity, native model optimization, and dense-model support
-Resume condition: Align ships an explicit server request-body cap, align-llm updates `.align-revision`, and the real HTTP owner verifies over-limit refusal before allocation
-Align commit or pull request: tracking [sanohiro/align#1171](https://github.com/sanohiro/align/issues/1171); no implementation; pinned `5c7af9e54108fbe3a7b3d698c96a6dbc2da3e9c3`
-align-llm verification: `scripts/run-openai-serving-smoke` plus an over-limit request and bounded-memory observation at the adopted pin
+Resume condition: close after the consumer adoption PR merges
+Align commit or pull request: [PR #1172](https://github.com/sanohiro/align/pull/1172), merged as `53c70078fb41bcd0fe2ded4c7a1f181e43f0c1d9`; provider issue [#1171](https://github.com/sanohiro/align/issues/1171) closed
+align-llm verification: managed Align v0.8.1 pin `b20429be50d6ab889496a0589143320683b29aeb`; `scripts/run-openai-serving-smoke` PASS on Apple M1 with real Qwen3.5-0.8B Q4_0, pinned Metal llama.cpp oracle, a 16 MiB declared body refused before receiving any body byte, normal chat after refusal, and server RSS `181216 -> 181216 KiB`
 
-The pinned `std.http` `http_server.accept()` parses and retains the whole request before
+At the original pin, `std.http` `http_server.accept()` parsed and retained the whole request before
 returning `http_request_ctx`. The sibling implementation at `crates/align_runtime/src/lib.rs`
 uses 32 KiB reads with a 256 KiB head and a 1 GiB request-body limit; the shipped
 surface in `docs/impl/std-design/http.md` exposes `serve` and `accept` but no inbound
@@ -16838,7 +16857,7 @@ body-limit setter or bounded accept. `src/openai_serving.align` can reject a bod
 limit is therefore a response validation bound, not a memory-admission bound. A
 loopback-only endpoint can ship with that declared limit; an untrusted bind cannot.
 
-Proposed Align surface: `srv.max_request_body_bytes(limit: i64)` on the owned
+Original Align proposal: `srv.max_request_body_bytes(limit: i64)` on the owned
 `http_server`, configured before its first `accept()`, analogous to the existing
 HTTP client response-body cap. A positive limit bounds both Content-Length admission
 and incremental receive, closes only the offending connection, and returns an
@@ -16853,3 +16872,21 @@ bound, then handles another normal request. Cover malformed Content-Length and E
 request context cleanup, and the default behavior when no bound is configured in
 Align's server tests. The align-llm consumer sets 1 MiB before accepting and verifies
 a large body refusal followed by a normal chat, including memory observation.
+
+Align shipped answer (2026-09-25): `srv.max_request_body_bytes(limit: i64)` is a Pure setter
+on `http_server`. Positive limits through 1 GiB are accepted; zero restores the 1 GiB default;
+negative and above-maximum limits abort before changing the server. Each `accept()` snapshots
+the configured limit. A valid Content-Length above an explicit cap returns `Error.Invalid`
+before body allocation, closes only that connection, and leaves the listener and parked peers
+usable. Framed receive calls are clamped to the declared body remainder; the fixed 2 KiB
+request-head buffer can still co-read initial body bytes. Malformed requests, EOF, and the
+unset/default 1 GiB ceiling retain the established skip-and-wait behavior. Align's runtime,
+whole-program, checked-HIR/MIR, ABI, and export owners plus Linux x86_64/ARM64 and macOS CI
+passed. No align-llm source or fixture was changed by this provider delivery.
+
+Consumer verification (2026-09-25): `.align-revision` pins Align v0.8.1 and
+`src/openai_serving.align` sets `srv.max_request_body_bytes(1048576)` before the first
+`accept()`. The real-model serving owner compares the response with the pinned llama.cpp
+oracle, refuses a header declaring a 16 MiB body without waiting for body bytes,
+observes unchanged server RSS across that request, then serves another normal chat.
+SSE, malformed-input refusal, disconnect recovery, and shutdown/restart also pass.
