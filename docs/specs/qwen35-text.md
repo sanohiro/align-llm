@@ -118,6 +118,47 @@ comparisons. This proves neither a GPU backend ceiling nor a whole-request
 slowdown from a future custom implementation; it does show that a direct Metal
 Q4_0 matvec must beat an already tuned ggml kernel before replacing that seam.
 
+### Fused native Metal FFN probe
+
+The next bounded diagnostic tests an optimization unavailable to a standalone
+matvec: one native Metal dispatch reads the Q4_0 gate and up matrices for a
+Qwen3.5-2B `[2048,6144]` FFN and writes `silu(gate) * up` directly. A second
+native Q4_0 matvec produces the `[6144,2048]` down projection. The reference
+uses the pinned ggml/Metal graph with the same two projections,
+`ggml_swiglu_split`, and down projection. Compare both the gated intermediate
+and final F32 outputs, then five alternating paired synchronized timings for
+the gate/up/activation subgraph and the full FFN. Allocate and upload weights
+before timing; warm both paths. Use deterministic synthetic Q4_0 weights and
+F32 input, with no whole-model or production speed claim. The implementation
+and local build cost ceiling is 1,800 seconds and paired measurement ceiling
+is 300 seconds. A production candidate requires an exact real-model owner and
+the existing 15% whole-request improvement floor; isolated wins alone do not
+authorize a runtime backend change.
+
+The Apple M1 probe uses the pinned `bb4caa7` ggml/Metal backend and the same
+synthetic inputs on both paths. The direct native kernel fuses gate, up, and
+SwiGLU, reuses each input fragment across four output rows, and applies the
+same packed Q4_0 dot-product method as ggml; a second native kernel computes
+down. One complete intermediate and final output check after warm-up passed
+per run (worst absolute differences `1.2e-7` and `1.2e-5`). With a 128-thread
+group, three independent five-pair runs, each pair averaging 20 synchronized
+invocations, measured these ggml/native medians in milliseconds:
+
+| Run | Gate/up/SwiGLU | Full FFN | Native full-FFN wins |
+| --- | --- | --- | --- |
+| 1 | 0.7382 / 0.6872 | 1.0777 / 0.9728 | 5/5 |
+| 2 | 0.7654 / 0.7085 | 1.0756 / 1.0137 | 4/5 |
+| 3 | 0.7431 / 0.7071 | 1.0661 / 0.9457 | 5/5 |
+
+The full FFN improved by 5.8–11.3% in these runs. Threadgroups of 64 and
+256 did not give a consistent full-FFN win in their one-run sweeps. This
+demonstrates that a native fused GPU path can beat the isolated pinned ggml
+subgraph for this shape. It does not establish whole-request speed or justify
+replacing ggml: the source is synthetic, only one FFN shape and one GPU were
+tested, and the benchmark omits model loading, other graph nodes, and session
+scheduling. The next production decision requires a real-model integration
+owner and the 15% whole-request floor.
+
 The first independently useful consumer boundary is `--model-ir` plus `--pack` for this real GGUF. It permits validated model inspection, complete tensor coverage, and an owned layout artifact without claiming inference. The next boundary is `--tokenize` and `--detokenize` on this GGUF, with exact pinned llama.cpp token parity. The existing `--prepare-prompt` command then provides real text-only Qwen3.5 chat input IDs. Text-only native `align-runtime` prefill and decode through `--provider align-runtime` uses that tokenizer plus hybrid recurrent/attention state. Vision, MTP/speculative heads, MoE, and 27B are later consumers. Do not infer their support from a passing 0.8B case. No speed claim is made by this work.
 
 ## Public contract ledger
