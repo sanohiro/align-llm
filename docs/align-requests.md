@@ -1146,24 +1146,24 @@ provider work.
 
 ### Request 103: state Align's scalar ABI facts at call boundaries (`zeroext`/`signext`/`range`) (2026-09-18)
 
-Status: ALIGN_MERGED; bounded static consumer qualification complete
+Status: ALIGN_MERGED; bounded ABI consumer qualification complete, real-ggml owner still failing C'
 Priority: medium
 Blocking: no
-Blocked gate or slice: none
+Blocked gate or slice: Request 103 closure; OLMoE real-ggml owner fails prefill/decode C' on Linux x86_64
 Independent work that may continue: node-table and graph-construction work, all decode paths
-Resume condition: capable-host real-ggml qualification owned outside this macOS session
+Resume condition: Align disposition of the complete Linux A/B in [issue #1075 comment](https://github.com/sanohiro/align/issues/1075#issuecomment-5824675939); if a concrete correction changes the consumer boundary, run its affected owner once at the merged pin
 Align commit or pull request: implementation [sanohiro/align#1143](https://github.com/sanohiro/align/pull/1143), merge `1a446e5e`; tracking issue [sanohiro/align#1075](https://github.com/sanohiro/align/issues/1075)
-align-llm verification: `and wN, wM, #0x1` count in Align-generated code of the release image (763 across 343 functions today), instruction count of `olmoe_nodes$build_range`'s inner loop (13 per node row today), plus scripts/run-moe-decode-step
+align-llm verification: the same-source scalar-ABI call-boundary A/B removes three masks at both named call sites; the original whole-image 763-mask and 13-instruction counts are historical baselines, not accepted ABI gates. `scripts/run-moe-decode-step` remains failed at Linux prompt 3 k=16 C'; the focused dev/release comparison below reproduces the split identically and does not supply full runtime acceptance.
 
 Discovered during the Mac-native binary optimization audit of boolean call boundaries (`src/layer_olmoe.align:1785`, `src/olmoe_nodes.align:41-47`):
 1. Align lowers `bool` to LLVM `i1` and emits no parameter or return attribute for it. In 746,869 lines of optimized whole-program IR there are 0 `zeroext`, 0 `signext` and 0 `!range`. Because neither side of a call can assume the other normalized the value, the callee masks its result and every caller masks each `bool` argument: 763 such masks across 343 Align functions (866 in the whole image including the Rust runtime).
 2. The measured instance is `layer_olmoe$mm_row_issued_at`, emitted as `define i1 @...(i64, i1, i1, i1)` with plain `i1` in all four positions. The callee ends with `and w0, w8, #0x1`, and the caller `olmoe_nodes$build_range`'s hottest node-building loop re-masks all three arguments every iteration — 3 of 13 instructions in the loop body, on values that do not change across iterations, because the ABI argument registers are clobbered by the call. `qwen_nodes$build_range` has the same shape.
 3. Sibling evidence for the cause: `mark_borrow_param_contracts_at` (`crates/align_codegen_llvm/src/lib.rs:7216-7239`) is the only place Align attaches parameter attributes, and it has no scalar path at all — it `continue`s on every mode that is not `Borrow` and for `Borrow` adds only `nonnull`, `captures(none)` and `readonly`. `Ty::Bool` parameters and boolean returns get nothing in `declare_fn` (`:7077`) or `declare_imported_fn` (`:7164`); the only other per-function attribute Align emits is `nounwind` (`:7247`).
 4. Proposed Align surface: one total scalar-ABI rule rather than an `i1`-only patch, mapping every Align scalar type to the attribute its own representation truthfully implies — `zeroext` on `i1` parameters and returns; `range(i8 0, 2)` for a `bool` carried in an `i8` slot; `zeroext` for `u8`/`u16`/`u32` and `signext` for `i8`/`i16`/`i32` narrower than the register; `range` over the valid scalar-value range for `char`; `range` over the tag domain for a fieldless enum. Implement as one `scalar_param_attrs(ty)` function derived from the same `Ty`-to-LLVM mapping codegen already performs, called from both declaration sites for parameters and returns alike including per-unit `pub fn`s, and kept independent of the borrow-contract pass. These are facts about Align's own representation produced by Align's own codegen, not facts minted from source spelling, and they are standard ABI parameter attributes rather than `llvm.assume`.
-5. Acceptance criteria:
-   - Every scalar row of the rule is stated in emitted IR, asserted by one codegen owner test per row in parameter and return position, including the cross-unit case where caller and callee are in different units.
+5. Original acceptance criteria, with the later disposition recorded below:
+   - Every admitted scalar row of the rule is stated in emitted IR, asserted by one codegen owner test per row in parameter and return position, including the cross-unit case where caller and callee are in different units.
    - `zeroext` appears on every `i1` parameter and `i1` return for a fixture with a `bool`-taking, `bool`-returning `fn`.
-   - Client evidence: `and wN, wM, #0x1` in Align-generated code drops from 763 to under 100, and `olmoe_nodes$build_range`'s inner loop drops from 13 to 10 instructions per node row.
+   - Original client targets, **superseded** by the bounded call-boundary A/B below: `and wN, wM, #0x1` in Align-generated code drops from 763 to under 100, and `olmoe_nodes$build_range`'s inner loop drops from 13 to 10 instructions per node row. The whole-image count mixed different client corpora and unrelated mask classes; the loop still needs register moves after ABI normalization is removed.
    - A caller of an inlined `bool` callee emits no residual mask.
 6. This is complementary to Requests 95, 97 and 98: inlining removes the call, while the scalar facts remove the masks that survive when the call cannot be removed and make the post-inlining cleanup possible. It is distinct from the borrowed view-header reload in Request 107, which is about the `{ptr,len}` aggregate rather than the scalar ABI.
 
@@ -1193,20 +1193,21 @@ classified fixed native shells as database-boundary work; those no-op adapters
 were removed before merge, and the final run correctly skipped all PostgreSQL
 service shards.
 
-Consumer-owned work remains: pin merge `1a446e5e`, rebuild the release image,
-recount the 763 Align-generated masks, inspect whether both node-builder loops
-drop from 13 to 10 instructions, and run `scripts/run-moe-decode-step`. Until
-those measurements pass, this request remains ALIGN_MERGED rather than
-ALIGN_LLM_VERIFIED.
+At this 2026-09-20 checkpoint, consumer-owned work was to pin merge
+`1a446e5e`, rebuild the release image, inspect the named call boundaries,
+and run `scripts/run-moe-decode-step`. The later bounded comparison below
+supersedes the original aggregate-count and loop-length targets. The real-ggml
+owner remains a separate unresolved acceptance target, so the request has not
+advanced beyond `ALIGN_MERGED`.
 
 ### align-llm residual verification (2026-09-22)
 
 The exact rebuilt final-pin image contains 905 `and wN, wM, #0x1` masks across 344 decoded Align
-function bodies, versus the 763-mask/343-function baseline and the requested under-100 target. The
-client result therefore regresses by 142 masks and does not meet acceptance. The two node-builder
-loop counts still need a separately bounded extraction, and `scripts/run-moe-decode-step` remains
-explicit N/A because the required llama instruments are absent, but neither can reverse the failed
-whole-image criterion. Corrected client evidence is posted to Align issue #1075 in comment
+function bodies, versus the 763-mask/343-function baseline and the original under-100 target. This
+was initially reported as a regression, but the comparison did not isolate the scalar ABI. At that
+checkpoint the two node-builder loop counts had not been extracted, and
+`scripts/run-moe-decode-step` was explicit N/A because the required llama instruments were absent.
+The historical client report is posted to Align issue #1075 in comment
 `5768920753`. The 905/763 whole-image comparison used different client source
 and counts stored and intra-function masks outside Plan 76's call-boundary
 contract; the two named loop extractions are still missing. Fresh provider-side
@@ -1268,6 +1269,31 @@ not provide a comparable current-client run on this host (early exit 133), so
 no numerical attribution to that compiler change is claimed. The Linux owner
 remains failed pending an exact-platform cause, with no accepted performance
 claim.
+
+### Focused Linux profile A/B (2026-09-25)
+
+At align-llm `6149e993`, managed Align `d9b0df32`, and the same Linux x86_64
+WSL2 host, OLMoE GGUF (`4ddc0e53`), transcript, pack, and ggml-base object
+(`1a9ae09b`), `ggml-spike` was built with `ALIGNC_CACHE=off` once at
+`--profile dev` and once at `--profile release`. Only prompt 3 (`import os`,
+input IDs `2948,7684`) was run through 16 decode steps and single-shot prefill
+at the identical `T + 16` token sequence. Both invocations returned `status:
+ok` in both profiles. The instrument transcript had 17 graphs; its
+`result_output` sum matched the same-flag `llama-debug` result exactly.
+
+| Profile | Path | Output SHA-256 | Argmax | Logit 15741 f32 bits | Logit 4149 f32 bits |
+| --- | --- | --- | ---: | --- | --- |
+| dev | decode k=16 | `e9e3211c8ee11477e28efda67ebcd513a7d5f55ef9e60a188d0b6ea577e84e48` | 4149 | `0x417780aa` | `0x4178f210` |
+| dev | single-shot prefill | `ebb69daad855aeec0df2807488ae46f7a44016f4d3365a9494c3644593383e8f` | 15741 | `0x417b1e72` | `0x417a36ce` |
+| release | decode k=16 | `e9e3211c8ee11477e28efda67ebcd513a7d5f55ef9e60a188d0b6ea577e84e48` | 4149 | `0x417780aa` | `0x4178f210` |
+| release | single-shot prefill | `ebb69daad855aeec0df2807488ae46f7a44016f4d3365a9494c3644593383e8f` | 15741 | `0x417b1e72` | `0x417a36ce` |
+
+The decode token IDs also agree across profiles. This rules out a
+dev-versus-release optimization dependence for the observed Linux split; it
+does not identify the prefill/decode numeric cause, make the full
+`scripts/run-moe-decode-step` owner pass, or attribute the split to the
+scalar-ABI change. Align issue #1075 owns interpretation and any provider
+correction.
 
 ### Request 104: lay out every sum type as a tagged union, including `Option` and `Result` (2026-09-18)
 
