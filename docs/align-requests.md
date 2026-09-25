@@ -16839,13 +16839,14 @@ any separately named owner requirements; these integration results do not silent
 
 ### Request 120: bound inbound `std.http` request bodies before allocation (2026-09-24)
 
-Status: ALIGN_LLM_VERIFIED
+Status: CLOSED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none for request-body memory admission; OpenAI-compatible serving remains loopback-only by its product contract
 Independent work that may continue: loopback-only text chat, tokenizer parity, native model optimization, and dense-model support
-Resume condition: close after the consumer adoption PR merges
+Resume condition: none; provider and consumer acceptance are complete
 Align commit or pull request: [PR #1172](https://github.com/sanohiro/align/pull/1172), merged as `53c70078fb41bcd0fe2ded4c7a1f181e43f0c1d9`; provider issue [#1171](https://github.com/sanohiro/align/issues/1171) closed
+align-llm adoption: [PR #306](https://github.com/sanohiro/align-llm/pull/306), merged as `0ddf11843652600bcfa9378dbd9b5542dc8ad651`
 align-llm verification: managed Align v0.8.1 pin `b20429be50d6ab889496a0589143320683b29aeb`; `scripts/run-openai-serving-smoke` PASS on Apple M1 with real Qwen3.5-0.8B Q4_0, pinned Metal llama.cpp oracle, a 16 MiB declared body refused before receiving any body byte, normal chat after refusal, and server RSS `181216 -> 181216 KiB`
 
 At the original pin, `std.http` `http_server.accept()` parsed and retained the whole request before
