@@ -61,6 +61,11 @@ binary/model/input identities. It again counted 663/682 decode dispatches and
 6.140, 6.647 and 7.046 ms; full/pruned graph medians were 29.675/23.498 ms.
 Both runs remain in the receipt. These positive diagnostic deltas support the
 projection-cost estimate, without making the skipped output valid.
+After review, a third campaign verified every unpruned response against the
+normal output and recorded the Alignpack, geometry, options and checked bundle
+identities. It again counted 663/682 dispatches and 613 matching signatures;
+five paired deltas were 6.813, 7.951, 8.535, 5.836 and 5.977 ms. All three
+campaigns are retained, with the third marked as the verified reproduction.
 
 Metal System Trace captured the real requests and command encoders. Its exported
 recording states `Shader Timeline: Disabled` and has no shader interval rows.
@@ -82,6 +87,8 @@ Align requests and three pinned llama.cpp iterations for the dispatch census,
 then runs two warmup plus five alternating full/pruned pairs. It refuses changed
 graph shape or workload counts. Raw local logs and compiled probes go in a new
 diagnostic directory; the JSON output retains samples and SHA256 identities.
+It verifies every full-arm response before accepting a pruning pair, and checks
+the actual bundle artifacts against their manifest before reporting an identity.
 
 The config is the same measurement shape as `scripts/measure-host-reuse`:
 

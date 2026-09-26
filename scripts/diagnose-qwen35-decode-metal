@@ -27,6 +27,24 @@ def digest(path):
         return hashlib.file_digest(source, 'sha256').hexdigest()
 
 
+def verified_bundle(directory):
+    manifest_path = Path(directory) / 'manifest.json'
+    manifest = json.loads(manifest_path.read_text())
+    if manifest.get('artifact_kind') != 'GPU_BACKEND_BUNDLE' or not manifest.get('bundle_id'):
+        raise ValueError('invalid backend bundle manifest')
+    artifacts = manifest.get('artifacts')
+    if type(artifacts) is not list or not artifacts:
+        raise ValueError('backend bundle has no artifacts')
+    for item in artifacts:
+        path = item.get('path')
+        if type(path) is not str or Path(path).is_absolute() or '..' in Path(path).parts:
+            raise ValueError('invalid bundle artifact path')
+        candidate = Path(directory) / path
+        if candidate.stat().st_size != item['bytes'] or digest(candidate) != item['sha256']:
+            raise ValueError('backend bundle artifact identity differs')
+    return dict(bundle_id=manifest['bundle_id'], manifest_sha256=digest(manifest_path))
+
+
 def build_probes(include, directory):
     dispatch = ROOT / 'scripts/trace-qwen35-metal-dispatch.m'
     prune = ROOT / 'scripts/diagnose-qwen35-projection-prune.c'
@@ -202,7 +220,7 @@ def census(cfg, probes, input_ids, rendered, directory):
                 normal_rendered_output=text, reference_generated_ids=generated)
 
 
-def projection_pairs(cfg, probe, directory):
+def projection_pairs(cfg, probe, directory, expected_output):
     servers = []
     try:
         for name, skip in (('full', 0), ('skip', 1)):
@@ -215,6 +233,8 @@ def projection_pairs(cfg, probe, directory):
                 log.seek(0, os.SEEK_END)
                 before = log.tell()
                 row = request(port)
+                if name == 'full' and row['output'] != expected_output:
+                    raise ValueError('unpruned diagnostic output differs from the normal reference')
                 log.flush()
                 log.seek(before)
                 lines = log.read().decode('utf-8', 'replace').splitlines()
@@ -258,9 +278,14 @@ def main():
     built = build_probes(args.ggml_include, args.diagnostic_dir)
     input_ids, rendered = prepare_fixture(cfg, args.input_ids, args.diagnostic_dir)
     dispatch = census(cfg, built, input_ids, rendered, args.diagnostic_dir)
-    projection = projection_pairs(cfg, built['prune'], args.diagnostic_dir)
+    projection = projection_pairs(cfg, built['prune'], args.diagnostic_dir,
+                                  dispatch['normal_rendered_output'])
     report = dict(schema_version=1, status='DIAGNOSTIC_ONLY',
                   model_sha256=digest(cfg['model']),
+                  pack_sha256=digest(cfg['pack']),
+                  geometry_sha256=digest(cfg['geometry']),
+                  options_sha256=digest(cfg['candidate']['options']),
+                  backend_bundle=verified_bundle(cfg['candidate']['lib']),
                   align_sha256=digest(cfg['candidate']['binary']),
                   llama_sha256=digest(cfg['llama']),
                   fixture_sha256=digest(args.input_ids),
