@@ -2,6 +2,42 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Qwen3.5 shared-logits boundary trial (2026-09-27)
+
+Branch `agent/native-metal-ffn-integration`, old-binary control `57fd7a6b`.
+The current working tree contains a default-off `ALIGN_LLM_SHARED_LOGITS=1`
+trial. The real 2B output resides in a shared Metal buffer; the Align-owned
+greedy scan can borrow it through a checked thin ABI after synchronized graph
+compute. The 993,280-byte copied readback disappears. Three real full-logit
+vectors and 336 state-plane hashes match the old binary exactly; 2B/0.8B
+generation, 2B HTTP/SSE and generic generation owners pass. Five alternating
+2B worker and HTTP/SSE pairs across 64/16, 200/32 and 330/64 have mixed
+results; no repeatable request gain and pinned llama.cpp remains faster. Keep
+the mode default-off. `docs/qwen35-shared-logits-trial.md` and the checked-in
+receipts contain the comparison. The singleton K/V copy elimination and ggml
+GPU argmax trials also passed local correctness but lost their real-request
+speed tests; their code was removed and their closures are in
+`docs/specs/gpu-runtime-performance.md`. Raw diagnostic patches/logs remain
+untracked under the resolved Git common directory. This working tree has not
+been published or merged. One host-native comprehensive `codex review
+--uncommitted` found a valid intermediate-prefill scan regression. It was
+repaired without changing the trial approach. Real-shim build, 2B generation
+with full prefill logits, same-binary 200/16 HTTP/SSE and strict Python
+boundary checks pass after repair; the complete review log is in local
+diagnostics. Request 123 records the non-blocking Align borrowed-view return
+gap.
+
+Next: complete the local checkpoint and choose a larger unit of GPU work. The
+paired-load Q6_K projection probe already passed exact real activations but
+showed no stable gain, so do not repeat that strategy. Test either a multi-stage
+gate/up/activation/down path or hierarchical GPU argmax after a bounded local
+real-data test. The latter needs first-index-tie and finite semantics; the
+existing single-threadgroup ggml argmax slowed decode. Require exact real
+logit/state comparison and alternating whole-request timing at integration.
+CPU/CUDA Qwen3.5 admission and Gemma semantics remain deferred in the backend
+parity register. Do not infer an M1 speed gain from M3/M4/M5 papers or from
+the invalid-output projection-pruning diagnostic.
+
 ## Qwen3.5 mapped-weight trial (2026-09-27)
 
 Branch `agent/native-metal-ffn-integration`, baseline `9c61d3f9`, reviewed

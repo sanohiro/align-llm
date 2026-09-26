@@ -200,6 +200,116 @@ pack-offset pointer placement is checked in the shim. Full GPU-weight readback,
 an isolated load-only clock and whole-system physical-memory attribution remain
 explicitly deferred while the mode is experimental and default-off.
 
+### Single-token Qwen3.5 attention layout trial (2026-09-27)
+
+The actual 2B Metal decode trace contains a `permute` plus `contiguous` copy for
+each full-attention K and V projection. With one token, a contiguous
+`[head_dim, kv_heads, 1]` projection has the same element order as
+`[head_dim, 1, kv_heads]`. The Qwen3.5 builder may select a metadata-only reshape
+for K after RoPE and V after projection at `count == 1`; multi-token prefill keeps
+the existing permute and copy. The shim must reject a noncontiguous reshape
+input rather than assume layout. No ABI, retained buffer, state owner, model IR,
+format, or public configuration changes. The previous binary is the rollback
+control; ggml still runs the remaining graph and compute kernels.
+
+Before timing, compare actual 2B final-prefill and decode logits against the
+unchanged binary at the existing predeclared absolute bound 0.01 and identical
+argmax, plus exact resident-state hashes and generated output. Include repeated
+requests and 0.8B owner qualification. The operation change should preserve
+element order exactly; any numerical difference needs investigation. Then run
+at least five alternating old/new/pinned-llama real 200/32 requests with the
+same GGUF, pack, prompt IDs and options, plus a shorter and longer condition;
+report graph dispatch counts, prefill, decode, complete request, load and memory.
+The campaign ceiling is 900 seconds, request ceiling 180 seconds, and no extra
+retained device allocation is allowed. Adoption depends on measured real effect,
+regressions and maintenance cost without a percentage floor. Build failure,
+noncontiguous source, or owner failure reverts this trial before timing.
+
+Local closure: the implementation passed 2B/0.8B generation owners; three 2B
+full-vocabulary captures were bit-identical and 336 resident-state hashes
+matched. Metal decode dispatches fell from 663 to 651, but five-pair worker and
+HTTP/SSE measurements found no repeatable request or decode gain. The trial
+code was removed; its patch and raw observations remain in local diagnostics.
+This rejects the singleton-copy change as a speed optimization on this host,
+not a general claim about fusion or an independent backend.
+
+### GPU greedy readback trial (2026-09-27)
+
+Current Qwen3.5 greedy generation reads 248,320 F32 logits (993,280 bytes) to
+the host after every graph and scans them in Align. Test whether a device
+argmax followed by a four-byte readback reduces the actual request boundary.
+The existing ggml Metal `ARGMAX` kernel is a local experiment: it selects the
+highest index among equal maxima, whereas Align's CPU greedy selects the lowest,
+and it does not report nonfinite values in the same way. It therefore cannot be
+treated as strict compatibility or adopted by default without a semantics fix.
+
+| Contract | Definition |
+| --- | --- |
+| Selection / owner | `ALIGN_LLM_GPU_GREEDY=0` or absent keeps full-logit readback and Align's existing greedy scan. `1` opts into the Qwen3.5 Metal trial; other values fail before allocation. Align owns mode selection, graph output, token selection, and the generation loop in normal and streaming sessions. CPU/CUDA and other model families are not admitted to this trial. |
+| Graph / ABI | A thin checked `op_argmax` shim wraps `ggml_argmax` only for one contiguous F32 vocabulary row and exposes one I32 scalar slot. The Qwen3.5 builder expands either that scalar or the existing logits output, including every state root. The mode enters all graph keys. The graph compute and memory allocator remain ggml; no separate C/C++ generation engine is added. |
+| Readback / lifetime | In mode `1`, Align reads exactly four bytes, checks the decoded index against `n_vocab`, and owns the returned token. Mode `0` retains the full F32 readback and finite-value checks. The scalar output lives through synchronized graph compute/readback; failures leave the existing unhealthy-session cleanup. No persisted or exchanged format changes. |
+| Correctness | Before timing, compare exact greedy tokens on real 2B and 0.8B short/chunked/wider prompts, retained repeated and streaming requests, plus full resident-state hashes. Capture baseline full logits separately and confirm all compared vectors are finite and their maximum is unique. The trial remains explicitly non-strict for untested ties/nonfinite values. Do not relax the CPU path's existing rules. |
+| Measurement / ceiling | Same GGUF, pack, backend bundle, prompt IDs and generation counts. Five alternating old/new/pinned-llama worker pairs and same-binary HTTP/SSE pairs at 64/16, 200/32 and 330/64 after two warmups. Report GPU graph/readback count, prefill, decode, whole request, startup and memory. Campaign <=900 s, request <=180 s; mode `1` may add one four-byte graph output but no retained full-vocabulary host buffer. No percentage floor. |
+
+Closure: parser and unsupported-backend refusal own construction/malformed
+cases; model graph and shim own shape, output lifetime and failure; normal and
+streaming generation own token range and state publication; 2B/0.8B owners,
+capture/state oracle and alternating measurements own success and regression.
+Session destruction and early exit retain existing cleanup. A speed gain only
+justifies further work on lowest-index tie and nonfinite behavior; it does not
+promote this provisional kernel to strict production use.
+
+Local closure: 2B/0.8B generation owners passed and 336 state hashes matched;
+three baseline full-logit vectors were finite with unique maxima. The four-byte
+readback was observed, but the existing Metal argmax added decode time: 200/32
+worker decode median 878.776 to 890.079 ms, and four of five whole-request
+worker pairs slowed. HTTP/SSE was mixed to adverse, including five of five
+slower 330/64 HTTP pairs. The trial code was removed; raw evidence and the
+replayable patch remain in local diagnostics. A single-threadgroup reduction
+over the 248,320-element row is the next kernel hypothesis, not a shipping
+result. The shared-output experiment below tests a different boundary.
+
+### Shared Metal logits view trial (2026-09-27)
+
+An actual synchronized 2B output probe found the logits tensor in a `MTL0`
+shared buffer; its host pointer matched all 993,280 bytes returned by the
+ordinary readback. Test a borrowed view of that exact output so Align's existing
+finite-checking, lowest-index-tie greedy implementation scans the same F32
+values without a second full-vector copy. This is restricted to a Metal shared
+buffer and is not a general backend assumption.
+
+| Contract | Definition |
+| --- | --- |
+| Selection / owner | `ALIGN_LLM_SHARED_LOGITS=0` or absent keeps the current copied readback; `1` selects the Qwen3.5 trial once per session; other values fail before allocation. Align owns the choice and the greedy scan in normal and streaming generation. Other model providers retain their current paths. |
+| Thin ABI / borrow | `align_gpu_slot_shared_view` returns a pointer only for an output node in a successfully executed graph, exactly one contiguous F32 vocabulary row, the expected byte extent, and a Metal shared buffer whose pointer lies within its checked allocation. It refuses private/other buffers. `ggml_ffi` creates a resource-tied borrowed `slice<u8>` from the pointer; the view is consumed immediately before graph reset, reuse, or device mutation. No C sampling or token logic. |
+| Lifetime / failure | Existing synchronized `runtime_execution.compute` remains mandatory before the view. The graph output and its owner stay live during Align's scan. The view cannot escape the read-choice call. Unsupported storage or malformed extent fails the opt-in session and uses existing unhealthy-session cleanup; mode `0` remains the rollback. No new retained device allocation, format, IR or graph identity change. |
+| Correctness | Before timing, compare real 2B/0.8B normal/streaming/repeated requests with pinned llama.cpp and old Align; 2B full-logit F32 bytes and all resident state hashes must be exact. Check invalid flag and unsupported/private buffer refusal. The CPU greedy function and its tolerance/finite/tie rules are unchanged. |
+| Measurement / ceiling | Same GGUF, pack, backend bundle, prompt IDs and output lengths; two warmups and at least five alternating pairs on 64/16, 200/32 and 330/64, with pinned llama worker and same-binary HTTP/SSE. Report copied bytes, prefill, decode, whole request, startup and memory. One campaign <=900 s and one request <=180 s. No percentage floor; adoption weighs actual benefit, regressions and the added borrow contract. |
+
+Closure: parser and shared-buffer refusal cover construction/malformed cases;
+the shim's executed-node and bounds checks cover success/failure and stale
+views; `ggml_ffi` confines the borrow to the device owner; both generation
+loops consume it before state advance; existing request cleanup handles early
+exit and failure. The full-logit oracle, state oracle and retained-session owners
+cover exactness and cross-request separation. CPU/CUDA and Gemma require their
+own storage/semantic admission before this mode can be reused.
+
+Local result: three full 2B output vectors and 336 state-plane hashes matched
+the old binary exactly; the opt-in view made zero full-logit `tensor_get` calls.
+The 2B/0.8B generation and 2B HTTP/SSE owners passed. Five-pair worker request
+medians at 64/16, 200/32 and 330/64 changed 574.549→572.263,
+1292.508→1288.627 and 2426.843→2426.037 ms, but only three of five pairs
+improved in each condition. SSE slowed in the first two conditions. Pinned
+llama.cpp remained faster in all worker request medians. Retain the opt-in mode
+for bounded follow-up; do not enable it by default or claim a request speedup.
+See `docs/qwen35-shared-logits-trial.md` and its complete receipts. Removing a
+copy does not prove that the same cold shared-memory scan is cheaper; the next
+performance candidate must address a larger measured part of graph execution.
+Review found and repaired intermediate-prefill greedy scanning when the
+full-logits mode spans chunks. The copied mode retains its earlier intermediate
+readback, while only final-chunk logits are sampled in both modes; the 200/16
+same-binary HTTP/SSE and longer real generation owners pass after repair.
+
 ### Controlled upload and prefill trial (2026-09-26)
 
 Hypotheses: synchronous tensor upload removes the Metal shared-buffer staging,

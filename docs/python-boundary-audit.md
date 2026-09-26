@@ -20,6 +20,8 @@ execute the product graph.
 HTTP/SSE caller compares explicit native binaries, checks exact output and token
 counts, and retains alternating timing samples. Explicit per-arm upload/batch/mapped-weight settings and optional larger prompt cases support the controlled trials. It never supplies inference
 logic or participates in product startup. Workload collections are validated before launching servers.
+The shared-logits setting only selects an explicit native trial arm; Python
+never reads a product logit or chooses a token.
 `scripts/test-host-reuse-config` is `CI_OR_DEVELOPER_TOOL`: it checks measurement-input refusal without loading a model or starting a server.
 
 `scripts/test-development-preflight` remains `BUILD_OR_DEVELOPER_TOOL`; its hosted
@@ -39,6 +41,8 @@ paired changes and wins instead of a percentage-based adoption verdict.
 `scripts/measure-native-swiglu` is `BENCHMARK_OR_MEASUREMENT`: it launches
 native products/reference executables, captures timing and checks output/counts.
 Per-arm upload/batch/mapped-weight environment, first-request timing and optional uninstrumented wall-only runs remain independent measurement inputs; expected graph counts follow the recorded batch width.
+Its shared-logits setting remains a measurement input to explicit native
+binaries, outside normal product execution.
 Its optional `--native-control` compares two explicit native developer builds
 without changing the product interface. `--native-disabled` fixes both builds
 to the unfused path for host-only comparisons. It is never imported or launched by product execution.

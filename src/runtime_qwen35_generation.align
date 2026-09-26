@@ -52,6 +52,20 @@ fn key(borrow owner: ggml_ffi.GpuDevice, borrow options: runtime_options.Runtime
   return encoding.hex_encode(digest[0..digest.len()]).clone()
 }
 
+fn read_choice(borrow owner: ggml_ffi.GpuDevice, borrow slots: slice<u8>,
+  shared_logits: bool, n_vocab: i64, borrow output: slice<u8>, label: str,
+) -> Result<i64, Error> {
+  if shared_logits {
+    token := ggml_ffi.gpu_slot_shared_greedy(owner, slots, runtime_qwen35_model.OUTPUT,
+      n_vocab * 4, label) else { return Err(Error.Invalid) }
+    return Ok(token)
+  }
+  if output.len() != n_vocab * 4 { return Err(Error.Invalid) }
+  ggml_ffi.gpu_slot_get(owner, slots, runtime_qwen35_model.OUTPUT,
+    output, 0, output.len(), label) else { return Err(Error.Invalid) }
+  return runtime_generation.greedy(output, -1)
+}
+
 fn contains(borrow ids: array<i64>, value: i64) -> bool {
   mut at := 0
   loop {
@@ -173,6 +187,7 @@ pub Session {
   prefill_chunk: i64,
   final_prefill_logits: bool,
   last_ffn_row: bool,
+  shared_logits: bool,
   decode_a_slots: buffer,
   decode_b_slots: buffer,
   decode_a_key: string,
@@ -325,6 +340,7 @@ pub fn create_session(owner: ggml_ffi.GpuDevice,
       mask_capacity: mask_capacity, prefill_chunk: config.prefill_chunk,
       final_prefill_logits: config.final_prefill_logits,
       last_ffn_row: config.last_ffn_row,
+      shared_logits: config.shared_logits,
       decode_a_slots: buffer.filled(SLOT_BYTES, 0 as u8),
       decode_b_slots: buffer.filled(SLOT_BYTES, 0 as u8),
       decode_a_key: "".clone(), decode_b_key: "".clone(),
@@ -332,7 +348,7 @@ pub fn create_session(owner: ggml_ffi.GpuDevice,
       stream_scalar: buffer.filled(4, 0 as u8),
       stream_positions: buffer.filled(16, 0 as u8),
       stream_mask: buffer.filled(mask_capacity * 4, 0 as u8),
-      stream_logits: buffer.filled(g.n_vocab * 4, 0 as u8),
+      stream_logits: buffer.filled(if config.shared_logits { 4 } else { g.n_vocab * 4 }, 0 as u8),
       first_request: true, healthy: true,
       stream_active: false, stream_state: runtime_qwen35_state.new(),
       stream_token: -1, stream_step: 0, stream_prompt_len: 0, stream_max_tokens: 0,
@@ -370,11 +386,13 @@ fn execute(borrow mut session: Session,
   mut token_bytes := token_storage.bytes()
   mut position_bytes := position_storage.bytes()
   mut mask_bytes := mask_storage.bytes()
-  mut logits_storage := buffer.filled(session.geometry.n_vocab * 4, 0 as u8)
+  mut logits_storage := buffer.filled(
+    if session.shared_logits { 4 } else { session.geometry.n_vocab * 4 }, 0 as u8)
   mut logits := logits_storage.bytes()
   mut state := runtime_qwen35_state.new()
   mut prefill_key := "".clone()
   mut offset := 0
+  mut token := -1
   loop {
     if offset >= prompt.len() { break }
     count := if prompt.len() - offset < session.prefill_chunk { prompt.len() - offset } else { session.prefill_chunk }
@@ -400,15 +418,21 @@ fn execute(borrow mut session: Session,
       token_bytes, position_bytes, mask_bytes)?
     runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, graph)?
     if emit_logits {
-      ggml_ffi.gpu_slot_get(session.owner, prefill_slots, runtime_qwen35_model.OUTPUT,
-        logits, 0, logits.len(), "q35_provider_prefill_logits") else {
-        return Err(Error.Invalid)
+      if offset + count == prompt.len() {
+        token = read_choice(session.owner, prefill_slots, session.shared_logits,
+          session.geometry.n_vocab, logits, "q35_provider_prefill_logits")?
+      } else if !session.shared_logits {
+        // Preserve the copied path's intermediate readback without sampling it.
+        ggml_ffi.gpu_slot_get(session.owner, prefill_slots, runtime_qwen35_model.OUTPUT,
+          logits, 0, logits.len(), "q35_provider_prefill_logits") else {
+          return Err(Error.Invalid)
+        }
       }
     }
     runtime_qwen35_state.finish(state, true)
     offset = offset + count
   }
-  mut token := runtime_generation.greedy(logits, -1)?
+  if token < 0 { return Err(Error.Invalid) }
   mut generated: array_builder<i64> := array_builder()
   generated.push(token)
   mut scalar_storage := buffer.filled(4, 0 as u8)
@@ -467,18 +491,13 @@ fn execute(borrow mut session: Session,
     active_graph := ggml_ffi.gpu_graph_lookup(session.owner, kind, current_key)
     if ggml_ffi.handle_absent(active_graph) { return Err(Error.Invalid) }
     runtime_execution.compute(session.owner, kind, current_key, active_graph)?
-    if kind == ggml_ffi.GPU_GRAPH_DECODE {
-      ggml_ffi.gpu_slot_get(session.owner, decode_a_slots, runtime_qwen35_model.OUTPUT,
-        logits, 0, logits.len(), "q35_provider_decode_logits") else {
-        return Err(Error.Invalid)
-      }
+    token = if kind == ggml_ffi.GPU_GRAPH_DECODE {
+      read_choice(session.owner, decode_a_slots, session.shared_logits,
+        session.geometry.n_vocab, logits, "q35_provider_decode_logits")?
     } else {
-      ggml_ffi.gpu_slot_get(session.owner, decode_b_slots, runtime_qwen35_model.OUTPUT,
-        logits, 0, logits.len(), "q35_provider_decode_logits") else {
-        return Err(Error.Invalid)
-      }
+      read_choice(session.owner, decode_b_slots, session.shared_logits,
+        session.geometry.n_vocab, logits, "q35_provider_decode_logits")?
     }
-    token = runtime_generation.greedy(logits, -1)?
     runtime_qwen35_state.finish(state, true)
     generated.push(token)
     step = step + 1
@@ -508,11 +527,13 @@ pub fn begin_stream(borrow mut session: Session,
   mut token_bytes := token_storage.bytes()
   mut position_bytes := position_storage.bytes()
   mut mask_bytes := mask_storage.bytes()
-  mut logits_storage := buffer.filled(session.geometry.n_vocab * 4, 0 as u8)
+  mut logits_storage := buffer.filled(
+    if session.shared_logits { 4 } else { session.geometry.n_vocab * 4 }, 0 as u8)
   mut logits := logits_storage.bytes()
   mut state := runtime_qwen35_state.new()
   mut prefill_key := "".clone()
   mut offset := 0
+  mut token := -1
   loop {
     if offset >= prompt.len() { break }
     count := if prompt.len() - offset < session.prefill_chunk { prompt.len() - offset } else { session.prefill_chunk }
@@ -538,16 +559,23 @@ pub fn begin_stream(borrow mut session: Session,
       token_bytes, position_bytes, mask_bytes)?
     runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, graph)?
     if emit_logits {
-      ggml_ffi.gpu_slot_get(session.owner, prefill_slots, runtime_qwen35_model.OUTPUT,
-        logits, 0, logits.len(), "q35_provider_prefill_logits") else {
-        return Err(Error.Invalid)
+      if offset + count == prompt.len() {
+        token = read_choice(session.owner, prefill_slots, session.shared_logits,
+          session.geometry.n_vocab, logits, "q35_provider_prefill_logits")?
+      } else if !session.shared_logits {
+        // Preserve the copied path's intermediate readback without sampling it.
+        ggml_ffi.gpu_slot_get(session.owner, prefill_slots, runtime_qwen35_model.OUTPUT,
+          logits, 0, logits.len(), "q35_provider_prefill_logits") else {
+          return Err(Error.Invalid)
+        }
       }
     }
     runtime_qwen35_state.finish(state, true)
     offset = offset + count
   }
   session.stream_state = state
-  session.stream_token = runtime_generation.greedy(logits, -1)?
+  if token < 0 { return Err(Error.Invalid) }
+  session.stream_token = token
   session.stream_step = 1
   session.stream_prompt_len = prompt.len()
   session.stream_max_tokens = max_tokens
@@ -631,14 +659,13 @@ pub fn stream_next(borrow mut session: Session) -> Result<Option<i64>, Error> {
   mut logits := session.stream_logits.bytes()
   current_a_slots := session.decode_a_slots.bytes()
   current_b_slots := session.decode_b_slots.bytes()
-  if kind == ggml_ffi.GPU_GRAPH_DECODE {
-    ggml_ffi.gpu_slot_get(session.owner, current_a_slots, runtime_qwen35_model.OUTPUT,
-      logits, 0, logits.len(), "q35_provider_decode_logits") else { return Err(Error.Invalid) }
+  session.stream_token = if kind == ggml_ffi.GPU_GRAPH_DECODE {
+    read_choice(session.owner, current_a_slots, session.shared_logits,
+      session.geometry.n_vocab, logits, "q35_provider_decode_logits")?
   } else {
-    ggml_ffi.gpu_slot_get(session.owner, current_b_slots, runtime_qwen35_model.OUTPUT,
-      logits, 0, logits.len(), "q35_provider_decode_logits") else { return Err(Error.Invalid) }
+    read_choice(session.owner, current_b_slots, session.shared_logits,
+      session.geometry.n_vocab, logits, "q35_provider_decode_logits")?
   }
-  session.stream_token = runtime_generation.greedy(logits, -1)?
   runtime_qwen35_state.finish(session.stream_state, true)
   session.stream_step = session.stream_step + 1
   return Ok(Some(session.stream_token))

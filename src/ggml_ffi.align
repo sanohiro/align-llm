@@ -1,6 +1,7 @@
 module ggml_ffi
 
 import ggml_ffi.internal.resource
+import runtime_greedy
 
 // R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md` sections 3.4 and 3.9). The
 // boundary package in this repository that contains an `extern` declaration or an `unsafe` block.
@@ -24,10 +25,10 @@ import ggml_ffi.internal.resource
 // carries the language-owned half of that as a recorded gap; this module is the application-side
 // answer and consumes no hypothetical surface.
 //
-// Everything above the extern block is safe: every wrapper returns a `Result` or a scalar, every
-// handle is an opaque `raw`, no view over foreign memory is ever formed, and no handle is ever
-// aggregated into a record or returned as a view. A function containing `unsafe` is inferred
-// Impure, so nothing here can enter a `par_map` — the danger stays visible and traceable.
+// Everything above the extern block is safe: wrappers return checked results or scalars. The
+// opt-in shared Metal output view is tied to its GPU owner and consumed before graph mutation;
+// its foreign pointer conversion remains in this boundary. A function containing `unsafe` is
+// inferred Impure, so nothing here can enter a `par_map`.
 
 // Section 3.4's status vocabulary, shared byte-for-byte with both C files. `0` is success; every
 // negative value maps to exactly one `R4_5_*` code in `code_for` below, which is the single place
@@ -419,6 +420,8 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_observation_state(owner: raw, field: i32) -> i64
   fn align_gpu_slot_get(owner: raw, slots: slice<u8>, index: i64,
     bytes: slice<u8>, offset: i64, size: i64) -> i32
+  fn align_gpu_slot_shared_view(owner: raw, slots: slice<u8>, index: i64,
+    expected_bytes: i64) -> raw
   fn align_gpu_device_close(owner: raw) -> ()
   // R5C section 3.4. The registry's own device selection for either kind, its numeric properties,
   // its buffer type's maximum length, and its two names.
@@ -1894,6 +1897,36 @@ pub fn gpu_slot_get(borrow owner: GpuDevice, borrow slots: slice<u8>, index: i64
       bytes, offset, size) as i64
     if status != STATUS_OK { gpu_note_failure(GPU_STATUS_COMPUTE, GPU_STAGE_READBACK) }
     return r5_result(status, label)
+  }
+}
+
+pub fn gpu_slot_shared_greedy(borrow owner: GpuDevice, borrow slots: slice<u8>,
+  index: i64, expected_bytes: i64, label: str,
+) -> Result<i64, Fault> {
+  gpu_failure_activity(GPU_STAGE_READBACK)
+  if expected_bytes < 4 || expected_bytes > 2147483647 {
+    gpu_note_failure(GPU_STATUS_CONFIG, GPU_STAGE_READBACK)
+    return Err(fault("CONFIG", label))
+  }
+  unsafe {
+    ptr := align_gpu_slot_shared_view(resource.raw(resource.borrow(owner)), slots,
+      index, expected_bytes)
+    if handle_absent(ptr) {
+      gpu_note_failure(GPU_STATUS_UNSUPPORTED, GPU_STAGE_READBACK)
+      return Err(fault("UNSUPPORTED", label))
+    }
+    view: slice<u8> := resource.view_from_raw(resource.borrow(owner), ptr,
+      expected_bytes) else {
+      gpu_note_failure(GPU_STATUS_CONFIG, GPU_STAGE_READBACK)
+      return Err(fault("CONFIG", label))
+    }
+    match runtime_greedy.greedy(view, -1) {
+      Ok(token) => { return Ok(token) },
+      Err(_) => {
+        gpu_note_failure(GPU_STATUS_COMPUTE, GPU_STAGE_READBACK)
+        return Err(fault("SHAPE", label))
+      },
+    }
   }
 }
 

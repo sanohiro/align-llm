@@ -16959,3 +16959,37 @@ Proposed surface: ordinary `pub LIMIT := module.LIMIT`, with no new syntax.
 Acceptance: whole/per-unit compilation folds imported public scalars and rejects
 private references and cycles deterministically; the two-module witness and an
 align-llm build pass. This is non-blocking and introduces no compatibility layer.
+
+### Request 123: return a resource view borrowed from a caller-owned resource
+
+Status: PROPOSED
+Priority: low
+Blocking: no
+Blocked gate or slice: factoring the checked shared Metal output view as a separate borrowed-view helper
+Independent work that may continue: form and consume the view inside `ggml_ffi.gpu_slot_shared_greedy`, then measure real requests
+Resume condition: shipped return-provenance analysis admits a view rooted in a borrowed input resource while rejecting a view of a callee-owned resource
+Align commit or pull request: none; observed at consumer pin `b20429be50d6ab889496a0589143320683b29aeb` and sibling source `c2f32a2d213fcba6678f7c4dfeca5dac11e308a9`
+align-llm verification: the first `gmake build` refused `src/ggml_ffi.align:1922:12` with “cannot return a value containing a slice that views a local array”; the in-module scan compiles and passes real 2B/0.8B generation owners
+
+Classification: compiler borrow/return-provenance gap, not an inference API
+requirement. The rejected helper took `borrow owner: GpuDevice`, called the
+checked native shared-output accessor, formed `slice<u8>` with
+`resource.view_from_raw(resource.borrow(owner), ptr, expected_bytes)`, and
+returned `Result<slice<u8>, Fault>`. The owner was supplied by the caller and
+remained live; the function neither created nor moved it. Sibling
+`docs/impl/03-types.md` specifies that a view carries the supplied resource
+root/generation through `Option` and aggregate wrappers. The existing compiler
+test `raw_views_cannot_escape_their_resource_generation` correctly rejects a
+view of a resource created in the callee. The observed diagnostic appears to
+treat the caller-rooted view as local in this result-return case. No proposed
+surface is consumed by align-llm: the current FFI function scans the borrowed
+view before returning a scalar token.
+
+Proposed surface: retain the existing `resource.view_from_raw` and borrowed
+resource syntax, with a return summary tied to the input owner's generation.
+Acceptance: whole-program and per-unit compiler tests admit a `Result` or
+`Option` view borrowed from a live input resource, preserve its provenance at
+the caller, and reject use after mutable owner access, move, replacement or
+drop. Keep the callee-owned-resource escape test rejecting. An align-llm helper
+may then return the checked view, and the exact-logit and retained-session
+owners must pass without broadening the view lifetime.

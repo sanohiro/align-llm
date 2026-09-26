@@ -39,20 +39,21 @@ def main():
         cfg['control']=dict(cfg['candidate'])
         cfg['control_commit']=None
     arms=('control','candidate') if args.native_ab else ('control','candidate','llama')
-    env = {k:v for k,v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_', 'ALIGN_LLM_SYNC_WEIGHT_UPLOAD', 'ALIGN_LLM_PREFILL_', 'ALIGN_LLM_MAPPED_WEIGHTS'))}
+    env = {k:v for k,v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_', 'ALIGN_LLM_SYNC_WEIGHT_UPLOAD', 'ALIGN_LLM_PREFILL_', 'ALIGN_LLM_MAPPED_WEIGHTS', 'ALIGN_LLM_SHARED_LOGITS'))}
     execution = {}
     for arm in ('control', 'candidate'):
         selected = cfg[arm].get('execution', {})
-        if set(selected) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights'}:
+        if set(selected) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights', 'shared_logits'}:
             raise ValueError('unknown execution setting')
         sync = selected.get('sync_weight_upload', '0')
         chunk = selected.get('prefill_chunk', '128')
         final_logits = selected.get('final_prefill_logits', '0')
         last_row = selected.get('final_ffn_row', '0')
         mapped = selected.get('mapped_weights', '0')
-        if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or (mapped == '1' and sync == '1'):
+        shared = selected.get('shared_logits', '0')
+        if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or shared not in ('0', '1') or (mapped == '1' and sync == '1'):
             raise ValueError('invalid execution setting')
-        execution[arm] = dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped)
+        execution[arm] = dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped, shared_logits=shared)
     report = dict(schema_version=2, artifact_kind='NATIVE_SWIGLU_MEASUREMENT',
                   align_revision=Path('.align-revision').read_text().strip(),
                   policy='2026-09-26-no-percentage-floor', status='INCOMPLETE',
@@ -98,6 +99,7 @@ def main():
                     e['ALIGN_LLM_PREFILL_FINAL_LOGITS']=execution[arm]['final_prefill_logits']
                     e['ALIGN_LLM_PREFILL_LAST_FFN_ROW']=execution[arm]['final_ffn_row']
                     e['ALIGN_LLM_MAPPED_WEIGHTS']=execution[arm]['mapped_weights']
+                    e['ALIGN_LLM_SHARED_LOGITS']=execution[arm]['shared_logits']
                     started=time.monotonic_ns()
                     with Session([c['binary'],'--runtime-session',cfg['model'],cfg['pack'],cfg['geometry'],c['options'],'0'],timeout=180,env=e) as session:
                         startup=time.monotonic_ns()-started

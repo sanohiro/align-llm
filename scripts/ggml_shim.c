@@ -4210,44 +4210,75 @@ int32_t align_ggml_slot_get(void *slots, int64_t index, void *bytes, int64_t off
     return ALIGN_GGML_OK;
 }
 
+static int align_gpu_slot_ready(struct align_gpu_device_state *state, struct ggml_tensor *tensor) {
+    int kind = 0;
+    int node = 0;
+    if (state == NULL || tensor == NULL || state->observation_failed) { return 0; }
+    if (state->last_slot_get_tensor != NULL && state->last_slot_get_tensor == tensor) {
+        return 1;
+    }
+    for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; kind++) {
+        if (!state->graph_prepared[kind] || state->graph_current_execution_count[kind] < 1) {
+            continue;
+        }
+        struct ggml_cgraph *graph = state->workspace_graphs[kind];
+        if (graph == NULL) { continue; }
+        for (node = 0; node < ggml_graph_n_nodes(graph); node++) {
+            if (ggml_graph_node(graph, node) == tensor) {
+                state->last_slot_get_tensor = tensor;
+                return 1;
+            }
+        }
+    }
+    return 0;
+}
+
 int32_t align_gpu_slot_get(void *owner, void *slots, int64_t index,
                            void *bytes, int64_t off, int64_t n) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     struct ggml_tensor *tensor = align_ggml_slot_tensor(slots, index);
-    int kind = 0;
-    int node = 0;
-    int found = 0;
     int32_t status = ALIGN_GGML_OK;
     if (state == NULL || tensor == NULL || state->observation_failed || n <= 0
         || state->observation_read_bytes > INT64_MAX - n
-        || state->observation_read_calls == INT64_MAX) {
-        return ALIGN_GGML_INIT;
-    }
-    if (state->last_slot_get_tensor != NULL && state->last_slot_get_tensor == tensor) {
-        found = 1;
-    } else {
-        for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; kind++) {
-            if (!state->graph_prepared[kind] || state->graph_current_execution_count[kind] < 1) {
-                continue;
-            }
-            struct ggml_cgraph *graph = state->workspace_graphs[kind];
-            if (graph == NULL) { continue; }
-            for (node = 0; node < ggml_graph_n_nodes(graph); node++) {
-                if (ggml_graph_node(graph, node) == tensor) {
-                    found = 1;
-                    state->last_slot_get_tensor = tensor;
-                    break;
-                }
-            }
-            if (found) { break; }
-        }
-    }
-    if (!found) { return ALIGN_GGML_SLOT; }
+        || state->observation_read_calls == INT64_MAX) { return ALIGN_GGML_INIT; }
+    if (!align_gpu_slot_ready(state, tensor)) { return ALIGN_GGML_SLOT; }
     status = align_ggml_slot_get(slots, index, bytes, off, n);
     if (status != ALIGN_GGML_OK) { return status; }
     state->observation_read_bytes += n;
     state->observation_read_calls += 1;
     return ALIGN_GGML_OK;
+}
+
+/* The caller borrows this synchronized shared Metal output only until its immediate greedy scan
+ * completes. Private Metal, other backends, stale graphs, non-F32 rows and bad extents refuse. */
+void *align_gpu_slot_shared_view(void *owner, void *slots, int64_t index, int64_t expected_bytes) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = align_ggml_slot_tensor(slots, index);
+    ggml_backend_buffer_t buffer;
+    const char *type_name;
+    void *base;
+    size_t capacity, offset;
+    if (state == NULL || tensor == NULL || expected_bytes < 4 || expected_bytes > INT32_MAX
+        || state->observation_read_bytes > INT64_MAX - expected_bytes
+        || state->observation_read_calls == INT64_MAX
+        || !align_gpu_slot_ready(state, tensor)
+        || tensor->type != GGML_TYPE_F32 || tensor->ne[0] != expected_bytes / 4
+        || expected_bytes % 4 != 0 || tensor->ne[1] != 1 || tensor->ne[2] != 1
+        || tensor->ne[3] != 1 || !ggml_is_contiguous(tensor)
+        || ggml_nbytes(tensor) != (size_t) expected_bytes
+        || tensor->buffer == NULL || tensor->data == NULL) { return NULL; }
+    buffer = tensor->buffer;
+    type_name = ggml_backend_buft_name(ggml_backend_buffer_get_type(buffer));
+    if (type_name == NULL || strncmp(type_name, "MTL", 3) != 0
+        || strstr(type_name, "_Private") != NULL) { return NULL; }
+    base = ggml_backend_buffer_get_base(buffer);
+    capacity = ggml_backend_buffer_get_size(buffer);
+    if (base == NULL || (uintptr_t) tensor->data < (uintptr_t) base) { return NULL; }
+    offset = (size_t) ((uintptr_t) tensor->data - (uintptr_t) base);
+    if (offset > capacity || (size_t) expected_bytes > capacity - offset) { return NULL; }
+    state->observation_read_bytes += expected_bytes;
+    state->observation_read_calls += 1;
+    return tensor->data;
 }
 
 
