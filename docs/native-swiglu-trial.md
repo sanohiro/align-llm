@@ -1,5 +1,9 @@
 # Native Metal SwiGLU trial — 2026-09-26
 
+Historical kernel checkpoint: `d2319d03` (also present at `b1d24207`).
+The [four-accumulator follow-up](native-swiglu-followup.md) changes the current
+experimental shader; reproduce this report using its historical patch.
+
 Decision: keep the opt-in experiment; do not enable it by default. Real-model
 correctness passes, but the measurements do not establish a repeatable request
 improvement. This is a measured integration result, not a conclusion about the

@@ -29,9 +29,9 @@ inference behind an opt-in switch. Actual weights/activations and 2B/0.8B
 correctness pass. Local and paired real-request measurements do not establish
 a repeatable gain, so production remains on the reference path. The
 [result and reproduction](../native-swiglu-trial.md) retain all samples and
-comparison limits. Next hypothesis: tune kernel work distribution on captured
-FFNs, then repeat the same request A/B; a larger fused boundary is the following
-candidate. Other Qwen sizes and Gemma reuse operation/device seams only when
+comparison limits. The [four-sum and launch-size follow-up](../native-swiglu-followup.md) also
+completes without repeatable speedup. Next: measure/optimize the real Q6_K output
+projection, then test a tiled FFN including down and partial-output reduction. Other Qwen sizes and Gemma reuse operation/device seams only when
 semantics match; full family coverage is not a prerequisite. See the trial
 ledger in `qwen35-text.md`. Serving and 2B adoption are complete.
 

@@ -822,3 +822,43 @@ resource or session failure path. The 2B and 0.8B generation owners pass; CPU/CU
 native fusion and full Gemma semantics are deferred. Same-bundle A/B does not
 establish a repeatable request gain. Next hypothesis is kernel work distribution,
 then a larger fused boundary if necessary; neither is an adoption promise.
+
+### Four-accumulator follow-up (2026-09-26)
+
+Hypothesis: the fused kernel's single Q4_0 partial-sum dependency chain may lose
+instruction-level parallelism relative to pinned ggml's four independent sums.
+Change only that inner reduction first; retain 128 threads, four output rows,
+selection, buffer ownership, barriers and all declared tolerances. Compiler
+reassociation means source shape alone is not proof of a hardware bottleneck.
+Implementation/build ceiling: 3,600 seconds; measurement ceiling: 1,800 seconds
+before reassessment. Check all 24 captured FFNs, alternate shape and alias
+fallback, then unchanged real generation and same-bundle OFF/ON requests.
+Retain the prior bundle and binary as the original native reference. If request
+benefit remains unestablished, broaden research to implementation reports and
+community discussions, verify technical leads against source and measurements,
+and select the next bounded experiment. No fixed percentage adoption rule.
+
+Follow-up measurement interface: `--native-control` enables the native switch
+for CONFIG's explicitly supplied control binary/bundle, as well as the candidate.
+It is mutually exclusive with `--native-ab`, preserves the pinned llama arm,
+and records `control_kind=prior_native_source`. Default control remains native
+OFF. Existing output schema 1, clocks, correctness checks and file ownership are
+unchanged; final request campaign is its owner. Invalid flag combinations fail
+argument validation before output creation. This permits a direct old-native /
+new-native comparison without attributing separate-day variation to the change.
+
+Second isolated probe: with four partial sums held fixed, change only the native
+launch from 128 to 64 threads (`ceil(hidden*8/64)` groups). Both are whole SIMD
+groups; no arithmetic, coverage, allocation or synchronization change is intended.
+Build ceiling 1,800 seconds and measurement ceiling 900 seconds before deciding
+whether to retain it. Local real-FFN checks and same-bundle request A/B own this
+probe; unsupported devices stay on the unchanged fallback. A loss is retained as
+evidence and the 128-thread kernel is restored, not silently tuned after selection.
+
+Follow-up outcome: four campaigns completed. No repeatable request gain was
+established. Retain four sums with 128 threads as a default-off numerical
+alignment improvement for the tested corpus; withdraw the 64-thread launch.
+All original correctness bounds remain. [Results, external research and exact
+reproduction](../native-swiglu-followup.md) contain all paired samples and limits.
+Next candidates are the real Q6_K output projection and a larger tiled FFN
+consumer including down, not another unmotivated threadgroup sweep.

@@ -37,9 +37,25 @@ The full CUDA self-test requires Linux `/proc` and was not qualified on macOS.
 One fresh independent comprehensive review of `d2319d03` against `ca609a41`
 completed CLEAN, findings none. No content repair was needed.
 
-Next performance hypothesis: threadgroup/rows-per-SIMD tuning on captured FFNs,
-then the same request A/B owner; if insufficient, test a larger
-normalization/FFN/down/residual boundary. Neither hypothesis is implemented.
+Completed follow-up: four independent Q4_0 partial sums at 128 threads, plus a
+separate 64-thread probe. Four five-pair, three-workload request campaigns do not
+establish repeatable speedup. Retain four sums/128 threads as default-off for its
+reference-like reduction and zero observed numerical differences; withdraw 64.
+The original native bundle and both follow-up variants remain replayable.
+
+Follow-up verification: all 24 captured FFNs, alternate shape and alias checks,
+2B/0.8B generation owners, 261 full-logit vectors (maximum difference zero),
+48 real decode fusions, and strict Python boundary pass. Measurement tools now
+support explicit old-native comparison with `--native-control`. See
+`docs/native-swiglu-followup.md` and its raw receipt. Desktop activity limits
+small-effect interpretation; no timing samples were removed.
+
+Research expanded to Reddit, Stack Overflow, upstream PRs and Apple guidance.
+The IQ3_XXS narrow-row idle-lane fix does not apply to this Q4_0 width-2048 path.
+Next: measure the Q6_K full-vocabulary projection with real final activations and
+try its load/work mapping; then a tiled gate/up/SiLU/down consumer with bounded
+partial-output reduction. Neither is implemented. Do not continue launch-size
+sweeps without a new concrete hypothesis. Finish one follow-up review first.
 CPU/CUDA fusion and Gemma semantic admission remain explicitly deferred until
 a useful Metal specialization is demonstrated. Existing fallbacks remain.
 All current changes belong to this capability; no unrelated work was present.

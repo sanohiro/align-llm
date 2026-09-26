@@ -95,15 +95,15 @@
 +inline float align_q40_dot(device const AlignQ40Block * weight, float sum_x,
 +                     thread float * scaled_x, uint half_lane) {
 +    device const ushort * packed = (device const ushort *)weight->packed + half_lane * 4;
-+    float accum = 0.0f;
++    float accum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
 +    for (uint i = 0; i < 4; ++i) {
 +        ushort q = packed[i];
-+        accum += scaled_x[i * 2] * float(q & 0x000f);
-+        accum += scaled_x[i * 2 + 1] * float(q & 0x0f00);
-+        accum += scaled_x[i * 2 + 8] * float(q & 0x00f0);
-+        accum += scaled_x[i * 2 + 9] * float(q & 0xf000);
++        accum[0] += scaled_x[i * 2] * float(q & 0x000f);
++        accum[1] += scaled_x[i * 2 + 1] * float(q & 0x0f00);
++        accum[2] += scaled_x[i * 2 + 8] * float(q & 0x00f0);
++        accum[3] += scaled_x[i * 2 + 9] * float(q & 0xf000);
 +    }
-+    return float(weight->scale) * (accum - 8.0f * sum_x);
++    return float(weight->scale) * (sum_x * -8.0f + accum[0] + accum[1] + accum[2] + accum[3]);
 +}
 +
 +kernel void align_q40_gate_up_swiglu(

@@ -26,7 +26,10 @@ def main():
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--pairs', type=int, default=5)
     parser.add_argument('--native-ab', action='store_true', help='same candidate binary/bundle with fusion disabled versus enabled; no reference rerun')
+    parser.add_argument('--native-control', action='store_true', help='enable native fusion on the explicitly supplied prior control build; retain reference arm')
     args = parser.parse_args()
+    if args.native_ab and args.native_control:
+        parser.error('--native-ab and --native-control are mutually exclusive')
     if args.pairs < 5 or args.output.exists():
         parser.error('at least five pairs and a new output path are required')
     cfg = json.loads(args.config.read_text())
@@ -38,7 +41,7 @@ def main():
     report = dict(schema_version=1, artifact_kind='NATIVE_SWIGLU_MEASUREMENT',
                   align_revision=Path('.align-revision').read_text().strip(),
                   policy='2026-09-26-no-percentage-floor', status='INCOMPLETE',
-                  control_kind='same_binary_same_bundle_native_off' if args.native_ab else 'unchanged_align_source',
+                  control_kind='same_binary_same_bundle_native_off' if args.native_ab else ('prior_native_source' if args.native_control else 'unchanged_align_source'),
                   model_sha256=digest(cfg['model']), ggml_commit=Path('.llama-revision').read_text().strip(),
                   identities={name:digest(cfg[name]['binary']) for name in ('control','candidate')},
                   reference_sha256=digest(cfg['llama']), trace_sha256=digest(cfg['trace']),
@@ -73,7 +76,7 @@ def main():
                 def align(arm):
                     c=cfg[arm]
                     e=dict(env,DYLD_LIBRARY_PATH=c['lib'],DYLD_INSERT_LIBRARIES=cfg['trace'],
-                           ALIGN_LLM_NATIVE_SWIGLU='1' if arm=='candidate' else '0')
+                           ALIGN_LLM_NATIVE_SWIGLU='1' if arm=='candidate' or args.native_control else '0')
                     started=time.monotonic_ns()
                     with Session([c['binary'],'--runtime-session',cfg['model'],cfg['pack'],cfg['geometry'],c['options'],'0'],timeout=180,env=e) as session:
                         startup=time.monotonic_ns()-started
