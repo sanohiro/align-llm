@@ -22,15 +22,18 @@ align-runtimeは、重要な技術spikeと小さな実装を並行して進め�
 
 ## 2. Capability delivery model
 
-### Active native FFN integration (2026-09-26)
+### Completed native FFN trial (2026-09-26)
 
-Continue from the merged native Metal FFN probe: authenticate actual 2B FFN
-quantization and shapes, validate real weights/activations, connect an opt-in
-fusion to the Align-built graph, then measure local and request effects against
-unchanged Align and pinned llama.cpp. Preserve the reference path. Other Qwen
-sizes and Gemma reuse operation/device seams only when their semantics match;
-full family coverage is not a prerequisite. See the trial ledger in
-`qwen35-text.md`. Serving and 2B adoption are complete.
+The native Q4_0 gate/up/SiLU specialization is connected to Align-built real
+inference behind an opt-in switch. Actual weights/activations and 2B/0.8B
+correctness pass. Local and paired real-request measurements do not establish
+a repeatable gain, so production remains on the reference path. The
+[result and reproduction](../native-swiglu-trial.md) retain all samples and
+comparison limits. Next hypothesis: tune kernel work distribution on captured
+FFNs, then repeat the same request A/B; a larger fused boundary is the following
+candidate. Other Qwen sizes and Gemma reuse operation/device seams only when
+semantics match; full family coverage is not a prerequisite. See the trial
+ledger in `qwen35-text.md`. Serving and 2B adoption are complete.
 
 ### Prior Qwen3.5 text lane (2026-09-24)
 

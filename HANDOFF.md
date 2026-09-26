@@ -4,7 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Active native FFN integration (2026-09-26)
 
-Branch: `agent/native-metal-ffn-integration`, based on `ca609a41`.
+Branch: `agent/native-metal-ffn-integration`, based on `ca609a41`; implementation
+and measurements committed at `d2319d03`.
 The merged synthetic FFN probe is the starting point. The current inference
 policy in `docs/specs/gpu-runtime-performance.md` withdraws all fixed improvement
 floors and permits real-model trial integration before whole-request evidence.
@@ -33,8 +34,10 @@ fallback. 261 full logit vectors pass the unchanged 0.01 absolute bound with
 identical greedy argmax; longer/repeated request outputs match exactly.
 The full CUDA self-test requires Linux `/proc` and was not qualified on macOS.
 
-Next: finish one independent candidate review and dispositions. The next
-performance hypothesis is threadgroup/rows-per-SIMD tuning on captured FFNs,
+One fresh independent comprehensive review of `d2319d03` against `ca609a41`
+completed CLEAN, findings none. No content repair was needed.
+
+Next performance hypothesis: threadgroup/rows-per-SIMD tuning on captured FFNs,
 then the same request A/B owner; if insufficient, test a larger
 normalization/FFN/down/residual boundary. Neither hypothesis is implemented.
 CPU/CUDA fusion and Gemma semantic admission remain explicitly deferred until
