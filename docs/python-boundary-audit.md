@@ -1,5 +1,10 @@
 # Python execution-boundary audit
 
+`scripts/measure-host-reuse` is `BENCHMARK_OR_MEASUREMENT`: an independent
+HTTP/SSE caller compares explicit native binaries, checks exact output and token
+counts, and retains alternating timing samples. It never supplies inference
+logic or participates in product startup.
+
 `scripts/test-development-preflight` remains `BUILD_OR_DEVELOPER_TOOL`; its hosted
 20-minute hosted and installed-profile 15-minute timeout assertions validate publication
 automation and do not enter normal product execution.
@@ -17,7 +22,8 @@ paired changes and wins instead of a percentage-based adoption verdict.
 `scripts/measure-native-swiglu` is `BENCHMARK_OR_MEASUREMENT`: it launches
 native products/reference executables, captures timing and checks output/counts.
 Its optional `--native-control` compares two explicit native developer builds
-without changing the product interface. It is never imported or launched by product execution.
+without changing the product interface. `--native-disabled` fixes both builds
+to the unfused path for host-only comparisons. It is never imported or launched by product execution.
 
 `scripts/check-native-captures` is `INDEPENDENT_ORACLE`: it verifies captured
 weights against GGUF offsets and compares paired F32 logits with the predeclared

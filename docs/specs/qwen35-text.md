@@ -862,3 +862,54 @@ All original correctness bounds remain. [Results, external research and exact
 reproduction](../native-swiglu-followup.md) contain all paired samples and limits.
 Next candidates are the real Q6_K output projection and a larger tiled FFN
 consumer including down, not another unmotivated threadgroup sweep.
+
+### Retained host work follow-up (2026-09-26)
+
+`runtime_qwen35_generation` retains the exact decode graph keys by parity and
+attention width. Backend, bundle, geometry and one-token graph position
+(`width - 1`) are invariant inside that cache entry. Compute the existing key
+only on a cache miss; do not change its digest format or invalidation contract.
+Session-owned stream scratch replaces per-token allocation: 4 token bytes,
+16 position bytes, `mask_capacity * 4` mask bytes and `n_vocab * 4` logits bytes.
+Every consumed input/output byte is overwritten before use. No scratch is shared
+between sessions; normal owner destruction releases it, and failed-request
+recovery preserves synchronization and invalidates cached graphs.
+
+Cost ceiling before implementation: at most `n_vocab * 4 + mask_capacity * 4 + 20`
+additional retained host payload bytes per session plus two width integers;
+no new device allocation, copy, dispatch or synchronization. Implementation and
+owner verification budget 3,600 seconds, measurement budget 1,800 seconds before
+reassessment. The existing generation owner covers repeated requests and width
+changes; serving owner covers stream/nonstream equivalence, disconnect/recovery
+and limits. Inspect the output binary and trace allocation/copy calls to confirm
+removal, then compare five alternating old/new pairs after warmup, including
+streamed requests and different lengths. Exact output equality is required;
+there is no arithmetic or tolerance change. Keep old binary and bundle replayable.
+Metal command-buffer GPU timestamps, when available, are diagnostic only and
+must be separated from uninstrumented performance samples. CPU/CUDA inference
+qualification remains deferred under the existing Qwen3.5 backend restriction.
+
+Developer measurement interface: `scripts/measure-host-reuse --config CONFIG
+--output NEW_JSON` uses the same explicit model/pack/geometry and two native
+binary/options/library entries as the native trial tool. It starts two retained
+loopback servers, sends serial HTTP and SSE requests, records two warmups and
+five alternating pairs for 64/16, 200/64, 330/64 and 64/16 again, and requires
+exact output and nonstream token counts. The 200/64 case crosses an attention
+width boundary during decode; the final case tests shrinking width after reuse.
+SSE exposes no usage field, so its processing-count evidence is matching text
+and length finish against the counted nonstream response. Report schema 1 owns
+status, model/toolchain/binary/options/bundle identities, startup clocks and all
+warmup/pair wall/TTFT/output/finish/usage records. Errors retain INCOMPLETE and
+terminate both owned servers. No inference API or model format changes.
+`measure-native-swiglu --native-disabled` fixes both native arms to fusion off
+for worker/reference comparisons; it is exclusive with the two earlier native
+selection flags and records `control_kind=both_native_disabled`.
+
+The two dyld diagnostic tools are process-scoped developer instrumentation only:
+`trace-host-calls.c` counts intercepted allocation/copy calls and graph/get/set/
+synchronize clocks; `trace-metal-command-buffers.m` observes command-buffer GPU
+start/end timestamps via completion handlers, without adding GPU waits. Missing
+private Metal hooks or missing/zero timestamp records make attribution unavailable.
+Instrumentation, driver callbacks and logging perturb timing; these runs never
+substitute for the uninstrumented HTTP/SSE campaign. There is no product dependency
+on either tool. OS support outside the measured macOS host is unqualified.

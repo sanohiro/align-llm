@@ -3732,6 +3732,19 @@
       "acceptance": "python3 scripts/check-native-captures --help; captured real GGUF weights and paired long-generation logits; strict boundary guard.",
       "frozen_sha256": null,
       "bootstrap": null
+    },
+    {
+      "path": "scripts/measure-host-reuse",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Measure retained native HTTP/SSE sessions from two explicit binaries with identical inputs and exact output/count checks.",
+      "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
+      "substitution": "Fixed experimental workload/control/reduction only; does not implement a normal product command.",
+      "python_reason": "Independent timing, paired ordering and controlled benchmark orchestration remain test-side responsibilities.",
+      "target": "Retain as measurement only; product retry/session policy must use Align, not import this harness.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/check-python-boundary --strict; real-model old/new HTTP campaign",
+      "frozen_sha256": null,
+      "bootstrap": null
     }
   ],
   "embedded_hosts": [

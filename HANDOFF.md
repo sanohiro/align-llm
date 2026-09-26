@@ -2,6 +2,35 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Retained host-work checkpoint (2026-09-26)
+
+Branch `agent/native-metal-ffn-integration`, baseline `6124e90b`.
+Implemented exact decode-key reuse by parity/attention width and per-session
+stream scalar/position/mask/logits scratch. No math, state-reset, device-command
+or synchronization change. Added independent HTTP/SSE measurement and host/Metal
+trace tools. Read `docs/host-reuse-diagnosis.md` and its raw receipt before work.
+
+Verification: `gmake build`, `gmake fmt`, strict Python boundary, and both
+`run-qwen35-generation-smoke` / `run-openai-serving-smoke` on 2B and 0.8B pass.
+Old/new worker, HTTP/SSE and diagnostic outputs agree exactly. Decode crosses
+width 256 and repeated requests return from width 512 to 256. Binary and call
+traces confirm removed key allocations/copies and stream logits zero filling.
+
+Result: 200/32 outside-graph median 20.96 -> 17.97 ms; all five paired outside-
+graph reductions are positive, but whole-request improvement is unestablished.
+HTTP 200/64 SSE is slower in all five pairs (paired median -0.17%); retain this
+regression observation before publication/adoption. Per-decode GPU command-buffer
+union is 27.69 ms within a 28.33 ms graph call on the new binary. This does not
+identify individual shader time or memory stalls. Retain as local lower-host-work
+implementation, not a throughput win; native FFN fusion remains default-off.
+
+Next: one fresh candidate review; then real Q6_K output-projection/whole-FFN GPU
+attribution, and separately the startup upload copy/blit/wait hypothesis. Do not
+repeat host tweaks or launch-size sweeps without new evidence. Request 121 records
+the non-blocking resource/sibling-view compiler limitation. CPU/CUDA native
+Qwen3.5 and Gemma semantic admission remain deferred under existing restrictions.
+All uncommitted files belong to this checkpoint; no publication or merge claimed.
+
 ## Active native FFN integration (2026-09-26)
 
 Branch: `agent/native-metal-ffn-integration`, based on `ca609a41`; initial implementation

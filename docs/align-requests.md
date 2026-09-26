@@ -16891,3 +16891,48 @@ Consumer verification (2026-09-25): `.align-revision` pins Align v0.8.1 and
 oracle, refuses a header declaring a 16 MiB body without waiting for body bytes,
 observes unchanged server RSS across that request, then serves another normal chat.
 SSE, malformed-input refusal, disconnect recovery, and shutdown/restart also pass.
+
+### Request 121: independent scratch views beside a borrowed resource field (2026-09-26)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: factoring retained Qwen3.5 stream input updates through the existing helper
+Independent work that may continue: retain scratch, write inputs in the owning function, refresh sibling views after mutable calls, and measure real requests
+Resume condition: shipped ownership analysis can prove this independent-storage case without admitting dependent-resource aliasing
+Align commit or pull request: none; observed at consumer pin `b20429be50d6ab889496a0589143320683b29aeb` and installed sibling compiler; sibling source inspected at `c2f32a2d213fcba6678f7c4dfeca5dac11e308a9`
+align-llm verification: pending provider implementation; current application path compiles and passes generation/serving owners without consuming a proposed API
+
+Classification: compiler ownership-analysis capability, not inference semantics.
+A record containing `device: ggml_ffi.GpuDevice`, `scratch: buffer` and
+`second: buffer` cannot pass `p.device` with mutable byte views of the two
+independently owned buffers to a helper. The checker reports each view as
+aliasing argument 1. The buffer-only analogue checks successfully. Minimal body:
+
+```align
+pub fn update(borrow mut p: Pair) {
+  mut bytes := p.scratch.bytes()
+  mut other := p.second.bytes()
+  write(p.device, bytes, other)
+}
+```
+
+Here `write` takes `(borrow device: ggml_ffi.GpuDevice,
+borrow mut bytes: slice<u8>, borrow mut other: slice<u8>)`, writes the two
+views, and calls `ggml_ffi.gpu_device_synchronize(device)`. Both tested compilers
+reject this witness. Sibling `align_sema/src/lib.rs`'s conflicting-root check
+already has disjoint-sibling-place handling; resource-derived roots still
+conflict in this case. Plan `37-borrowed-buffer-writer-plan.md` admits field byte
+views but preserves the existing alias/effect rules, so it does not settle this
+extension. No language API is invented here.
+
+Proposed surface: retain ordinary explicit borrow syntax and prove independent
+owned-buffer storage beside a non-consuming resource projection where ownership
+and resource dependency facts justify it. Do not simply discard resource roots.
+Acceptance includes successful exact-byte execution of this witness in whole
+and per-unit compilation, rejection when the resource actually depends on the
+same buffer or when the owner can be replaced, and the real client's factored
+stream input helper with unchanged disconnect/recovery behavior. Until then,
+`runtime_qwen35_generation.stream_next` writes the small input fields locally;
+this bounded duplication is the recorded application cost, not a compatibility
+layer or a hypothetical compiler dependency.
