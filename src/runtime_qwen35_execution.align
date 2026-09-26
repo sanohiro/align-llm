@@ -7,12 +7,14 @@ pub Config {
   synchronous_weights: bool,
   prefill_chunk: i64,
   final_prefill_logits: bool,
+  last_ffn_row: bool,
 }
 
 pub fn read() -> Result<Config, Error> {
   mut synchronous := false
   mut chunk := 128
   mut final_logits := true
+  mut last_ffn_row := false
   match env.get("ALIGN_LLM_SYNC_WEIGHT_UPLOAD") {
     Some(value) => {
       if value == "1" { synchronous = true
@@ -35,6 +37,13 @@ pub fn read() -> Result<Config, Error> {
     },
     None => {},
   }
+  match env.get("ALIGN_LLM_PREFILL_LAST_FFN_ROW") {
+    Some(value) => {
+      if value == "1" { last_ffn_row = true
+      } else if value != "0" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
   return Ok(Config { synchronous_weights: synchronous, prefill_chunk: chunk,
-      final_prefill_logits: final_logits })
+      final_prefill_logits: final_logits, last_ffn_row: last_ffn_row })
 }

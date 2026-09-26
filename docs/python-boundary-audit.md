@@ -4,6 +4,9 @@ The final-chunk logits trial extends the existing independent measurement tools
 with an explicit per-arm output policy, and the capture oracle with explicit
 final-only capture alignment. Their classifications remain unchanged; neither
 implements model computation. Raw intermediate baseline vectors remain retained.
+The final-layer row trial adds an explicit per-arm `final_ffn_row` flag to those
+same independent measurement callers. Python still does not select, build or
+execute the product graph.
 
 `scripts/measure-host-reuse` is `BENCHMARK_OR_MEASUREMENT`: an independent
 HTTP/SSE caller compares explicit native binaries, checks exact output and token

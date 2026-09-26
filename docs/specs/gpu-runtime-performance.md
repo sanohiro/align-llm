@@ -86,6 +86,44 @@ worker regressions and the absence of a llama.cpp whole-request win. Final
 default qualification is separate from explicit-flag timing artifacts; see
 `../final-prefill-q6-trial.md` and its complete raw receipt.
 
+### Final-layer single-row FFN trial (2026-09-26)
+
+The current Qwen3.5 final prompt chunk computes the final layer's FFN for all
+input rows, although this provider requests logits for only its last row. The
+pinned llama.cpp Qwen3.5 builder has an optional `inp_out_ids` selection before
+the last residual/FFN; `embeddings_nextn_masked` guards it and the measured
+ordinary context initializes that setting false. This is a concrete Align
+consumer hypothesis, not evidence of a performance gain.
+
+| Contract | Definition |
+| --- | --- |
+| Input / validation / owner | `runtime_qwen35_execution.read` snapshots `ALIGN_LLM_PREFILL_LAST_FFN_ROW`: `0` or absent uses the existing graph, `1` enables the trial, every other value returns `Error.Invalid` before weight allocation. Existing upload/chunk/final-logits inputs retain their order and behavior; the new validation follows them. Align generation owns the per-session choice in both normal and streaming paths. |
+| Selection / meaning | Only the final prompt prefill graph with `count > 1` and requested logits selects the final token row of **both** the final layer input residual and its completed attention output. Existing attention/recurrent builders still expand every persistent-state producer. The final FFN consumes those one-row views; the output head views row zero of its one-row result. Earlier layers, nonfinal chunks, one-row prefill and decode retain their graphs. Reject an ineligible request at the model builder. The optimization is specific to Qwen3.5's current semantic graph; other model families require their own analysis. |
+| Graph / allocation | The actual one-row selection enters the 64-hex SHA256 graph key. A view creates graph metadata but no extra retained device tensor; the current full-row path remains selectable. No new ABI, model IR, weight layout, persistent format, Python product path or session state owner. View span is bounded by the existing strict F32 `op_view_2d` ABI. |
+| Correctness | Before timing, compare actual 2B full-vocabulary final-prefill and decode logits with the flag off/on at equal chunk width, using the existing predeclared absolute limit 0.01 and identical argmax. Preserve raw vectors and observed maxima. Verify exact generated output against pinned llama.cpp on 2B and 0.8B, plus normal/streaming repeated and boundary requests. Hash all resident state planes at corresponding graph steps; the optimization must not alter state. A different FFN matrix shape may change floating-point reduction order; report it instead of relabeling an unexplained output mismatch. |
+| Measurement / decision | Real unchanged 2B GGUF/pack, prompt IDs, generated counts, upload 0, chunk 128, native FFN 0, final-logits 1. Compare old Align, trial Align and pinned llama.cpp in at least five alternating worker pairs; independently compare the same candidate binary OFF/ON in five HTTP and SSE pairs per case after two warmup pairs. Record prefill, decode, whole request, first-token time, startup, graph operations, memory and adverse pairs. Each campaign <=900 seconds and request <=180 seconds. No percentage floor; default adoption requires useful real-request evidence and acceptable correctness, regression, resource and maintenance costs. |
+
+Closure: configuration construction/malformed input belongs to execution parsing
+and invalid-session probes; graph formation/success belongs to model row selection
+and same-width full-logit/state checks; normal/streaming and repeated requests
+belong to generation/serving owners. Early exit, failure and cleanup use the
+existing session owner; no new allocation lifetime exists. The author consistency
+check is that both row views are selected after state-producing attention work,
+that only the final layer receives them, and that full-row rollback remains a
+genuine same-model control. Performance and adoption will be recorded in a new
+trial report and raw receipt, not inferred from this plan.
+
+Local closure: the implementation and existing 2B/0.8B owners pass. At equal
+chunk width, 71,516,160 full-logit floats stay within the predeclared 0.01
+absolute bound with identical argmax; all 588 full resident-state plane records
+match. One actual Q4_0 FFN path selects a matrix-vector Metal kernel, but the
+five-pair whole-request HTTP/SSE results are mixed, including adverse cases and
+timing movement in the one-row no-op control. Retain the mode as an opt-in
+experiment, default `0`, and keep full-row comparison. This decision weighs
+small connected gains, variability, unchanged memory report, numerical rounding
+and maintenance cost without a percentage floor. See
+`../final-ffn-row-trial.md` and its complete raw receipt.
+
 ### Actual Q6_K projection probe (2026-09-26)
 
 Independent native Metal experiment, outside production inference: capture the

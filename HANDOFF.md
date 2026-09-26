@@ -2,6 +2,39 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Final-layer single-row FFN checkpoint (2026-09-26)
+
+Branch `agent/native-metal-ffn-integration`, baseline `9e1719c9`. Implemented
+`ALIGN_LLM_PREFILL_LAST_FFN_ROW=1` as an opt-in Align session choice; absent/`0`
+retains the full-row graph. It narrows only the final prompt chunk's last FFN
+after all state-producing attention work, in both normal and streaming sessions.
+Read `docs/final-ffn-row-trial.md` and its complete raw receipt before resuming.
+No new Align gap or ABI, retained device buffer, backend-name gate or Python
+product path was introduced.
+
+Managed build/format, strict Python boundary, config refusals and 2B/0.8B
+generation/serving owners passed. Same-width 128/256/512 comparisons cover
+71,516,160 actual full-logit floats: max absolute difference 0.00361634 under
+the predeclared 0.01 bound, identical argmax, bit-identical decode; old binary
+versus new OFF is exact. All 588 full resident-state hashes match. Native SwiGLU
+plus this mode passes the 2B owner. A Q4_0 matrix-vector kernel is selected in
+the final graph, with the same command-buffer count and reported Metal peak.
+
+Five alternating old/new/pinned-llama worker groups show prefill improvement in
+4/5 pairs at each of 64/16, 200/32 and 330/64, but whole-request effects are
+mixed. Same-binary HTTP/SSE has two warmups and five alternating pairs across
+eight cases; several requests regress or have no robust gain. Even the no-op
+129/1 negative control moves. Keep the mode default-off as an experiment; do
+not claim a llama.cpp win. No samples were excluded. Full raw paired evidence
+and source/binary identities are in the tracked receipt; 576 full-logit binary
+captures and diagnostic logs are in the resolved Git common directory.
+
+Next: attribute the real-model decode Q6_K output projection and the 24-layer
+gate/up/SiLU/down path with device timing, command boundaries and attainable
+bandwidth; select a bounded larger fusion or layout experiment only after that
+attribution. Do not repeat the previous exact but neutral paired-load mapping.
+CPU/CUDA Qwen3.5 qualification and Gemma semantic admission remain deferred.
+
 ## Final-prefill output / Q6_K checkpoint (2026-09-26)
 
 Branch `agent/native-metal-ffn-integration`, baseline `1ae5824a`. Implemented

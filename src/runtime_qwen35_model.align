@@ -46,11 +46,25 @@ pub fn build_tokens_output(
   position: i64, count: i64, kind: i64, index_input: i64,
   ctx: raw, graph: raw, borrow slots: slice<u8>, emit_logits: bool,
 ) -> Result<(), Error> {
+  return build_tokens_final_row(owner, g, state, position, count, kind, index_input,
+    ctx, graph, slots, emit_logits, false)
+}
+
+// Select the only requested output row before the final layer's FFN.
+pub fn build_tokens_final_row(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  borrow state: runtime_qwen35_state.State,
+  position: i64, count: i64, kind: i64, index_input: i64,
+  ctx: raw, graph: raw, borrow slots: slice<u8>, emit_logits: bool,
+  last_ffn_row: bool,
+) -> Result<(), Error> {
   if !runtime_qwen35_geometry.valid_layer_pattern(g)
     || position < 0 || count < 1 || count > runtime_attention.MAX_PREFILL
     || count > g.context_length - position
     || (count > 1 && kind != ggml_ffi.GPU_GRAPH_PREFILL)
     || (!emit_logits && kind != ggml_ffi.GPU_GRAPH_PREFILL)
+    || (last_ffn_row && (!emit_logits || kind != ggml_ffi.GPU_GRAPH_PREFILL || count <= 1))
     || ggml_ffi.handle_absent(ctx) || ggml_ffi.handle_absent(graph)
     || ggml_ffi.slot_ne(slots, TOKEN, 0) != count
     || ggml_ffi.slot_ne(slots, POSITION, 0) != 4 * count {
@@ -90,9 +104,22 @@ pub fn build_tokens_output(
         return Err(Error.Invalid)
       }
     }
-    ggml_ffi.slot_copy(slots, runtime_qwen35_ffn.INPUT, slots, 20,
+    mut residual_input := 20
+    mut ffn_rows := count
+    if last_ffn_row && layer + 1 == g.n_layer {
+      ggml_ffi.op_view_2d(ctx, slots, 110, 20, g.n_embd, 1, 1, 1, count - 1,
+        "q35_last_ffn_input") else { return Err(Error.Invalid) }
+      ggml_ffi.op_view_2d(ctx, slots, 111, runtime_qwen35_ffn.ATTENTION,
+        g.n_embd, 1, 1, 1, count - 1,
+        "q35_last_ffn_attention") else { return Err(Error.Invalid) }
+      ggml_ffi.slot_copy(slots, runtime_qwen35_ffn.ATTENTION, slots, 111,
+        "q35_last_ffn_attention_row") else { return Err(Error.Invalid) }
+      residual_input = 110
+      ffn_rows = 1
+    }
+    ggml_ffi.slot_copy(slots, runtime_qwen35_ffn.INPUT, slots, residual_input,
       "q35_block_residual_input") else { return Err(Error.Invalid) }
-    runtime_qwen35_ffn.build_many(owner, g, layer, count, ctx, slots)?
+    runtime_qwen35_ffn.build_many(owner, g, layer, ffn_rows, ctx, slots)?
     ggml_ffi.slot_copy(slots, 20, slots, runtime_qwen35_ffn.OUTPUT,
       "q35_next_layer_input") else { return Err(Error.Invalid) }
     layer = layer + 1
@@ -107,7 +134,8 @@ pub fn build_tokens_output(
     return Err(Error.Invalid)
   }
   ggml_ffi.gpu_weight_slot(owner, 0, slots, 0) else { return Err(Error.Invalid) }
-  ggml_ffi.op_view_2d(ctx, slots, 89, 20, g.n_embd, 1, 1, 1, count - 1,
+  ggml_ffi.op_view_2d(ctx, slots, 89, 20, g.n_embd, 1, 1, 1,
+    if last_ffn_row { 0 } else { count - 1 },
     "q35_last_hidden") else { return Err(Error.Invalid) }
   ggml_ffi.op_rms_norm(ctx, slots, 90, 89, g.rms_eps_bits, "q35_output_norm") else {
     return Err(Error.Invalid)
