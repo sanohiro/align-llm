@@ -1,5 +1,63 @@
 # Runtime foundations and GPU performance plan
 
+## Current inference optimization policy (2026-09-26)
+
+The objective is an Align-owned fast inference engine spanning Qwen and Gemma
+generations, sizes, and architectures. Qwen3.5-2B is the current real-model
+validation target, not a permanent architecture limit. Align owns model semantics,
+execution plans, specialization selection, memory policy, sessions, and generation.
+Device kernels and thin host/ABI connections may use Metal/CUDA/C/C++; Python stays
+in independent validation and developer tooling.
+
+There is no mandatory percentage improvement for starting an experiment, integrating
+it with a real model, or adopting it. The former 15% floor and fixed win-count
+admission rule are withdrawn, without substituting another universal percentage.
+Historical measurements and decisions remain historical evidence. An experiment
+needs a concrete hypothesis and test; trial integration needs credible local
+correctness and a reason to measure the real boundary; adoption needs demonstrated
+useful effect, correctness, uncertainty, workload coverage, regression, memory and
+maintenance assessment. Whole-request evidence is produced by trial integration;
+it is never a prerequisite for permitting that integration.
+
+GGML is one implementation option. Reuse, modify, fuse, or replace operations,
+buffer management, scheduling, or a whole execution path when supported by an
+experiment. Keep the established path for comparison and compatibility during
+migration. No permanent ggml dependency is required for new paths. Single-kernel
+losses do not establish a ceiling for independent backends.
+
+Keep model semantics, operation/fusion patterns, and device implementations
+separate. Select specializations by shape, quantization, activation, layout, token
+count, and device capability. Preserve architecture-specific normalization,
+attention, position representation and activation; Gemma is not a shape alias of
+Qwen. Extend existing Model IR only when a real consumer needs it.
+
+Predeclare numerical tolerances and cost ceilings. Keep exact compatibility
+owners; label rounding-changing trials explicitly. Compare unchanged Align,
+candidate Align, and pinned llama.cpp with identical weights, prompt IDs and
+actual generation work. Retain all alternating paired samples after warm-up;
+report local, connected, prefill, decode, whole-request, startup/load and memory
+separately. Do not infer request gains from isolated kernels or change tolerance
+after observing failures.
+
+This section supersedes historical percentage-based admission/shipping prose
+elsewhere in this repository. Historical receipts must not be rewritten.
+
+Current measurement output changes (independent tooling, not runtime formats):
+`measure-cuda-optimization` reports schema 3, `quality_passed`, `faster_pairs`,
+`decision=ASSESSMENT_REQUIRED` and a regression warning; successful quality and
+complete measurements may produce PASS without an adoption verdict.
+`run-gpu-session-measurement` reports schema 3 and `decision=assessment_required` for complete
+quality-valid pairs, preserving `invalid_quality` refusal. `run-prefix-ttft`
+reports schema 2, a null `shipping_floor_ppm` and `ASSESSMENT_REQUIRED`, retaining its
+separate jackknife uncertainty result. The resident decode owners retain latency
+and correctness/resource checks but remove latency-floor failures. Old receipts
+keep their original fields/verdicts. The focused aggregation owners are
+`python3 scripts/measure-cuda-optimization --self-test-portable` (policy, aggregation
+and parser fixtures on any host; the existing full `--self-test` retains live Linux
+process/host owners) and
+`python3 scripts/run-gpu-session-measurement-smoke`.
+
+
 Current request (2026-09-14): investigate and design CUDA optimization enablement, without
 implementation. [CUDA enablement](cuda-optimization-enablement.md) records the current ON/OFF
 inventory, the missing Q/K/V optimizer opt-in and tensor names, the CUDA F16 prefill limitation,
@@ -36,7 +94,7 @@ That is a new diagnostic subject, not a byte-identical historical replay.
 | Cost ceiling | Build preparation at most 900 seconds; diagnostic execution at most 600 seconds, each request at most 120 seconds. Sample only the owned process, at 1 ms for at most 60 seconds. No competing candidate/baseline GPU arms. |
 | Results / errors | Preserve manifested build/source/compiler/library identities, exact command and requests, complete responses, worker log and profiler output outside Git. Nonzero worker/profiler exit, timeout or invalid response is recorded as incomplete diagnosis; no performance decision. Keep startup separate from request observations. |
 | Ownership / cleanup | The existing serial client owns worker pipes, bounded frames, deadlines and process-group cleanup. The diagnostic caller owns and waits for the sampler, including cancellation. No product allocation or ownership change. |
-| Evidence / acceptance | Require all four responses to pass the existing integer-sequence and 128-token quality checks before using the run to choose a follow-on. Profiler samples locate host stacks; they do not measure kernel duration or CUDA capture/replay. A new runtime/coding comparison must use its own precommitted paired protocol and unchanged 15% floor. |
+| Evidence / acceptance | Require all four responses to pass the existing integer-sequence and 128-token quality checks before using the run to choose a follow-on. Profiler samples locate host stacks; they do not measure kernel duration or CUDA capture/replay. A new runtime/coding comparison uses its predeclared paired protocol and the current adoption assessment, without a percentage floor. |
 | Closure | Construction and early failure use the existing session client's cleanup. Successful execution retains all four responses. Failure retains the completed prefix and fault. Source/input identities are checked before and after execution. No cache/schema migration applies because this step changes no product code. |
 
 Source candidates at `ad94eb5`: `runtime_generation.execute_session` hashes topology identities,
@@ -454,17 +512,15 @@ selection, but then its quality and end-to-end effect must be evaluated for both
 the two GPU arms so they do not contend for the same memory/compute during a pair. Include cold
 setup in cold results and amortize warm setup over the declared task sequence for both arms.
 
-The first material-win floor is at least 15% lower paired latency (150,000 ppm); this is a floor,
-not the ambition or a reason to stop improving. A 2x runtime speedup is a stretch objective on a
-named constrained profile, not a forecast. A campaign must separately fix its runtime metric
-(prefill, decode at specified context, or full fixed-output request) and aggregation before tuning.
-Passing only prefill does not claim faster decode, and warm prefix reuse does not claim a faster
-uncached kernel. G6 separately targets at least 15% lower median paired time to a passing patch,
-with no reduction in task success under the same caps. Its implementation ledger must fix the
-multi-task corpus, repeated paired schedule and uncertainty/robustness rule before measurement;
-a noisy or single-task result cannot establish a material win. Failed or timed-out attempts remain
-in the outcome and quality denominator rather than being dropped to improve latency. Runtime and
-coding outcomes cannot compensate for one another or be collapsed into an ambiguous overall PASS.
+Each campaign fixes its runtime metric (prefill, decode at a specified context,
+or full fixed-output request) and aggregation before tuning. Adoption follows
+the current policy above with no fixed percentage floor. Passing only prefill
+does not claim faster decode; warm prefix reuse does not claim a faster uncached
+kernel. G6 separately evaluates paired time to a passing patch without reducing
+task success under the same caps. Its ledger fixes the multi-task corpus, repeated
+paired schedule and uncertainty rule before measurement. Failed/timed-out attempts
+remain in the outcome denominator. Runtime and coding outcomes cannot compensate
+for one another or collapse into an ambiguous overall PASS.
 
 A capacity campaign precommits its model/quantization/context ladder, RAM/VRAM/storage ceilings,
 minimum accepted-token throughput, maximum first-token/request latency and quality criteria.

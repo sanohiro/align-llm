@@ -4466,6 +4466,13 @@ int32_t align_ggml_op_mul_mat(void *ctx, void *slots, int64_t out, int64_t a, in
         sa, sb, ALIGN_STUB_OP_MUL_MAT);
 }
 
+/* Align explicitly requests this fusion; other backends retain the original op. */
+int32_t align_ggml_op_native_swiglu_gate(void *ctx, void *slots, int64_t out, int64_t a, int64_t b) {
+    int32_t status = align_ggml_op_mul_mat(ctx, slots, out, a, b);
+    return status;
+}
+
+
 int32_t align_ggml_op_attention_scores(void *ctx, void *slots, int64_t out, int64_t k, int64_t q) {
     if (ctx == NULL) { return ALIGN_GGML_INIT; }
     /* The deterministic engine already accumulates its F32 matrix products in F32. */

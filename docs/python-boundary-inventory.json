@@ -915,7 +915,7 @@
     {
       "path": "scripts/gpu_backend_recipe.py",
       "classification": "CI_OR_DEVELOPER_TOOL",
-      "behavior": "Build one immutable pinned-ggml GPU backend bundle and its replayable source snapshot.",
+      "behavior": "Build a pinned-ggml bundle with optional retained native SwiGLU patch; bind patch digest in build flags and bundle identity.",
       "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
       "substitution": "No shipping substitution; exercises or prepares the named owner.",
       "python_reason": "Python is retained as portable developer/test orchestration outside product execution.",
@@ -3697,13 +3697,39 @@
     {
       "path": "scripts/measure-cuda-optimization",
       "classification": "BENCHMARK_OR_MEASUREMENT",
-      "behavior": "Measure the fixed source-bound CUDA enablement intervention with paired external workers.",
+      "behavior": "Independent paired CUDA measurement with quality admission and explicit adoption assessment; no fixed percentage floor.",
       "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
       "substitution": "Fixed experimental workload/control/reduction only; does not implement a normal product command.",
       "python_reason": "Independent timing, paired ordering and controlled benchmark orchestration remain test-side responsibilities.",
       "target": "Retain as measurement only; product retry/session policy must use Align, not import this harness.",
       "migration": "N/A",
       "acceptance": "scripts/measure-cuda-optimization --self-test; strict boundary guard; real paired CUDA campaign.",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
+      "path": "scripts/measure-native-swiglu",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Independent alternating native SwiGLU control/candidate/pinned-reference measurement; records all samples and exact text/count parity.",
+      "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
+      "substitution": "Fixed experimental workload/control/reduction only; does not implement a normal product command.",
+      "python_reason": "Independent timing, paired ordering and controlled benchmark orchestration remain test-side responsibilities.",
+      "target": "Retain as measurement only; product retry/session policy must use Align, not import this harness.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/measure-native-swiglu --help; real Metal trial campaign; strict boundary guard.",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
+      "path": "scripts/check-native-captures",
+      "classification": "INDEPENDENT_ORACLE",
+      "behavior": "Independent source-byte and F32 logit comparison of real-model diagnostic captures.",
+      "reachability": "Focused developer qualification only; never part of normal product execution.",
+      "substitution": "Invokes the product and an independent llama.cpp oracle; does not implement shipping inference.",
+      "python_reason": "Independent paired model output comparison remains outside Align product execution.",
+      "target": "Retain as a real-model Qwen3.5 generation qualification oracle.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/check-native-captures --help; captured real GGUF weights and paired long-generation logits; strict boundary guard.",
       "frozen_sha256": null,
       "bootstrap": null
     }

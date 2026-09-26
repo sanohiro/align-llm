@@ -4,6 +4,25 @@
 20-minute hosted and installed-profile 15-minute timeout assertions validate publication
 automation and do not enter normal product execution.
 
+`scripts/gpu_backend_recipe.py` remains `CI_OR_DEVELOPER_TOOL`; the optional
+native SwiGLU patch is a build input, retained with its digest, never a Python
+inference dependency. `scripts/run-prefix-ttft`, `scripts/run-decode-step` and
+`scripts/run-moe-decode-step` retain their independent qualification/measurement
+roles; latency is reported for assessment without a fixed shipping percentage.
+
+`scripts/measure-cuda-optimization` and `scripts/run-gpu-session-measurement`
+remain `BENCHMARK_OR_MEASUREMENT`; valid evidence now reports assessment required,
+paired changes and wins instead of a percentage-based adoption verdict.
+
+`scripts/measure-native-swiglu` is `BENCHMARK_OR_MEASUREMENT`: it launches
+native products/reference executables, captures timing and checks output/counts.
+It is never imported or launched by product execution.
+
+`scripts/check-native-captures` is `INDEPENDENT_ORACLE`: it verifies captured
+weights against GGUF offsets and compares paired F32 logits with the predeclared
+existing 0.01 absolute bound and identical greedy argmax. It never supplies
+product state or changes acceptance tolerances.
+
 ## Current cutover checkpoint (2026-09-13)
 
 The shipping evaluator, edit/repair chain, snapshots, source checks and validation

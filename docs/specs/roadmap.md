@@ -1,5 +1,7 @@
 # align 開発ロードマップ v2.0
 
+Current optimization decisions follow [the 2026-09-26 policy](gpu-runtime-performance.md#current-inference-optimization-policy-2026-09-26). Earlier percentage floors and fixed win-count rules below describe superseded experiments, not admission or adoption requirements.
+
 ## 1. 開発戦略
 
 一人開発であるため、align-runtimeとalign-coderを同時に全面開発しない。
@@ -20,7 +22,17 @@ align-runtimeは、重要な技術spikeと小さな実装を並行して進め�
 
 ## 2. Capability delivery model
 
-### Active Qwen3.5 text lane (2026-09-24)
+### Active native FFN integration (2026-09-26)
+
+Continue from the merged native Metal FFN probe: authenticate actual 2B FFN
+quantization and shapes, validate real weights/activations, connect an opt-in
+fusion to the Align-built graph, then measure local and request effects against
+unchanged Align and pinned llama.cpp. Preserve the reference path. Other Qwen
+sizes and Gemma reuse operation/device seams only when their semantics match;
+full family coverage is not a prerequisite. See the trial ledger in
+`qwen35-text.md`. Serving and 2B adoption are complete.
+
+### Prior Qwen3.5 text lane (2026-09-24)
 
 The user prioritized very fast local inference on small and middle-size Qwen3.5 models, with a
 normally usable local endpoint. Large models are deferred. The authoritative model contract is
@@ -28,8 +40,7 @@ normally usable local endpoint. Large models are deferred. The authoritative mod
 Real GGUF Model IR/alignpack merged in #294, tokenizer CLI parity in #295, and the pinned
 0.8B text chat template for `--prepare-prompt` in #296. Deliver native `align-runtime` prefill
 and multistep decode for 0.8B with pinned llama.cpp
-parity, locate its actual bottleneck, and attempt only measured optimizations that meet the
-declared floor. Once that path is stable, expose it for normal local use through an Align-owned
+parity, locate its actual bottleneck, and measure bounded optimization trials under the current inference policy. Once that path is stable, expose it for normal local use through an Align-owned
 OpenAI-compatible HTTP server, beginning with `POST /v1/chat/completions` and a real Qwen3.5
 request. The endpoint contract and closure are in [local OpenAI-compatible serving](openai-local-serving.md);
 the existing `ModelProvider` OpenAI adapter is a client, not this server. Prefer the

@@ -31,7 +31,6 @@ HEADROOM_BYTES = 3 * 1024**3
 KV_WIDTH = 1536
 STEPS = 1
 GATE_REPEATS = 5
-SHIPPING_FLOOR_PPM = 150_000
 
 
 class QualificationError(Exception):
@@ -367,11 +366,11 @@ def main() -> int:
     completed: list[dict] = []
     summary: dict = {
         "kind": "R6_PREFIX_TTFT",
-        "schema_version": 1,
+        "schema_version": 2,
         "status": "RUNNING",
         "gate_run": gate_run,
         "repeats": repeats,
-        "shipping_floor_ppm": SHIPPING_FLOOR_PPM,
+        "shipping_floor_ppm": None,
         "head": run_checked(["git", "rev-parse", "HEAD"]).strip(),
         "host": {
             "platform": platform.platform(),
@@ -620,14 +619,8 @@ def main() -> int:
         worse = summary["protocols"][worse_name]
         if not gate_run:
             verdict = "DIAGNOSTIC"
-        elif warm["jackknife_min_ppm"] > 0 and cold["jackknife_min_ppm"] > 0 \
-                and worse["jackknife_min_ppm"] >= SHIPPING_FLOOR_PPM:
-            verdict = "MET"
-        elif warm["jackknife_max_ppm"] < SHIPPING_FLOOR_PPM \
-                or cold["jackknife_max_ppm"] < SHIPPING_FLOOR_PPM:
-            verdict = "NOT_MET"
         else:
-            verdict = "INDETERMINATE"
+            verdict = "ASSESSMENT_REQUIRED"
         if not gate_run:
             improvement = "DIAGNOSTIC"
         elif warm["jackknife_min_ppm"] > 0 and cold["jackknife_min_ppm"] > 0:

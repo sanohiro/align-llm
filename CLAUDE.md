@@ -41,7 +41,9 @@ deletion condition and no-growth rule in `docs/specs/align-product-boundary.md`.
 requires the strict check and relocated execution without Python; a static scan alone is not proof.
 
 Deliver `align-coder` against existing providers before making it depend on the custom runtime. The
-primary metric is time to a passing patch. Any optimization claim needs a reproducible baseline and
+primary metric is time to a passing patch. Inference experiments and adoption follow `docs/specs/gpu-runtime-performance.md`'s current policy: no fixed improvement floor; real-model trial integration precedes whole-request proof; ggml is replaceable. Align retains model and execution ownership across Qwen/Gemma.
+
+Any optimization claim needs a reproducible baseline and
 measurement against that metric or a named secondary metric.
 
 Roadmap work is organized as a **consumer-complete capability**: the smallest coherent change that
@@ -60,7 +62,7 @@ Classify the changed surface first and follow only its row. Reclassify when the 
 | Classifier-eligible authoritative specification or governance additions/modifications | Author consistency check | `python3 scripts/pre-pr` | One comprehensive review |
 | Local implementation checkpoint | Narrow owner test after a coherent batch | Do not publish; reclassify as an executable consumer capability first | No repeated full-diff review |
 | Executable consumer capability | Narrow owner tests; named qualification when its boundary changes | `python3 scripts/pre-pr --owner-test LABEL -- COMMAND ...` | One comprehensive review |
-| Performance claim | Owner test plus reproducible benchmark, with the capability's cost ceiling recorded in its ledger row before implementation; the owning performance document defines the shipping floor a seam must clear | Applicable row above, with baseline and result | Include measurement risk |
+| Performance claim | Owner test plus reproducible benchmark, with the capability's cost ceiling recorded in its ledger row before implementation; the owning performance document defines the workload, uncertainty and adoption assessment | Applicable row above, with baseline and result | Include measurement risk |
 
 `scripts/pre-pr` is the shared final classifier. Its `--plan` mode explains the selected checks but
 is not evidence. The successful stamp belongs to the exact unchanged `HEAD`; commit, amend, or

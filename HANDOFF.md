@@ -2,6 +2,48 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Active native FFN integration (2026-09-26)
+
+Branch: `agent/native-metal-ffn-integration`, based on `ca609a41`.
+The merged synthetic FFN probe is the starting point. The current inference
+policy in `docs/specs/gpu-runtime-performance.md` withdraws all fixed improvement
+floors and permits real-model trial integration before whole-request evidence.
+Earlier handoff sections below are historical, including their old next actions.
+
+Completed: default-off native Q4_0 gate/up/SiLU integration, actual GGUF weights
+and activation checks, 2B/0.8B generation owners, longer repeated requests, and
+five-pair local and real-request measurements. Align retains model/session/graph
+control; ggml retains allocation, command encoding and other operations.
+
+Decision: experimental only. Same-binary/bundle OFF/ON request medians (ms) are
+624.04/620.60 for 64/16 tokens, 1354.77/1399.52 for 200/32, and
+2493.16/2491.26 for 330/64. Every paired range crosses zero. No repeatable
+request improvement or faster-than-llama.cpp claim is established.
+See `docs/native-swiglu-trial.md` and its checked-in raw receipt for exact pinned
+comparisons, local results, limits and reproduction.
+
+Durable verification: `gmake build`, `gmake fmt`,
+`scripts/run-layer-forward-smoke`, native-enabled
+`scripts/run-qwen35-generation-smoke` (2B and 0.8B),
+`python3 scripts/check-python-boundary --strict`,
+`python3 scripts/measure-cuda-optimization --self-test-portable`, and
+`python3 scripts/run-gpu-session-measurement-smoke` pass. Actual-weight checks
+cover 72 tensors; local checks cover all 24 FFNs and an alternate shape/alias
+fallback. 261 full logit vectors pass the unchanged 0.01 absolute bound with
+identical greedy argmax; longer/repeated request outputs match exactly.
+The full CUDA self-test requires Linux `/proc` and was not qualified on macOS.
+
+Next: finish one independent candidate review and dispositions. The next
+performance hypothesis is threadgroup/rows-per-SIMD tuning on captured FFNs,
+then the same request A/B owner; if insufficient, test a larger
+normalization/FFN/down/residual boundary. Neither hypothesis is implemented.
+CPU/CUDA fusion and Gemma semantic admission remain explicitly deferred until
+a useful Metal specialization is demonstrated. Existing fallbacks remain.
+All current changes belong to this capability; no unrelated work was present.
+No publication/preflight or merge is claimed at this local checkpoint.
+
+## Historical checkpoints
+
 ## Active fused Metal FFN probe (2026-09-25)
 
 Branch: `agent/qwen35-metal-fusion-next`, based on merged `main` `ec34abac`

@@ -50,6 +50,13 @@ align-coder
 
 両者は連携するが、独立して開発・評価できるようにする。
 
+### Inference engine direction (2026-09-26)
+
+Support multiple Qwen and Gemma generations, sizes, and configurations through
+Align-owned inference. The current 2B model establishes correctness and measured
+optimization mechanisms before expansion. GGML can be reused or replaced; follow
+[the current optimization policy](gpu-runtime-performance.md#current-inference-optimization-policy-2026-09-26).
+
 ### Implementation-language boundary
 
 align-llm is a real application for developing and validating Align. All shipping application

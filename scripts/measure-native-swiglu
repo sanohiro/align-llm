@@ -1,0 +1,130 @@
+#!/usr/bin/env python3
+"""Independent real-model trial; no automatic performance adoption decision."""
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import select
+import statistics
+import subprocess
+import tempfile
+import time
+from gpu_session_client import Session
+
+SYSTEM = 'You are a coding assistant. Return a concise patch-oriented answer.'
+
+def digest(path):
+    with open(path, 'rb') as stream:
+        return hashlib.file_digest(stream, 'sha256').hexdigest()
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', type=Path, required=True,
+                        help='JSON: model, pack, geometry, control/candidate {binary,options,lib}, llama, trace')
+    parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--pairs', type=int, default=5)
+    parser.add_argument('--native-ab', action='store_true', help='same candidate binary/bundle with fusion disabled versus enabled; no reference rerun')
+    args = parser.parse_args()
+    if args.pairs < 5 or args.output.exists():
+        parser.error('at least five pairs and a new output path are required')
+    cfg = json.loads(args.config.read_text())
+    if args.native_ab:
+        cfg['control']=dict(cfg['candidate'])
+        cfg['control_commit']=None
+    arms=('control','candidate') if args.native_ab else ('control','candidate','llama')
+    env = {k:v for k,v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_'))}
+    report = dict(schema_version=1, artifact_kind='NATIVE_SWIGLU_MEASUREMENT',
+                  align_revision=Path('.align-revision').read_text().strip(),
+                  policy='2026-09-26-no-percentage-floor', status='INCOMPLETE',
+                  control_kind='same_binary_same_bundle_native_off' if args.native_ab else 'unchanged_align_source',
+                  model_sha256=digest(cfg['model']), ggml_commit=Path('.llama-revision').read_text().strip(),
+                  identities={name:digest(cfg[name]['binary']) for name in ('control','candidate')},
+                  reference_sha256=digest(cfg['llama']), trace_sha256=digest(cfg['trace']),
+                  backend_identities={arm:json.loads((Path(cfg[arm]['lib'])/'manifest.json').read_text())['bundle_id'] for arm in ('control','candidate')},
+                  options_sha256={arm:digest(cfg[arm]['options']) for arm in ('control','candidate')},
+                  control_commit=cfg['control_commit'], candidate_patch_sha256=digest('scripts/native-metal-swiglu.patch'),
+                  note='Startup is construction-to-ready with OS file cache uncontrolled. Graph phase includes synchronization; not shader-only time.',
+                  cases=[], adoption='ASSESSMENT_REQUIRED')
+    def save(): args.output.write_text(json.dumps(report,indent=2)+'\n')
+    save()
+    try:
+        with tempfile.TemporaryDirectory(prefix='native-swiglu-measure-') as work:
+            work=Path(work)
+            system=work/'system';system.write_text(SYSTEM)
+            for target_prompt,steps in ((64,16),(200,32),(330,64)):
+                prefix='List the integers from 1 to 1000 in ascending order, separated by single spaces. Output only the integers. '
+                repeat_count=target_prompt-57
+                user_path=work/'user';prompt_path=work/'ids.json'
+                for attempt in range(3):
+                    user=prefix+'hello '*repeat_count
+                    user_path.write_text(user)
+                    prompt=subprocess.check_output([cfg['control']['binary'],'--prepare-prompt',cfg['model'],str(system),str(user_path)],env=env)
+                    ids=json.loads(prompt)
+                    if len(ids)==target_prompt:break
+                    repeat_count+=target_prompt-len(ids)
+                if len(ids)!=target_prompt:raise ValueError('prompt length construction failed')
+                prompt_path.write_bytes(prompt)
+                rendered=work/'rendered'
+                rendered.write_bytes(subprocess.check_output([cfg['control']['binary'],'--detokenize',cfg['model'],str(prompt_path),'render-control'],env=env))
+                case=dict(prompt_tokens=len(ids),completion_tokens=steps,prompt_ids=ids,pairs=[])
+                report['cases'].append(case)
+                def align(arm):
+                    c=cfg[arm]
+                    e=dict(env,DYLD_LIBRARY_PATH=c['lib'],DYLD_INSERT_LIBRARIES=cfg['trace'],
+                           ALIGN_LLM_NATIVE_SWIGLU='1' if arm=='candidate' else '0')
+                    started=time.monotonic_ns()
+                    with Session([c['binary'],'--runtime-session',cfg['model'],cfg['pack'],cfg['geometry'],c['options'],'0'],timeout=180,env=e) as session:
+                        startup=time.monotonic_ns()-started
+                        for _ in range(3):
+                            start=time.monotonic_ns()
+                            result=session.generate(dict(schema_version=1,system=SYSTEM,user=user,max_tokens=steps,temperature=0.0,seed=None))
+                            wall=time.monotonic_ns()-start
+                            if result['prompt_tokens']!=len(ids) or result['completion_tokens']!=steps:
+                                raise ValueError('actual processed token count differs')
+                        session.log.seek(0);log=session.log.read().decode('utf-8','replace')
+                    graphs=[(int(k),int(t)) for k,t in re.findall(r'Q35_TIMING graph_kind=(\d+) elapsed_ns=(\d+) status=0',log)]
+                    count=(len(ids)+127)//128+steps-1
+                    if len(graphs)!=3*count:raise ValueError(f'phase graph count mismatch: {len(graphs)} != {3*count}')
+                    recent=graphs[-count:]
+                    return dict(wall_ns=wall,startup_ns=startup,prefill_ns=sum(t for k,t in recent if k==0),
+                                decode_ns=sum(t for k,t in recent if k!=0),output=result['output'])
+                def llama():
+                    started=time.monotonic_ns()
+                    with tempfile.TemporaryFile(mode='w+') as errors:
+                        with subprocess.Popen([cfg['llama'],cfg['model'],str(rendered),str(prompt_path),str(steps)],env=env,stdout=subprocess.PIPE,stderr=errors,text=True) as process:
+                            # The reference flushes readiness before any request; both
+                            # arms now use parent construction-to-ready clocks.
+                            try:
+                                if not select.select([process.stdout],[],[],180)[0]:
+                                    raise TimeoutError('reference readiness timeout')
+                                ready=process.stdout.readline()
+                                startup=time.monotonic_ns()-started
+                                stdout,_=process.communicate(timeout=180)
+                            except BaseException:
+                                process.kill();process.wait();raise
+                            if process.returncode or not re.fullmatch(r'startup_ns=[0-9]+\n',ready):
+                                raise ValueError('reference startup/compute failed')
+                            done_stdout=ready+stdout
+                    parsed=re.findall(r'iteration=(\d+) prompt=(\d+) elapsed_ns=(\d+) prefill_ns=(\d+) decode_ns=(\d+) ids=([0-9,]+)',done_stdout)
+                    if len(parsed)!=3 or int(parsed[-1][1])!=len(ids):raise ValueError('reference phase/count mismatch')
+                    row=parsed[-1];generated=[int(v) for v in row[5].split(',') if v]
+                    if len(generated)!=steps:raise ValueError('reference output count mismatch')
+                    output_ids=work/'out.json';output_ids.write_text(json.dumps(generated,separators=(',',':'))+'\n')
+                    text=subprocess.check_output([cfg['control']['binary'],'--detokenize',cfg['model'],str(output_ids),'render-control'],env=env).decode()
+                    return dict(wall_ns=int(row[2]),prefill_ns=int(row[3]),decode_ns=int(row[4]),startup_ns=startup,output=text)
+                for pair in range(args.pairs):
+                    row={}
+                    order=arms if pair%2==0 else tuple(reversed(arms))
+                    for arm in order:row[arm]=llama() if arm=='llama' else align(arm)
+                    case['pairs'].append(row);save()
+                    if len({v['output'] for v in row.values()})!=1:raise ValueError('output disagreement: retained all evidence; no speed claim')
+                    print(f'prompt={len(ids)} output={steps} pair={pair} '+str({k:round(v['wall_ns']/1e6,3) for k,v in row.items()}),flush=True)
+                case['median_ms']={arm:{field:statistics.median(r[arm][field]/1e6 for r in case['pairs']) for field in ('wall_ns','prefill_ns','decode_ns','startup_ns')} for arm in arms}
+                save()
+        report['status']='PASS'
+    except BaseException as error:
+        report['error']=str(error);save();raise
+    save()
+if __name__=='__main__': main()

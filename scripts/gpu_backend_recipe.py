@@ -889,7 +889,11 @@ def copy_artifacts(
     return artifacts
 
 
-def build(backend: str, source: pathlib.Path, output: pathlib.Path) -> None:
+def build(backend: str, source: pathlib.Path, output: pathlib.Path, *, native_swiglu: bool = False) -> None:
+    if native_swiglu and backend != "metal":
+        raise RecipeError("native SwiGLU trial requires Metal")
+    native_patch = (pathlib.Path(__file__).with_name("native-metal-swiglu.patch").read_bytes()
+                    if native_swiglu else None)
     source = source.resolve()
     output = pathlib.Path(os.path.abspath(output))
     try:
@@ -921,6 +925,11 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path) -> None:
         private_source = work_dir / "source"
         build_dir = work_dir / "build"
         materialize_source(manifest, blobs, private_source)
+        if native_patch is not None:
+            patch_path = work_dir / "native-metal-swiglu.patch"
+            patch_path.write_bytes(native_patch)
+            command([executables["git"], "apply",
+                     os.fspath(patch_path)], cwd=private_source, environment=environment)
         build_environment = dict(environment)
         build_environment["GIT_CEILING_DIRECTORIES"] = os.fspath(work_dir)
         configure_flags = [
@@ -929,6 +938,8 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path) -> None:
             f"-DCMAKE_C_COMPILER={executables['cc']}",
             f"-DCMAKE_CXX_COMPILER={executables['cxx']}",
         ]
+        if native_patch is not None:
+            configure_flags.append("-DALIGN_LLM_NATIVE_SWIGLU_PATCH_SHA256=" + digest(native_patch))
         if backend == "cuda":
             configure_flags.append(f"-DCMAKE_CUDA_COMPILER={executables['platform']}")
         command(
@@ -951,6 +962,8 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path) -> None:
             bundle_dir = stage / "bundle"
             source_dir = stage / "source"
             bundle_dir.mkdir()
+            if native_patch is not None:
+                (stage / "native-metal-swiglu.patch").write_bytes(native_patch)
             write_source_snapshot(source_dir, manifest, source_bytes, raw_commit, blobs, "ggml")
             artifacts = copy_artifacts(sources, bundle_dir)
             bundle = {
@@ -983,7 +996,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--print-plan", action="store_true")
     parser.add_argument("--source", type=pathlib.Path)
     parser.add_argument("--output", type=pathlib.Path)
+    parser.add_argument("--native-swiglu", action="store_true",
+                        help="experimental Metal fusion; retain patch and bind digest in build flags")
     args = parser.parse_args()
+    if args.native_swiglu and (args.backend != "metal" or args.print_plan):
+        parser.error("--native-swiglu requires a Metal build")
     if not args.print_plan and (args.source is None or args.output is None):
         parser.error("--source and --output are required unless --print-plan is used")
     if args.print_plan and (args.source is not None or args.output is not None):
@@ -997,7 +1014,7 @@ def main() -> int:
         if args.print_plan:
             sys.stdout.buffer.write(canonical(plan(args.backend)))
         else:
-            build(args.backend, args.source.resolve(), args.output.absolute())
+            build(args.backend, args.source.resolve(), args.output.absolute(), native_swiglu=args.native_swiglu)
     except RecipeError as exc:
         print(f"gpu backend recipe: ERROR: {exc}", file=sys.stderr)
         return 1

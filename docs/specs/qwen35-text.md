@@ -1,5 +1,7 @@
 # Qwen3.5 text support
 
+Current optimization decisions follow [the 2026-09-26 policy](gpu-runtime-performance.md#current-inference-optimization-policy-2026-09-26). Earlier percentage floors and fixed win-count rules below describe superseded experiments, not admission or adoption requirements.
+
 Status: active. This plan owns the `qwen35` extension; the existing Qwen2 and OLMoE contracts remain in their own plans.
 
 ## Evidence and delivery order
@@ -56,9 +58,9 @@ MTP, and MoE are outside this 2B text qualification.
 Measure the 2B retained 200-prompt/32-output request against the same-pin
 llama.cpp reference only after exact text parity. Use five alternating pairs
 after two warm requests per process; report prompt, decode, and full request
-separately. A production speed change requires a named operation hypothesis,
-at least 15% lower paired request median, four of five wins, no more than 5%
-prompt or startup regression, and a bounded local build and measurement cost.
+separately. A trial requires a named hypothesis and bounded local build/measurement cost.
+Adoption evaluates paired variation, correctness, workload coverage, regressions,
+memory and maintenance under the current policy; no percentage floor applies.
 No 2B faster-than-llama.cpp claim is inherited from 0.8B.
 
 The complete source file matches the recorded digest. Model IR accepted all
@@ -82,7 +84,7 @@ slower in all five pairs. The phase-interposed repeat had 1362.31 and
 Align losses. Approximate graph phase medians were 396.15/375.64 ms prefill
 and 911.34/878.15 ms decode for Align/llama.cpp. The instrumented graph
 clock includes backend synchronization and is not a shader timing profile.
-Both gaps are far below the 15% improvement floor in the wrong direction;
+Both measurements favor the reference;
 there is no supported production optimization from these measurements alone.
 
 ### Isolated native Metal kernel probe
@@ -96,9 +98,9 @@ declared numerical tolerance, warms both paths, and reports five alternating
 paired synchronized latencies. It excludes model load, graph construction,
 and whole-request execution; it cannot establish a Qwen3.5 or align-runtime
 speedup. Limit implementation and build work to 1,800 seconds and the paired
-measurement to 300 seconds. Keep a kernel only as an independent measurement
-tool unless an end-to-end exact-output owner and the existing 15% request
-floor justify production integration.
+measurement to 300 seconds. Local correctness can justify trial integration to measure real-model effects.
+Production adoption additionally needs the real-model correctness and workload
+assessment; whole-request improvement is not required before trial integration.
 
 The standalone probe is `scripts/bench-metal-q4-matvec.mm`; its native path
 uses Metal directly and ggml is loaded only for the reference path. The source
@@ -131,9 +133,8 @@ the gate/up/activation subgraph and the full FFN. Allocate and upload weights
 before timing; warm both paths. Use deterministic synthetic Q4_0 weights and
 F32 input, with no whole-model or production speed claim. The implementation
 and local build cost ceiling is 1,800 seconds and paired measurement ceiling
-is 300 seconds. A production candidate requires an exact real-model owner and
-the existing 15% whole-request improvement floor; isolated wins alone do not
-authorize a runtime backend change.
+is 300 seconds. The local probe authorizes a switchable real-model trial, with a real-model
+correctness owner and separate request measurement before adoption.
 
 The Apple M1 probe uses the pinned `bb4caa7` ggml/Metal backend and the same
 synthetic inputs on both paths. The direct native kernel fuses gate, up, and
@@ -156,8 +157,8 @@ demonstrates that a native fused GPU path can beat the isolated pinned ggml
 subgraph for this shape. It does not establish whole-request speed or justify
 replacing ggml: the source is synthetic, only one FFN shape and one GPU were
 tested, and the benchmark omits model loading, other graph nodes, and session
-scheduling. The next production decision requires a real-model integration
-owner and the 15% whole-request floor.
+scheduling. The next adoption decision uses the trial integration owner and measured
+request effects under the current policy.
 
 The first independently useful consumer boundary is `--model-ir` plus `--pack` for this real GGUF. It permits validated model inspection, complete tensor coverage, and an owned layout artifact without claiming inference. The next boundary is `--tokenize` and `--detokenize` on this GGUF, with exact pinned llama.cpp token parity. The existing `--prepare-prompt` command then provides real text-only Qwen3.5 chat input IDs. Text-only native `align-runtime` prefill and decode through `--provider align-runtime` uses that tokenizer plus hybrid recurrent/attention state. Vision, MTP/speculative heads, MoE, and 27B are later consumers. Do not infer their support from a passing 0.8B case. No speed claim is made by this work.
 
@@ -774,3 +775,50 @@ gpt-oss, and OLMoE coverage; the role-list assertion now checks all appended ids
 GGUF passed `--model-ir` (320/320 assigned, 50 blocks, `size_sum_ok: true`), `--pack`, and
 `--pack-verify` locally. This is evidence for the first boundary only; the native text matrix and
 its oracle remain next work.
+
+## Native Metal SwiGLU trial ledger (2026-09-26)
+
+This consumer integrates the promising native gate/up/SwiGLU kernel into real
+Align-controlled inference. It changes rounding and remains opt-in. Actual 2B
+GGUF gate/up tensors are all Q4_0 `[2048,6144]`; down is Q4_1 in layers 0..2
+and Q4_0 in layers 3..23. Leave down on ggml in this trial.
+
+| Contract field | Trial contract |
+| --- | --- |
+| Selection and owner | `runtime_qwen35_ffn` opts into the reusable operation specialization through `ALIGN_LLM_NATIVE_SWIGLU=1`; unset/0 uses the unchanged graph. Invalid values fail graph construction. `ggml_ffi.op_native_swiglu_gate` has the same arguments/result as `op_mul_mat`; the checked real shim creates the ordinary operation and marks it for fusion, while the stub retains its existing behavior. A marked gate node requests the native specialization; backend validates Q4_0 weights, shared contiguous F32 one-token input, SiLU split semantics, matching dimensions divisible by 32 (input) and 4 (output). No model-name or 2B-shape selection in the kernel. |
+| Device implementation | A pinned ggml Metal patch replaces three adjacent safe-to-fuse nodes with one native dispatch. Other types/shapes/backends or encoder splits retain the original operations. Align owns the model and graph, ggml owns this trial's allocation and command encoder. This does not mandate ggml for future paths. |
+| Ownership and memory | Borrow existing weight/input/output Metal buffers with their offsets. No copied weights, layout conversion, new tensor storage, CPU readback or command buffer per FFN. Preserve allocator lifetimes, graph synchronization, recurrent updates and session reset. Check all fused-node dependencies, retain needed GPU barriers, and register all fused-node ranges afterward. Refuse fusion if allocator reuse overlaps the fused output with any input/weight GPU storage. |
+| Identity / errors | Normal model/pack schemas unchanged. Native bundle is separate from the authenticated reference bundle and needs its own existing bundle recipe identity. Missing kernel/build errors are failures, never a silent performance success. Unsupported fusion patterns fall back without changing semantics. No new C engine or Python runtime. |
+| Correctness | Existing tokenizer/generation/retained request owners unchanged. Local comparison keeps the probe's pre-existing `0.005 + 0.0005*abs(reference)` F32 tolerance (quantized reduction order, not a token-compatibility waiver); reject nonfinite values. Capture actual model activation vectors, use original GGUF bytes, check gate output and downstream output. Exact generated text against control/reference remains separately required for the tested corpus; disagreement blocks adoption and must be investigated. |
+| Measurements / cost | Local gate and FFN; real request prefill/decode/wall and startup/load; two warm requests, five alternating pairs, multiple input/output lengths. Record all samples, memory and dispatch boundaries. Initial implementation/build budget 7,200 s and measurement budget 1,800 s before a checkpoint/re-scope; no percentage floor. |
+| Adoption | Evaluate correctness, paired variability, workloads, regression, memory and maintenance together. Trial integration is authorized to obtain this evidence. Production default remains unchanged until assessed. |
+
+| Closure | Implementation / owner evidence |
+| --- | --- |
+| Construction / malformed selection | Align opt-in selection; narrow compilation and invalid/unset/0/1 owner |
+| Safe fusion / fallback | Backend pattern, dtype, layout and dimension checks plus ggml fusion consumer check; local real-weight and alternate-shape owner |
+| Success / numerical output | Real activation local comparison; unchanged real Qwen3.5 generation owner |
+| State / early exit / repeated requests | Existing six-request generation owner, additional longer generation comparisons |
+| Failure / cleanup | Existing backend failure owners and RAII backend lifetime; no new owned buffers or session state |
+| Performance / backend scope | Alternating candidate/control/reference campaign; Metal row in backend parity, CPU/CUDA explicitly deferred |
+
+Trial developer interface: `measure-native-swiglu --config CONFIG --output NEW_JSON`
+uses three cases (64/16, 200/32, 330/64 prompt/output tokens), two warm requests
+and at least five alternating pairs. CONFIG supplies GGUF, pack, Model IR, control
+and candidate binary/options/library paths, pinned llama reference, phase interposer,
+and control commit. The version-1 `NATIVE_SWIGLU_MEASUREMENT` report contains all
+pair clocks, outputs, prompt IDs, model/binary/bundle identities and an assessment
+status; it never grants adoption. `--native-ab` uses the same candidate binary,
+bundle and options with fusion disabled/enabled, omitting the reference rerun.
+Earlier diagnostic receipts are retained as explicitly unversioned evidence.
+No weights or activation arrays belong in Git. Capture tools write caller-owned
+files outside the product path; do not load them during timing.
+
+Trial outcome: implementation and measurement completed; retain default-off.
+The [result and reproduction](../native-swiglu-trial.md) map construction,
+fallback/alias safety, real intermediate output, retained/long requests and
+performance cells to passing evidence or stated limits. There is no new owned
+resource or session failure path. The 2B and 0.8B generation owners pass; CPU/CUDA
+native fusion and full Gemma semantics are deferred. Same-bundle A/B does not
+establish a repeatable request gain. Next hypothesis is kernel work distribution,
+then a larger fused boundary if necessary; neither is an adoption promise.

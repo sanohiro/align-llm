@@ -1,5 +1,7 @@
 # G1 GPU runtime: resident Metal and CUDA generation
 
+Current optimization decisions follow [the 2026-09-26 policy](gpu-runtime-performance.md#current-inference-optimization-policy-2026-09-26). Earlier percentage floors and fixed win-count rules below describe superseded experiments, not admission or adoption requirements.
+
 Status: G1 merged; Metal independent numeric qualification passes, CUDA remains pending.
 G1R serial coding-session implementation is active (2026-09-09).
 Status note 2026-09-20: CUDA G1 19-case and 16-request session qualification passed at `688232c`

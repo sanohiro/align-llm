@@ -4262,6 +4262,16 @@ int32_t align_ggml_op_mul_mat(void *ctx, void *slots, int64_t out, int64_t a, in
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 
+/* Align explicitly requests this fusion; other backends retain the original op. */
+int32_t align_ggml_op_native_swiglu_gate(void *ctx, void *slots, int64_t out, int64_t a, int64_t b) {
+    int32_t status = align_ggml_op_mul_mat(ctx, slots, out, a, b);
+    if (status == 0) {
+        ggml_set_name(align_ggml_slot_tensor(slots, out), "align_native_q40_swiglu");
+    }
+    return status;
+}
+
+
 /* Attention KQ requires the reference's explicit F32 precision, including on CUDA. */
 int32_t align_ggml_op_attention_scores(void *ctx, void *slots, int64_t out, int64_t k, int64_t q) {
     struct ggml_tensor *key = align_ggml_slot_tensor(slots, k);

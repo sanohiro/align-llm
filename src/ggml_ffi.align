@@ -469,6 +469,7 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_op_mul(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_add(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_mul_mat(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
+  fn align_ggml_op_native_swiglu_gate(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_attention_scores(ctx: raw, slots: slice<u8>, out: i64, k: i64, q: i64) -> i32
   fn align_ggml_op_attention_mask(ctx: raw, slots: slice<u8>, out: i64, source: i64) -> i32
   fn align_ggml_op_flash_attention(ctx: raw, slots: slice<u8>, out: i64,
@@ -1937,6 +1938,14 @@ pub fn op_mul_mat(
   ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
   unsafe {
     return r5_result(align_ggml_op_mul_mat(ctx, slots, out, a, b) as i64, label)
+  }
+}
+
+// Request a device fusion while retaining ordinary matrix multiplication fallback.
+pub fn op_native_swiglu_gate(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_native_swiglu_gate(ctx, slots, out, a, b) as i64, label)
   }
 }
 

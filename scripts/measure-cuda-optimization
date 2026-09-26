@@ -190,8 +190,10 @@ def reductions(arms, model, case, metric='client_ns', primary=('olmoe', 'warm-lo
         result.append((control_clock - candidate_clock) / control_clock)
     median = statistics.median(result)
     selected = (model, case, metric) == tuple(primary)
-    passed = median >= .15 and sum(r > 0 for r in result) >= 4 if selected else median >= -.05
-    return dict(metric=metric, primary=selected, paired_reductions=result, median_reduction=median, passed=passed)
+    return dict(metric=metric, primary=selected, paired_reductions=result,
+                median_reduction=median, quality_passed=True,
+                faster_pairs=sum(r > 0 for r in result), decision='ASSESSMENT_REQUIRED',
+                regression_warning=median < -.05)
 
 
 def identity(source, build):
@@ -255,7 +257,7 @@ def quiet_host():
 def run(args):
     destination = args.output.absolute()
     destination.mkdir(mode=0o700)
-    record = dict(schema_version=2, protocol=args.protocol, status='FAIL', arms=[], comparisons=[])
+    record = dict(schema_version=3, protocol=args.protocol, status='FAIL', arms=[], comparisons=[])
     worker = None
     try:
         # The campaign policy is settled in the plan; the receipt records the exact values used.
@@ -359,8 +361,7 @@ def run(args):
             raise ValueError('measurement tool or plan changed during campaign')
         if {name: identity(sources[name], builds[name]) for name in builds} != identities:
             raise ValueError('build identity changed during campaign')
-        if not all(row['passed'] for row in record['comparisons']):
-            raise ValueError('performance floor or guardrail not met')
+        record['adoption'] = 'ASSESSMENT_REQUIRED'
         record['status'] = 'PASS'
     except Exception as error:
         record['error'] = str(error)
@@ -485,7 +486,7 @@ with m.cancellation_scope():
                     pass
 
 
-def self_test():
+def self_test(portable_only=False):
     assert idle_gpu('7, 1516, 210, 405') and idle_gpu('0, 1516, 2790, 10501')
     assert not idle_gpu('7, 1516, 2790, 10501') and not idle_gpu('80, 1516, 210, 405')
     ready = settled_host(lambda: dict(quiet=True))
@@ -498,33 +499,33 @@ def self_test():
     result = dict(output=' '.join(map(str, range(1, 40))), prompt_tokens=42, completion_tokens=128, total_tokens=170, token_count_exact=True)
     assert quality(result) and not quality(dict(result, output='wrong'))
     arms = [dict(model='olmoe', pair=i, arm=name, status='PASS', requests=[dict(case='warm-long-cached', client_ns=100 if name == 'control' else 80, quality=True, result=dict(result))]) for i in range(5) for name in ('control', 'candidate')]
-    assert reductions(arms, 'olmoe', 'warm-long-cached')['passed']
+    assert reductions(arms, 'olmoe', 'warm-long-cached')['quality_passed']
     arms[-1]['requests'][0]['client_ns'] = 200
     arms[-3]['requests'][0]['client_ns'] = 200
-    assert not reductions(arms, 'olmoe', 'warm-long-cached')['passed']
+    assert reductions(arms, 'olmoe', 'warm-long-cached')['faster_pairs'] == 3
     qwen = [dict(model='qwen2', pair=i, arm=name, status='PASS', requests=[dict(case='warm-long-cached',
         client_ns=100 if name == 'control' else 80, quality=True, result=dict(result))]) for i in range(5) for name in ('control', 'candidate')]
     selected = reductions(qwen, 'qwen2', 'warm-long-cached', primary=('qwen2', 'warm-long-cached', 'client_ns'))
-    assert selected['primary'] and selected['passed'] and not reductions(qwen, 'qwen2', 'warm-long-cached')['primary']
+    assert selected['primary'] and selected['quality_passed'] and not reductions(qwen, 'qwen2', 'warm-long-cached')['primary']
     qwen[-1]['requests'][0]['client_ns'] = 200
     qwen[-3]['requests'][0]['client_ns'] = 200
-    # Three of five faster fails the selected primary and still clears the same row as a guardrail.
-    assert not reductions(qwen, 'qwen2', 'warm-long-cached', primary=('qwen2', 'warm-long-cached', 'client_ns'))['passed']
-    assert reductions(qwen, 'qwen2', 'warm-long-cached')['passed']
+    # Three of five faster remains evidence for assessment, never automatic adoption.
+    assert reductions(qwen, 'qwen2', 'warm-long-cached', primary=('qwen2', 'warm-long-cached', 'client_ns'))['decision'] == 'ASSESSMENT_REQUIRED'
+    assert reductions(qwen, 'qwen2', 'warm-long-cached')['quality_passed']
     startup = [dict(model='olmoe', pair=i, arm=name, status='PASS', startup_ns=100 if name == 'control' else 80,
         requests=[dict(case='cold-short', client_ns=100, quality=True, result=dict(result))])
         for i in range(5) for name in ('control', 'candidate')]
     assert all(t['case_names'] == tuple(c for c, _ in t['cases']) for t in PROTOCOLS.values())
     target = ('olmoe', 'cold-short', 'startup_ns')
     row = reductions(startup, 'olmoe', 'cold-short', 'startup_ns', primary=target)
-    assert row['primary'] and row['passed'] and row['metric'] == 'startup_ns'
+    assert row['primary'] and row['quality_passed'] and row['metric'] == 'startup_ns'
     # The same model/case on the guardrail metric is never the primary row of a startup campaign.
     guard = reductions(startup, 'olmoe', 'cold-short', 'client_ns', primary=target)
-    assert not guard['primary'] and guard['passed'] and guard['median_reduction'] == 0
+    assert not guard['primary'] and guard['quality_passed'] and guard['median_reduction'] == 0
     startup[-1]['startup_ns'] = 200
     startup[-3]['startup_ns'] = 200
-    assert not reductions(startup, 'olmoe', 'cold-short', 'startup_ns', primary=target)['passed']
-    assert reductions(startup, 'olmoe', 'cold-short', 'startup_ns')['passed']
+    assert reductions(startup, 'olmoe', 'cold-short', 'startup_ns', primary=target)['faster_pairs'] == 3
+    assert reductions(startup, 'olmoe', 'cold-short', 'startup_ns')['quality_passed']
     for missing in ('startup_ns', 'client_ns'):
         absent = json.loads(json.dumps(startup))
         (absent[0] if missing == 'startup_ns' else absent[0]['requests'][0]).pop(missing)
@@ -559,7 +560,8 @@ def self_test():
     assert filesystem_type(mounts, '/home/hiro/.cache/align-llm/cuda-kit/inputs') == 'ext4'
     assert filesystem_type(mounts, '/mnt/c/models') == '9p' and filesystem_type(mounts, '/mnt/wsl') == 'tmpfs'
     assert filesystem_type(mounts, '/home/hiro/models cache/inputs') == 'ext4'
-    assert filesystem_type(Path('/proc/mounts').read_text(), str(ROOT))
+    if not portable_only:
+        assert filesystem_type(Path('/proc/mounts').read_text(), str(ROOT))
     try:
         filesystem_type('none /mnt/wsl tmpfs rw 0 0\n', '/home/hiro')
     except ValueError:
@@ -595,6 +597,9 @@ def self_test():
             pass
         else:
             raise AssertionError('invalid evidence accepted')
+    if portable_only:
+        print('CUDA measurement portable self-test PASS (policy, paired decisions, parser fixtures)')
+        return
     cancellation_test()
     cancellation_test(construction=True)
     cancellation_test(shutdown=True)
@@ -605,14 +610,15 @@ def self_test():
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--self-test', action='store_true')
+    parser.add_argument('--self-test-portable', action='store_true')
     for name in ('profile', 'control-source', 'control', 'candidate-source', 'candidate', 'output'):
         parser.add_argument('--' + name, type=Path)
     parser.add_argument('--protocol', choices=sorted(PROTOCOLS), default='request')
     parser.add_argument('--control-commit', default=CONTROL)
     parser.add_argument('--primary', default=None)
     args = parser.parse_args()
-    if args.self_test:
-        self_test()
+    if args.self_test or args.self_test_portable:
+        self_test(portable_only=args.self_test_portable)
     else:
         if any(getattr(args, name) is None for name in ('profile', 'control_source', 'control', 'candidate_source', 'candidate', 'output')):
             parser.error('all campaign operands are required')
