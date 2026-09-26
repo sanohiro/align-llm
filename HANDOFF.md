@@ -4,7 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Qwen3.5 decode attribution checkpoint (2026-09-26)
 
-Branch `agent/native-metal-ffn-integration`, following `aa54a963`. Read
+Branch `agent/native-metal-ffn-integration`, baseline `aa54a963`, final
+diagnostic checkpoint `a71e8799`. Read
 `docs/qwen35-decode-attribution.md` and the compact raw receipt. An independent
 Metal pipeline/launch census on the actual 2B request found 663 Align versus
 682 pinned-llama decode dispatches, with 613 identical function/launch
@@ -14,7 +15,16 @@ diagnostic graph that omits only the last Q6_K output projection (node 1,109 of
 1,110) changes paired synchronized decode times by 3.718–7.999 ms, but corrupts
 the second token and is not an inference candidate. The M1 trace has no shader
 timeline; dispatch-boundary timestamp counters are unavailable. No product code
-or inference default changed; probe binaries and full traces remain untracked.
+or inference default changed; compiled probe binaries and full traces remain
+untracked. The checked-in probes and fixed input fixture reproduce the 663/682/
+613 census. A third five-pair run verifies every unpruned response against the
+normal output and records pack, geometry, options and verified bundle identities;
+all five pruned-graph deltas remain positive. Strict Python boundary and receipt
+identity checks pass. The first comprehensive review found a reproducibility
+gap, repaired in `40c2c7a0`; the final full-diff review found two narrow
+measurement-integrity issues, repaired in `a71e8799`. No valid finding remains
+unresolved. The complete review envelope is in the resolved Git common
+directory. This is a local checkpoint; no publication or merge is claimed.
 
 Next: make a bounded mapped-Alignpack weight trial reviewable. First record its
 ownership/ABI contract and closure cases under `docs/specs/` because it changes
