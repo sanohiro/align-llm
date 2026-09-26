@@ -4,9 +4,10 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Qwen3.5 shared-logits boundary trial (2026-09-27)
 
-Branch `agent/native-metal-ffn-integration`, old-binary control `57fd7a6b`.
-The current working tree contains a default-off `ALIGN_LLM_SHARED_LOGITS=1`
-trial. The real 2B output resides in a shared Metal buffer; the Align-owned
+Branch `agent/native-metal-ffn-integration`, old-binary control `57fd7a6b`,
+implementation/evidence checkpoint `9b9bf9bb`. The committed default-off
+`ALIGN_LLM_SHARED_LOGITS=1` trial found that the real 2B output resides in a
+shared Metal buffer; the Align-owned
 greedy scan can borrow it through a checked thin ABI after synchronized graph
 compute. The 993,280-byte copied readback disappears. Three real full-logit
 vectors and 336 state-plane hashes match the old binary exactly; 2B/0.8B
@@ -18,7 +19,7 @@ receipts contain the comparison. The singleton K/V copy elimination and ggml
 GPU argmax trials also passed local correctness but lost their real-request
 speed tests; their code was removed and their closures are in
 `docs/specs/gpu-runtime-performance.md`. Raw diagnostic patches/logs remain
-untracked under the resolved Git common directory. This working tree has not
+untracked under the resolved Git common directory. The checkpoint has not
 been published or merged. One host-native comprehensive `codex review
 --uncommitted` found a valid intermediate-prefill scan regression. It was
 repaired without changing the trial approach. Real-shim build, 2B generation
