@@ -1,5 +1,13 @@
 # Python execution-boundary audit
 
+`scripts/diagnose-qwen35-decode-metal` is `BENCHMARK_OR_MEASUREMENT`: an
+independent Darwin/Metal diagnostic caller. It compiles the checked-in C/Metal
+interposers, checks fixed 200-token input IDs, runs explicit Align and pinned
+llama.cpp binaries, and retains dispatch and intentionally invalid-output
+projection-pruning evidence. It never supplies product inference logic or
+participates in normal startup. Its temporary pruning branch cannot be used
+as a correctness or shipping path.
+
 The final-chunk logits trial extends the existing independent measurement tools
 with an explicit per-arm output policy, and the capture oracle with explicit
 final-only capture alignment. Their classifications remain unchanged; neither

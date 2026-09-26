@@ -55,6 +55,13 @@ or an achievable optimization. The standalone actual-weight Q6_K kernel probe
 had 7.2–7.3 ms traced intervals and showed no repeatable speedup from paired
 loads. Both facts point away from repeating that mapping.
 
+The checked-in reproduction tool ran a second complete campaign with the same
+binary/model/input identities. It again counted 663/682 decode dispatches and
+613 matching signatures. Its five paired graph differences were 5.715, 7.244,
+6.140, 6.647 and 7.046 ms; full/pruned graph medians were 29.675/23.498 ms.
+Both runs remain in the receipt. These positive diagnostic deltas support the
+projection-cost estimate, without making the skipped output valid.
+
 Metal System Trace captured the real requests and command encoders. Its exported
 recording states `Shader Timeline: Disabled` and has no shader interval rows.
 The local M1 reports stage-boundary timestamp sampling, but no dispatch-boundary
@@ -63,6 +70,50 @@ dispatches. The first 25-second recording was interrupted during saving and is
 invalid; the complete eight-second recording and exported TOC are retained in
 the resolved Git common directory. All intrusive diagnostics remain outside
 production and were excluded from the previous request-speed verdict.
+
+## Reproduction
+
+The portable sources are `scripts/trace-qwen35-metal-dispatch.m`,
+`scripts/diagnose-qwen35-projection-prune.c`, the independent driver
+`scripts/diagnose-qwen35-decode-metal`, and fixed prompt IDs in
+`eval/fixtures/qwen35-decode-attribution-200-ids.json`. The driver builds the
+interposers, verifies those IDs against the Align tokenizer, runs two normal
+Align requests and three pinned llama.cpp iterations for the dispatch census,
+then runs two warmup plus five alternating full/pruned pairs. It refuses changed
+graph shape or workload counts. Raw local logs and compiled probes go in a new
+diagnostic directory; the JSON output retains samples and SHA256 identities.
+
+The config is the same measurement shape as `scripts/measure-host-reuse`:
+
+```json
+{
+  "model": "/absolute/path/to/Qwen3.5-2B-Q4_0.gguf",
+  "pack": "/absolute/path/to/qwen35-2b.alignpack",
+  "geometry": "/absolute/path/to/qwen35-2b-model-ir.json",
+  "candidate": {
+    "binary": "/absolute/path/to/align-main",
+    "options": "/absolute/path/to/runtime-options.json",
+    "lib": "/absolute/path/to/ggml-bundle"
+  },
+  "llama": "/absolute/path/to/pinned-bench-native-llama"
+}
+```
+
+The reference binary comes from the checked-in `scripts/bench-native-llama.cpp`
+linked against the pinned llama.cpp/ggml revision named above. Model and binary
+hashes must match the receipt to reproduce this exact comparison. From the
+repository root on a Darwin/Metal host:
+
+```sh
+scripts/diagnose-qwen35-decode-metal \
+  --config /absolute/path/to/config.json \
+  --ggml-include /absolute/path/to/pinned-ggml/ggml/include \
+  --output /new/path/decode-diagnostic.json \
+  --diagnostic-dir /new/path/raw-diagnostic
+```
+
+The driver is a measurement caller only. It never changes production model
+execution, and the pruned response is intentionally excluded from correctness.
 
 ## What to test next
 

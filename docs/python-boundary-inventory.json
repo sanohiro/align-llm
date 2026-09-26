@@ -3734,6 +3734,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/diagnose-qwen35-decode-metal",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Compile independent Metal/C diagnostic interposers and compare fixed-token real-model dispatch signatures and intentionally invalid-output projection-pruning graph intervals.",
+      "reachability": "Focused Darwin/Metal developer measurement only; launches explicit product and pinned reference binaries but is never called by product code.",
+      "substitution": "Records diagnostic measurements and raw hashes; does not implement or select shipping inference.",
+      "python_reason": "Independent paired measurement, prompt-fixture checks and reference-process orchestration remain test-side responsibilities.",
+      "target": "Retain as a focused diagnostic; any mapped-weight product logic belongs to Align and a thin backend ABI.",
+      "migration": "N/A",
+      "acceptance": "scripts/diagnose-qwen35-decode-metal --help; real 2B Metal diagnostic; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/measure-host-reuse",
       "classification": "BENCHMARK_OR_MEASUREMENT",
       "behavior": "Measure retained native HTTP/SSE sessions from two explicit binaries with identical inputs and exact output/count checks.",
