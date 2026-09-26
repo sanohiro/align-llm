@@ -42,7 +42,17 @@
     "state_records": 258,
     "complete_graphs": 3,
     "state_records_exact": true,
-    "invalid_option_refused": true
+    "invalid_option_refused": true,
+    "two_b_source_pack_byte_identity": {
+      "members": 321,
+      "bytes_compared": 1621089536,
+      "status": "PASS"
+    },
+    "zero_point_eight_b_source_pack_byte_identity": {
+      "members": 321,
+      "bytes_compared": 822246656,
+      "status": "PASS"
+    }
   },
   "memory_probe": {
     "method": "sequential warm 200/32 HTTP server, ps RSS and vmmap summary; process footprint excludes GPU allocations and is not a full physical-memory attribution",
@@ -58,7 +68,8 @@
     "worker_script_sha256": "6b1795f7548b5f966530bd0c9282a846db9a7f2372194fa1ca53403fb7bb672e",
     "http_sse_script_sha256": "28bf9ac727bbc5694fb1dc9bf4c6eab781426245327edd7f8714ca6bec75098b",
     "state_interposer_sha256": "48b4775501842ba2a6a77e84bcd5a9340ade05590b0d3feb9a851c8ac7519546",
-    "logit_interposer_sha256": "1c85a8a3ec632763d7934b07cc6b3243bf51f90d134a7ebee9691dfa8c4e7cba"
+    "logit_interposer_sha256": "1c85a8a3ec632763d7934b07cc6b3243bf51f90d134a7ebee9691dfa8c4e7cba",
+    "pack_identity_reader_sha256": "b521afd35f43ed504cedc95e071b79d98594c7ce0cd05d31397100099a0cf9c1"
   },
   "worker": {
     "schema_version": 2,
@@ -2575,7 +2586,9 @@
     "Two servers coexist in the HTTP/SSE campaign; startup order and memory pressure differ from isolated worker startups.",
     "The worker llama.cpp comparison uses its native driver while Align uses a retained session protocol; the endpoints are not identical.",
     "The mapped file and validated file are opened separately; opt-in use assumes a stable local pack and is not ready for production adoption.",
-    "No direct whole-system physical-memory attribution was available."
+    "No direct whole-system physical-memory attribution was available.",
+    "Every source-to-pack member byte was compared and mapped placement uses checked pack offsets, but no independent full GPU-weight readback was performed.",
+    "Construction-to-ready was measured; an isolated load-only clock was not captured."
   ],
   "review_repair": {
     "finding": "Relative pack paths accepted by the existing provider were incorrectly refused in mapped mode. The absolute-path gate was removed; embedded NUL and extent checks remain.",

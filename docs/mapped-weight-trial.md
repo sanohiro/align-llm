@@ -55,6 +55,12 @@ invalid-request recovery, and the pinned llama.cpp greedy output. The 2B
 HTTP/SSE owner passed output parity, refusal, disconnect recovery and restart.
 The 2B default-off generation owner also passed after the change.
 
+The independent Alignpack reader compared every member against the original
+GGUF: 321 members and 1,621,089,536 payload bytes for 2B; 321 members and
+822,246,656 bytes for 0.8B. The mapped shim points each tensor at its checked
+pack offset without a copy. This establishes source-to-pack byte identity and
+host pointer placement; it is not an independent readback of every GPU weight.
+
 An independent readback interposer captured three full-vocabulary outputs for
 the same 2B request in both modes. All 744,960 F32 values are **bit identical**
 (`max_abs=0`, versus the predeclared 0.01 bound), including argmax. A separate

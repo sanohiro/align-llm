@@ -194,6 +194,11 @@ and HTTP/SSE campaigns show isolated startup improvement but no stable warm
 request or decode gain. Keep default off. A same-descriptor or immutable-pack
 contract and physical-memory evidence are prerequisites for production use;
 the trial result does not impose a percentage floor on another candidate.
+The independent reader compared all 321 members against each source GGUF
+(1,621,089,536 bytes for 2B; 822,246,656 bytes for 0.8B); the direct
+pack-offset pointer placement is checked in the shim. Full GPU-weight readback,
+an isolated load-only clock and whole-system physical-memory attribution remain
+explicitly deferred while the mode is experimental and default-off.
 
 ### Controlled upload and prefill trial (2026-09-26)
 
