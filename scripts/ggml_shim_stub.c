@@ -874,6 +874,20 @@ static int64_t align_ggml_clamp_size(size_t value) {
 
 /* --- END R4.5 SHARED SHIM CONTRACT --- */
 
+/* File-backed Metal weights are unavailable in the portable stub. */
+int32_t align_gpu_mapped_weights_open(void *owner, const char *path, int64_t path_len,
+                                      int64_t expected_bytes) {
+    (void) owner; (void) path; (void) path_len; (void) expected_bytes;
+    return -10; /* ALIGN_GPU_UNSUPPORTED, defined below with the GPU stub contract. */
+}
+int64_t align_gpu_weight_add_mapped(void *owner, int32_t type, int32_t n_dims,
+                                    int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3,
+                                    int64_t pack_offset, int64_t expected_bytes) {
+    (void) owner; (void) type; (void) n_dims; (void) ne0; (void) ne1;
+    (void) ne2; (void) ne3; (void) pack_offset; (void) expected_bytes;
+    return -10; /* ALIGN_GPU_UNSUPPORTED. */
+}
+
 #ifdef ALIGN_GGML_FORCE_COMPUTE_STEP2
 /* R6-STEP-N section 4.1's two pieces of state: the byte count of the first decode step's past-K
  * upload, and the latch that a later, larger one sets. Both are file-scope statics of a build that

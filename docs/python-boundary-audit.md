@@ -18,7 +18,7 @@ execute the product graph.
 
 `scripts/measure-host-reuse` is `BENCHMARK_OR_MEASUREMENT`: an independent
 HTTP/SSE caller compares explicit native binaries, checks exact output and token
-counts, and retains alternating timing samples. Explicit per-arm upload/batch settings and optional larger prompt cases support the controlled transfer/batch trial. It never supplies inference
+counts, and retains alternating timing samples. Explicit per-arm upload/batch/mapped-weight settings and optional larger prompt cases support the controlled trials. It never supplies inference
 logic or participates in product startup. Workload collections are validated before launching servers.
 `scripts/test-host-reuse-config` is `CI_OR_DEVELOPER_TOOL`: it checks measurement-input refusal without loading a model or starting a server.
 
@@ -38,7 +38,7 @@ paired changes and wins instead of a percentage-based adoption verdict.
 
 `scripts/measure-native-swiglu` is `BENCHMARK_OR_MEASUREMENT`: it launches
 native products/reference executables, captures timing and checks output/counts.
-Per-arm upload/batch environment, first-request timing and optional uninstrumented wall-only runs remain independent measurement inputs; expected graph counts follow the recorded batch width.
+Per-arm upload/batch/mapped-weight environment, first-request timing and optional uninstrumented wall-only runs remain independent measurement inputs; expected graph counts follow the recorded batch width.
 Its optional `--native-control` compares two explicit native developer builds
 without changing the product interface. `--native-disabled` fixes both builds
 to the unfused path for host-only comparisons. It is never imported or launched by product execution.

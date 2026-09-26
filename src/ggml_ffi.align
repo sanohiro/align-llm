@@ -313,6 +313,8 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_plan_finish(owner: raw) -> i32
   fn align_gpu_plan_cancel(owner: raw) -> i32
   fn align_gpu_memory_allocate(owner: raw) -> i32
+  fn align_gpu_mapped_weights_open(owner: raw, path: str, path_len: i64,
+    expected_bytes: i64) -> i32
   fn align_gpu_memory_allocated_bytes(owner: raw, field: i32) -> i64
   fn align_gpu_weight_metadata_bytes(tensor_count: i64) -> i64
   fn align_gpu_weight_allocation_bytes(
@@ -334,6 +336,10 @@ extern "C" link("align_ggml_shim") {
     ne1: i64,
     ne2: i64,
     ne3: i64,
+  ) -> i64
+  fn align_gpu_weight_add_mapped(
+    owner: raw, kind: i32, n_dims: i32, ne0: i64, ne1: i64, ne2: i64, ne3: i64,
+    pack_offset: i64, expected_bytes: i64,
   ) -> i64
   fn align_gpu_weight_upload(
     owner: raw, index: i64, offset: i64, data: slice<u8>, length: i64,
@@ -812,6 +818,18 @@ pub fn gpu_memory_allocate(borrow owner: GpuDevice) -> Result<(), Fault> {
   }
 }
 
+pub fn gpu_mapped_weights_open(borrow owner: GpuDevice, path: str,
+  expected_bytes: i64) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if path.len() < 1 || expected_bytes < 1 { return Err(fault("CONFIG", "mapped_weights")) }
+  unsafe {
+    status := align_gpu_mapped_weights_open(
+      resource.raw(resource.borrow(owner)), path, path.len(), expected_bytes) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
 pub fn gpu_memory_allocated_bytes(borrow owner: GpuDevice, field: i64) -> i64 {
   if field < GPU_MEMORY_HOST_TOTAL || field > GPU_MEMORY_LEGACY_CACHE {
     return -1
@@ -895,6 +913,26 @@ pub fn gpu_weight_add(
       ne1,
       ne2,
       ne3,
+    )
+    if index < 0 { return Err(gpu_fault_for(index)) }
+    return Ok(index)
+  }
+}
+
+pub fn gpu_weight_add_mapped(
+  borrow owner: GpuDevice, kind: i64, n_dims: i64,
+  ne0: i64, ne1: i64, ne2: i64, ne3: i64,
+  pack_offset: i64, expected_bytes: i64,
+) -> Result<i64, Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind < 0 || kind > 2147483647 || n_dims < 1 || n_dims > 4
+    || pack_offset < 0 || expected_bytes < 1 {
+    return Err(fault("CONFIG", "mapped_weight_shape"))
+  }
+  unsafe {
+    index := align_gpu_weight_add_mapped(
+      resource.raw(resource.borrow(owner)), kind as i32, n_dims as i32,
+      ne0, ne1, ne2, ne3, pack_offset, expected_bytes,
     )
     if index < 0 { return Err(gpu_fault_for(index)) }
     return Ok(index)

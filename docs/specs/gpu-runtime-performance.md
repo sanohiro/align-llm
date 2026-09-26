@@ -161,9 +161,39 @@ independent probe and all samples; next attribution/mapping hypotheses are in
 The subsequent real-model decode diagnostic found matching Q6_K and other major
 Metal kernel launch signatures in Align and pinned llama.cpp; its deliberately
 pruned graph bounds connected projection cost but is not an inference path. See
-`../qwen35-decode-attribution.md`. The next experiment is mapped weight storage,
-with its ownership contract to be recorded before implementation. Mapping is a
-testable hypothesis for the remaining GPU-interval gap, not an established cause.
+`../qwen35-decode-attribution.md`. The mapped-weight experiment below tested
+the storage hypothesis; its real-model result is in `../mapped-weight-trial.md`.
+
+### Mapped Alignpack weight trial (2026-09-26)
+
+This is an opt-in Qwen3.5 Metal resident-session experiment. The existing upload
+path remains the comparison and fallback. The local 2B pack has 64-byte member
+alignment, is 1,621,209,088 bytes, and can be wrapped as a read-only shared
+Metal buffer on the M1. This feasibility check does not establish a speed gain.
+
+| Contract | Definition |
+| --- | --- |
+| Selection / owner | `runtime_qwen35_execution.read` accepts `ALIGN_LLM_MAPPED_WEIGHTS=0` (default) or `1`; all other values fail before allocation. `runtime_qwen35_generation.prepare` selects the path after bounded pack validation and plan construction. CPU/CUDA and other models retain their existing path. No public CLI, persisted format or cache schema changes. |
+| ABI / lifetime | `align_gpu_mapped_weights_open(owner, path, length)` opens and maps the actual pack after admission and before allocation, accepting the same absolute or relative pack path as the existing provider. The descriptor closes after mmap; the shim owns the mapping until the GPU owner is synchronized and released. `align_gpu_weight_add_mapped(..., pack_offset, nbytes)` places a validated tensor in that buffer; it never uploads a copy. The Align plan owns every offset, shape, order and admission decision. Native code only opens, wraps, bounds-checks and places storage. |
+| Identity / mutation | The existing `runtime_pack_identity.verify_file_bounded` remains the semantic admission step. The thin map opener checks regular file, exact size and current path; the current loader also does not pin or hash every payload byte against concurrent mutation. This opt-in trial assumes a stable local pack during construction and inference; mapped-file truncation is a known process fault. Production adoption requires a same-descriptor validation or immutable-pack contract. |
+| Budget / cleanup | Admission charges the full mapped file extent as weights, not the sum of tensor bytes. There is one mapping, one backend buffer, no second weight allocation and no upload. The descriptor closes immediately after mmap; failure at any later prefix leaves ordinary owner cleanup responsible for buffer free before unmap. Existing graph, KV, input and session state remain owned as before. |
+| Performance cost ceiling | One admitted file mapping and one Metal buffer replace one owned weight buffer; no extra full-weight allocation. Build and owner preparation are bounded to 3,600 s per attempt, each alternating campaign to 900 s, and each real request to 180 s. The final report distinguishes any runtime or memory gain from construction and page-fault cost. |
+| Correctness / measurement | Compare byte identity of placed tensors, 2B/0.8B generation, repeated requests, logits and recurrent state at the predeclared existing bounds. Then alternate old/new/pinned-llama runs using the same weights, tokens and options. Record load, first request, warm prefill/decode, whole request and physical memory. Small or negative changes are reported as measured; there is no percentage gate. |
+
+| Closure case | Owner / verification |
+| --- | --- |
+| Valid construction and requests | `runtime_qwen35_generation`, `runtime_qwen_load`, `runtime_weights`, `ggml_ffi`, real shim; focused 2B and 0.8B generation and HTTP/SSE owners. |
+| Invalid option, alignment, extent and file | Parser refusal; shim returns CONFIG/UNSUPPORTED/ALLOCATION before tensor placement; focused mapped-weight owner and real-model negative probes. |
+| Partial placement, graph fault and early release | Owner destruction synchronizes GPU, frees backend buffer, then unmaps; the file descriptor is already closed. Focused native owner and existing device cleanup owner. |
+| Model bytes and state | Full tensor bytes must equal the validated pack slices; existing logit, state and repeated-request captures compare against default-off. |
+| Measurement / fallback | Default-off baseline and opt-in candidate share a binary and backend bundle; record all alternating samples and memory observations. |
+
+Local closure: the opt-in path passed 2B/0.8B generation and 2B serving owners,
+with 744,960 exact 2B logit values and 258 exact state records. Five-pair worker
+and HTTP/SSE campaigns show isolated startup improvement but no stable warm
+request or decode gain. Keep default off. A same-descriptor or immutable-pack
+contract and physical-memory evidence are prerequisites for production use;
+the trial result does not impose a percentage floor on another candidate.
 
 ### Controlled upload and prefill trial (2026-09-26)
 

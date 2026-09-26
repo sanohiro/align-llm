@@ -76,7 +76,7 @@ def main():
         parser.error('output must be new')
     cfg = json.loads(args.config.read_text())
     cases = workloads(cfg)
-    env = {k: v for k, v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_', 'ALIGN_LLM_SYNC_WEIGHT_UPLOAD', 'ALIGN_LLM_PREFILL_'))}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_', 'ALIGN_LLM_SYNC_WEIGHT_UPLOAD', 'ALIGN_LLM_PREFILL_', 'ALIGN_LLM_MAPPED_WEIGHTS'))}
     report = dict(schema_version=1, status='INCOMPLETE', native_enabled=False,
                   model_sha256=digest(cfg['model']), align_revision=Path('.align-revision').read_text().strip(),
                   ggml_revision=Path('.llama-revision').read_text().strip(), arms={}, cases=[],
@@ -89,12 +89,13 @@ def main():
         for name in ('control', 'candidate'):
             arm = cfg[name]
             execution = arm.get('execution', {})
-            if set(execution) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row'}:
+            if set(execution) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights'}:
                 raise ValueError('unknown execution setting')
             sync, chunk = execution.get('sync_weight_upload', '0'), execution.get('prefill_chunk', '128')
             final_logits = execution.get('final_prefill_logits', '0')
             last_row = execution.get('final_ffn_row', '0')
-            if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1'):
+            mapped = execution.get('mapped_weights', '0')
+            if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or (mapped == '1' and sync == '1'):
                 raise ValueError('invalid execution setting')
             with socket.socket() as listener:
                 listener.bind(('127.0.0.1', 0))
@@ -107,7 +108,8 @@ def main():
                                            env=dict(env, DYLD_LIBRARY_PATH=arm['lib'], ALIGN_LLM_NATIVE_SWIGLU='0',
                                                     ALIGN_LLM_SYNC_WEIGHT_UPLOAD=sync, ALIGN_LLM_PREFILL_CHUNK=chunk,
                                                     ALIGN_LLM_PREFILL_FINAL_LOGITS=final_logits,
-                                                    ALIGN_LLM_PREFILL_LAST_FFN_ROW=last_row))
+                                                    ALIGN_LLM_PREFILL_LAST_FFN_ROW=last_row,
+                                                    ALIGN_LLM_MAPPED_WEIGHTS=mapped))
             except BaseException:
                 log.close()
                 raise
@@ -130,7 +132,7 @@ def main():
                     connection.close()
             report['arms'][name] = dict(binary_sha256=digest(arm['binary']), options_sha256=digest(arm['options']),
                 bundle_id=json.loads((Path(arm['lib'])/'manifest.json').read_text())['bundle_id'],
-                startup_ns=time.monotonic_ns()-started, execution=dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row))
+                startup_ns=time.monotonic_ns()-started, execution=dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped))
         for prompt, steps in cases:
             body = dict(model='host-reuse', temperature=0, max_tokens=steps, stream=False,
                         messages=[dict(role='system',content='You are a coding assistant. Return a concise patch-oriented answer.'),

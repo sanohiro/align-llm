@@ -244,24 +244,35 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
   pack := fs.open_rw(pack_path)?
   runtime_pack_identity.verify_file_bounded(pack, identity, 2 * g.n_layer + 2)?
   plan := runtime_qwen35_load.build_plan_file_capacity_bounded(owner, pack, g, capacity)?
+  if config.mapped_weights && config.synchronous_weights { return Err(Error.Invalid) }
+  storage_bytes := if config.mapped_weights { pack.len()? } else { plan.weights_bytes }
   if plan.count < 1 || plan.weights_bytes < 1 || plan.kv_bytes < 1
-    || plan.weights_bytes > options.device_budget_bytes
-    || plan.kv_bytes > options.device_budget_bytes - plan.weights_bytes {
+    || storage_bytes < plan.weights_bytes || storage_bytes > options.device_budget_bytes
+    || plan.kv_bytes > options.device_budget_bytes - storage_bytes {
     return Err(Error.Invalid)
   }
-  workspace := options.device_budget_bytes - plan.weights_bytes - plan.kv_bytes
+  workspace := options.device_budget_bytes - storage_bytes - plan.kv_bytes
   if workspace < 536870912 || options.host_budget_bytes < 134217728 {
     return Err(Error.Invalid)
   }
   ggml_ffi.gpu_host_reserve(owner, 33554432) else { return Err(Error.Invalid) }
   runtime_memory.admit(owner, runtime_memory.MemoryPlan {
-      weights_bytes: plan.weights_bytes, kv_bytes: plan.kv_bytes,
+      weights_bytes: storage_bytes, kv_bytes: plan.kv_bytes,
       workspace_bytes: workspace, metadata_bytes: 100663296,
       staging_bytes: 1048576, legacy_cache_bytes: 0,
     })?
+  if config.mapped_weights {
+    ggml_ffi.gpu_mapped_weights_open(owner, pack_path, storage_bytes) else {
+      return Err(Error.Invalid)
+    }
+  }
   runtime_memory.allocate(owner)?
   if config.synchronous_weights { runtime_weights.upload_mode(owner, true)? }
-  runtime_qwen_load.load_file(owner, pack, plan, 1048576)?
+  if config.mapped_weights {
+    runtime_qwen_load.load_mapped(owner, plan)?
+  } else {
+    runtime_qwen_load.load_file(owner, pack, plan, 1048576)?
+  }
   runtime_qwen35_load.define_resident(owner, g, capacity)?
   mask_capacity := runtime_inputs.attention_width(capacity, g.context_length)?
   runtime_inputs.begin(owner, 7)?
