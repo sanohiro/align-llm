@@ -4,7 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Retained host-work checkpoint (2026-09-26)
 
-Branch `agent/native-metal-ffn-integration`, baseline `6124e90b`.
+Branch `agent/native-metal-ffn-integration`, implementation/evidence `a00052d6`,
+baseline `6124e90b`.
 Implemented exact decode-key reuse by parity/attention width and per-session
 stream scalar/position/mask/logits scratch. No math, state-reset, device-command
 or synchronization change. Added independent HTTP/SSE measurement and host/Metal
@@ -24,12 +25,17 @@ union is 27.69 ms within a 28.33 ms graph call on the new binary. This does not
 identify individual shader time or memory stalls. Retain as local lower-host-work
 implementation, not a throughput win; native FFN fusion remains default-off.
 
-Next: one fresh candidate review; then real Q6_K output-projection/whole-FFN GPU
-attribution, and separately the startup upload copy/blit/wait hypothesis. Do not
+One fresh independent comprehensive review of `a00052d6` against `6124e90b`
+completed CLEAN, findings none; no repair was needed. Its envelope is retained
+in the resolved Git common directory under `reviews/host-reuse-a00052d6.json`.
+
+Next: real Q6_K output-projection/whole-FFN GPU attribution, and separately the
+startup upload copy/blit/wait hypothesis. Do not
 repeat host tweaks or launch-size sweeps without new evidence. Request 121 records
 the non-blocking resource/sibling-view compiler limitation. CPU/CUDA native
 Qwen3.5 and Gemma semantic admission remain deferred under existing restrictions.
-All uncommitted files belong to this checkpoint; no publication or merge claimed.
+This local checkpoint is complete; no unfinished implementation or unrelated
+files remain. No publication or merge claimed.
 
 ## Active native FFN integration (2026-09-26)
 
