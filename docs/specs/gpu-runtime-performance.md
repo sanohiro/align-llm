@@ -42,6 +42,85 @@ after observing failures.
 This section supersedes historical percentage-based admission/shipping prose
 elsewhere in this repository. Historical receipts must not be rewritten.
 
+### Final-chunk logits trial (2026-09-26)
+
+Remove unused intermediate-prefill output work on the current 2B consumer. The
+earlier 0.8B state-only experiment in `qwen35-text.md` is historical, including its
+withdrawn percentage gate; it is not evidence for this implementation or model.
+
+| Contract | Definition |
+| --- | --- |
+| Input / owner | `runtime_qwen35_execution.read` snapshots `ALIGN_LLM_PREFILL_FINAL_LOGITS`: `1` default emits logits only for the final prompt chunk, `0` preserves all chunk outputs for comparison/compatibility; any other value returns `Error.Invalid` before allocation. Align generation owns selection in normal and streaming sessions. The initial trials explicitly set the flag; default adoption follows exact state/output qualification, unchanged peak device allocation and measured long-input request/TTFT gains, not a percentage gate. |
+| Graph / identity | `runtime_qwen35_model.build_tokens_output` accepts an explicit `emit_logits` boolean; false is admitted only for prefill. Existing `build_tokens` and decode callers retain full output. Every recurrent/KV commit remains an explicit graph root; their complete producer dependencies execute. A nonfinal chunk does not expand the final hidden tensor or vocabulary head, so the final layer's unused attention/FFN tail is not executed. Its logits slot is absent and must not be read. Output mode enters the prefill graph key. |
+| Ownership / failure | No new buffer, ABI, state owner or retained weight copy. Borrowed slots retain existing lifetime. Publish recurrent parity only after successful synchronized compute and, when requested, logits readback; errors retain existing unhealthy-session/reset behavior. Final and one-chunk requests always produce logits. |
+| Correctness | Existing exact generation and HTTP/SSE owners on 2B/0.8B, repeated short/long/short requests, 128/256/512 boundaries and one-token generation. Compare final-prefill/decode logits against the unchanged binary with the existing predeclared absolute bound 0.01 and identical argmax; report observed differences. Raw nonfinal baseline vectors remain retained. |
+| Measurement / ceiling | Same weights, chunk width, upload mode, native-FFN setting and prompt IDs; old/new plus pinned llama.cpp, two warmups and at least five alternating pairs. Record prefill, decode, whole request, startup, graph/readback counts and memory. Each campaign <=900 seconds, each request <=180 seconds; no extra retained device allocation is allowed. Adoption is an explicit assessment without a percentage floor. |
+| Formats / prerequisites | No product CLI, persisted format or model-IR change. Measurement tools record the explicit flag; the independent capture oracle aligns one final-prefill vector when enabled. Managed pinned compiler and existing Metal model kit are available. |
+
+Closure: parser malformed-input probes; model's existing state-commit roots
+and full producer dependencies; both generation loops and mode-aware graph keys;
+2B/0.8B generation/serving owners; captured vector/count checks and alternating
+worker/HTTP campaigns. Construction, cleanup, early exit and failure reuse the
+existing session owner, with no new allocation lifetime. Author consistency:
+output elision never controls state publication or removes a state producer.
+The initial isolated trial retained the final hidden root and removed only the
+head. Preserve its binary and measurements as `head_only`; the next bounded
+trial removes that unused root as well. Every layer still contributes its
+recurrent/KV state, including the final layer. Recheck all vectors and boundary
+requests before repeating the real-model measurement; do not reuse the earlier
+candidate's correctness or speed result for the revised graph.
+For the state-root trial, `trace-qwen35-state.c` independently records operation
+counts and hashes every retained KV/recurrent plane after successful synchronized
+compute. Supply the geometry-derived state count (84 on current 2B); require
+bit-identical full-plane hashes at matching graph steps across a 200/3 then 64/3
+retained session. The diagnostic uses a 1 MiB CPU read/hash buffer, adds no graph
+nodes and is never enabled for timing. It validates the next state index is
+absent and fails on missing planes; all state-write nodes must remain. Its C code
+uses only the existing thin ABI/backend read interface, with no production path.
+
+Local closure: same-width 128/256/512 logits are exact, 588 full-state hashes
+agree, and 2B/0.8B generation/serving owners pass. Adopt default `1` based on
+useful long-input HTTP/SSE and first-token gains, unchanged Metal allocation,
+small maintenance cost and explicit rollback. Preserve short-input noise,
+worker regressions and the absence of a llama.cpp whole-request win. Final
+default qualification is separate from explicit-flag timing artifacts; see
+`../final-prefill-q6-trial.md` and its complete raw receipt.
+
+### Actual Q6_K projection probe (2026-09-26)
+
+Independent native Metal experiment, outside production inference: capture the
+real final normalized activation and logits for the tied Q6_K output matrix,
+then compare pinned ggml with a native implementation using paired aligned
+16-bit quant loads. Preserve Q6_K bytes, lane/reduction order, F32 outputs and
+the original 64-thread work mapping. The 210-byte quant block stride permits
+2-byte, not arbitrary 4-byte, alignment. The compiler may already combine loads;
+a speed benefit is a hypothesis.
+
+The C diagnostic capture owns files only and marks the activation output before
+graph allocation so its lifetime survives compute. Capture is never enabled in
+performance runs. The standalone Objective-C++ probe owns its buffers/queue and
+reads exact recorded weights/activations; it is not a product execution path or
+an alternative inference engine. Check all vocabulary outputs for at least one
+prefill and two decode activations, with the existing absolute bound 0.01 and
+identical greedy argmax, before timing. Include a row-tail shape using a subset
+of the same real weights. All values must be finite. No post-measurement tolerance
+change or weight conversion is permitted.
+
+Ceilings: bounded build <=900 seconds; each measurement campaign <=900 seconds,
+five alternating pairs, warmups and synchronized equal invocation counts; at most
+two full weight allocations and existing local probe output/input buffers.
+Record wall and GPU times where supported, source/artifact hashes, exact inputs
+and all samples. CPU/CUDA are deferred; this is a local Metal experiment, not a
+whole-model speed claim. Locally promising results may justify selectable graph
+integration with real request verification; a local loss rejects this load
+strategy only. Root coordinates GPU use to prevent competing measurements.
+
+Local closure: all three real activation/full-vocabulary and row-tail checks
+are exact, but every five-pair improvement range crosses zero in traced and
+untraced campaigns. Do not integrate this paired-load kernel. Retain the
+independent probe and all samples; next attribution/mapping hypotheses are in
+`../final-prefill-q6-trial.md`. This result imposes no general backend restriction.
+
 ### Controlled upload and prefill trial (2026-09-26)
 
 Hypotheses: synchronous tensor upload removes the Metal shared-buffer staging,

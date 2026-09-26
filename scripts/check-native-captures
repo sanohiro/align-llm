@@ -18,6 +18,8 @@ def main():
     logits.add_argument('--requests', nargs='+', help='explicit prompt:completion counts in capture order')
     logits.add_argument('--control-chunk', type=int, choices=(128,256,512))
     logits.add_argument('--candidate-chunk', type=int, choices=(128,256,512))
+    logits.add_argument('--control-final-only', action='store_true', help='control captures only final-prefill and decode outputs')
+    logits.add_argument('--candidate-final-only', action='store_true', help='candidate captures only final-prefill and decode outputs')
     args=parser.parse_args()
     if args.mode=='weights':
         geometry=json.loads(args.geometry.read_text())
@@ -40,16 +42,18 @@ def main():
     configured=(args.requests is not None, args.control_chunk is not None, args.candidate_chunk is not None)
     if any(configured) and not all(configured):
         raise ValueError('request alignment requires counts and both chunk widths')
+    if (args.control_final_only or args.candidate_final_only) and not all(configured):
+        raise ValueError('final-only capture alignment requires explicit requests and chunk widths')
     excluded=[0,0]
     if args.requests:
         requests=[tuple(map(int, value.split(':'))) for value in args.requests]
         if any(len(row)!=2 or not 1<=row[0]<=2048 or not 1<=row[1]<=4096 for row in requests):
             raise ValueError('invalid request counts')
         selected=[]
-        for names,chunk in ((control_names,args.control_chunk),(candidate_names,args.candidate_chunk)):
+        for names,chunk,final_only in ((control_names,args.control_chunk,args.control_final_only),(candidate_names,args.candidate_chunk,args.candidate_final_only)):
             offset=0; chosen=[]
             for prompt,steps in requests:
-                prefills=(prompt+chunk-1)//chunk
+                prefills=1 if final_only else (prompt+chunk-1)//chunk
                 chosen.extend(range(offset+prefills-1,offset+prefills+steps-1))
                 offset+=prefills+steps-1
             if names!=[f'{i:04d}.bin' for i in range(offset)]:
@@ -76,6 +80,6 @@ def main():
             if x>a[ai]:ai=i
             if y>b[bi]:bi=i
         if ai!=bi:raise ValueError(f'greedy argmax mismatch: {name}: {ai} vs {bi}')
-    print(json.dumps(dict(status='PASS',vectors=len(pairs),excluded_nonfinal_prefill=excluded,requests=args.requests,control_chunk=args.control_chunk,candidate_chunk=args.candidate_chunk,elements=elements,max_abs=maximum,mean_abs=total/elements,tolerance_abs=0.01,greedy_argmax='identical')))
+    print(json.dumps(dict(status='PASS',vectors=len(pairs),excluded_nonfinal_prefill=excluded,requests=args.requests,control_chunk=args.control_chunk,candidate_chunk=args.candidate_chunk,control_final_only=args.control_final_only,candidate_final_only=args.candidate_final_only,elements=elements,max_abs=maximum,mean_abs=total/elements,tolerance_abs=0.01,greedy_argmax='identical')))
 
 if __name__=='__main__':main()

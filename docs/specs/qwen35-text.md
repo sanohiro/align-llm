@@ -404,7 +404,15 @@ request latency, and a faster-than-llama claim remain unverified.
 
 ### Batched text prefill contract
 
-The next native consumer packs 1..128 prompt IDs in one prefill graph at a validated prefix
+Current execution policy (2026-09-26) is owned by the final-chunk logits and
+controlled-batch ledgers in `gpu-runtime-performance.md`: admitted batch capacity
+is 512, with 128 remaining the usual width. Nonfinal chunks may execute only the
+explicit recurrent/KV commit roots and their producers; no output readback is
+required for those chunks. Final-prefill and decode outputs retain their full
+graph and readback contract. The initial 128-token contract and evidence below
+record the earlier implementation; its all-chunk readback wording is superseded.
+
+The initial native consumer packs 1..128 prompt IDs in one prefill graph at a validated prefix
 position. Token, four-plane text position, and causal mask inputs have shapes `[T]`, `[4,T]`,
 and `[W,T]`; `W = attention_width(prefix + T, context)` and the mask excludes all keys after
 each query's absolute position. Recurrent convolution joins the committed `(kernel-1)` history

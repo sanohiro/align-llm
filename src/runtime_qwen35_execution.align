@@ -6,11 +6,13 @@ import runtime_attention
 pub Config {
   synchronous_weights: bool,
   prefill_chunk: i64,
+  final_prefill_logits: bool,
 }
 
 pub fn read() -> Result<Config, Error> {
   mut synchronous := false
   mut chunk := 128
+  mut final_logits := true
   match env.get("ALIGN_LLM_SYNC_WEIGHT_UPLOAD") {
     Some(value) => {
       if value == "1" { synchronous = true
@@ -26,5 +28,13 @@ pub fn read() -> Result<Config, Error> {
     },
     None => {},
   }
-  return Ok(Config { synchronous_weights: synchronous, prefill_chunk: chunk })
+  match env.get("ALIGN_LLM_PREFILL_FINAL_LOGITS") {
+    Some(value) => {
+      if value == "0" { final_logits = false
+      } else if value != "1" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
+  return Ok(Config { synchronous_weights: synchronous, prefill_chunk: chunk,
+      final_prefill_logits: final_logits })
 }

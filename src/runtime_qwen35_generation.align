@@ -27,7 +27,7 @@ MASKED := 4286578688
 
 fn key(borrow owner: ggml_ffi.GpuDevice, borrow options: runtime_options.RuntimeOptions,
   geometry: str, kind: i64, position: i64, count: i64, width: i64,
-  parity: i64) -> string {
+  parity: i64, emit_logits: bool) -> string {
   b := builder()
   b.write("qwen35:")
   b.write(options.backend)
@@ -45,6 +45,8 @@ fn key(borrow owner: ggml_ffi.GpuDevice, borrow options: runtime_options.Runtime
   b.write_int(width)
   b.write(":")
   b.write_int(parity)
+  b.write(":")
+  b.write_int(if emit_logits { 1 } else { 0 })
   digest := crypto.sha256(b.to_string())
   return encoding.hex_encode(digest[0..digest.len()]).clone()
 }
@@ -168,6 +170,7 @@ pub Session {
   capacity: i64,
   mask_capacity: i64,
   prefill_chunk: i64,
+  final_prefill_logits: bool,
   decode_a_slots: buffer,
   decode_b_slots: buffer,
   decode_a_key: string,
@@ -307,6 +310,7 @@ pub fn create_session(owner: ggml_ffi.GpuDevice,
   return Ok(Session { owner: owner, options: options,
       geometry_text: geometry_text, geometry: g, capacity: capacity,
       mask_capacity: mask_capacity, prefill_chunk: config.prefill_chunk,
+      final_prefill_logits: config.final_prefill_logits,
       decode_a_slots: buffer.filled(SLOT_BYTES, 0 as u8),
       decode_b_slots: buffer.filled(SLOT_BYTES, 0 as u8),
       decode_a_key: "".clone(), decode_b_key: "".clone(),
@@ -369,17 +373,20 @@ fn execute(borrow mut session: Session,
     graph := ggml_ffi.graph_new(ctx)
     if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
     bind_prefill(session.owner, ctx, count, width, prefill_slots)?
-    runtime_qwen35_model.build_tokens(session.owner, session.geometry, state, offset, count,
-      ggml_ffi.GPU_GRAPH_PREFILL, 6, ctx, graph, prefill_slots)?
+    emit_logits := !session.final_prefill_logits || offset + count == prompt.len()
+    runtime_qwen35_model.build_tokens_output(session.owner, session.geometry, state, offset, count,
+      ggml_ffi.GPU_GRAPH_PREFILL, 6, ctx, graph, prefill_slots, emit_logits)?
     prefill_key = key(session.owner, session.options, session.geometry_text,
-      ggml_ffi.GPU_GRAPH_PREFILL, offset, count, width, state.active)
+      ggml_ffi.GPU_GRAPH_PREFILL, offset, count, width, state.active, emit_logits)
     runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, graph)?
     update_prefill(session.owner, prompt, session.geometry, offset, count, width,
       token_bytes, position_bytes, mask_bytes)?
     runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, graph)?
-    ggml_ffi.gpu_slot_get(session.owner, prefill_slots, runtime_qwen35_model.OUTPUT,
-      logits, 0, logits.len(), "q35_provider_prefill_logits") else {
-      return Err(Error.Invalid)
+    if emit_logits {
+      ggml_ffi.gpu_slot_get(session.owner, prefill_slots, runtime_qwen35_model.OUTPUT,
+        logits, 0, logits.len(), "q35_provider_prefill_logits") else {
+        return Err(Error.Invalid)
+      }
     }
     runtime_qwen35_state.finish(state, true)
     offset = offset + count
@@ -404,7 +411,7 @@ fn execute(borrow mut session: Session,
     if kind == ggml_ffi.GPU_GRAPH_DECODE {
       if session.decode_a_key.len() == 0 || session.decode_a_width != width {
         current_key := key(session.owner, session.options, session.geometry_text,
-          kind, width - 1, 1, width, state.active)
+          kind, width - 1, 1, width, state.active, true)
         if session.decode_a_key.len() > 0 { runtime_execution.invalidate(session.owner, kind)? }
         ctx := ggml_ffi.gpu_graph_context_lookup(session.owner, kind)
         if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
@@ -420,7 +427,7 @@ fn execute(borrow mut session: Session,
     } else {
       if session.decode_b_key.len() == 0 || session.decode_b_width != width {
         current_key := key(session.owner, session.options, session.geometry_text,
-          kind, width - 1, 1, width, state.active)
+          kind, width - 1, 1, width, state.active, true)
         if session.decode_b_key.len() > 0 { runtime_execution.invalidate(session.owner, kind)? }
         ctx := ggml_ffi.gpu_graph_context_lookup(session.owner, kind)
         if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
@@ -501,17 +508,20 @@ pub fn begin_stream(borrow mut session: Session,
     graph := ggml_ffi.graph_new(ctx)
     if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
     bind_prefill(session.owner, ctx, count, width, prefill_slots)?
-    runtime_qwen35_model.build_tokens(session.owner, session.geometry, state, offset, count,
-      ggml_ffi.GPU_GRAPH_PREFILL, 6, ctx, graph, prefill_slots)?
+    emit_logits := !session.final_prefill_logits || offset + count == prompt.len()
+    runtime_qwen35_model.build_tokens_output(session.owner, session.geometry, state, offset, count,
+      ggml_ffi.GPU_GRAPH_PREFILL, 6, ctx, graph, prefill_slots, emit_logits)?
     prefill_key = key(session.owner, session.options, session.geometry_text,
-      ggml_ffi.GPU_GRAPH_PREFILL, offset, count, width, state.active)
+      ggml_ffi.GPU_GRAPH_PREFILL, offset, count, width, state.active, emit_logits)
     runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, graph)?
     update_prefill(session.owner, prompt, session.geometry, offset, count, width,
       token_bytes, position_bytes, mask_bytes)?
     runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, graph)?
-    ggml_ffi.gpu_slot_get(session.owner, prefill_slots, runtime_qwen35_model.OUTPUT,
-      logits, 0, logits.len(), "q35_provider_prefill_logits") else {
-      return Err(Error.Invalid)
+    if emit_logits {
+      ggml_ffi.gpu_slot_get(session.owner, prefill_slots, runtime_qwen35_model.OUTPUT,
+        logits, 0, logits.len(), "q35_provider_prefill_logits") else {
+        return Err(Error.Invalid)
+      }
     }
     runtime_qwen35_state.finish(state, true)
     offset = offset + count
@@ -538,7 +548,7 @@ pub fn stream_next(borrow mut session: Session) -> Result<Option<i64>, Error> {
   if kind == ggml_ffi.GPU_GRAPH_DECODE {
     if session.decode_a_key.len() == 0 || session.decode_a_width != width {
       current_key := key(session.owner, session.options, session.geometry_text,
-        kind, width - 1, 1, width, session.stream_state.active)
+        kind, width - 1, 1, width, session.stream_state.active, true)
       if session.decode_a_key.len() > 0 { runtime_execution.invalidate(session.owner, kind)? }
       ctx := ggml_ffi.gpu_graph_context_lookup(session.owner, kind)
       if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
@@ -554,7 +564,7 @@ pub fn stream_next(borrow mut session: Session) -> Result<Option<i64>, Error> {
   } else {
     if session.decode_b_key.len() == 0 || session.decode_b_width != width {
       current_key := key(session.owner, session.options, session.geometry_text,
-        kind, width - 1, 1, width, session.stream_state.active)
+        kind, width - 1, 1, width, session.stream_state.active, true)
       if session.decode_b_key.len() > 0 { runtime_execution.invalidate(session.owner, kind)? }
       ctx := ggml_ffi.gpu_graph_context_lookup(session.owner, kind)
       if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }

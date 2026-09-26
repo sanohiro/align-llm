@@ -1,5 +1,10 @@
 # Python execution-boundary audit
 
+The final-chunk logits trial extends the existing independent measurement tools
+with an explicit per-arm output policy, and the capture oracle with explicit
+final-only capture alignment. Their classifications remain unchanged; neither
+implements model computation. Raw intermediate baseline vectors remain retained.
+
 `scripts/measure-host-reuse` is `BENCHMARK_OR_MEASUREMENT`: an independent
 HTTP/SSE caller compares explicit native binaries, checks exact output and token
 counts, and retains alternating timing samples. Explicit per-arm upload/batch settings and optional larger prompt cases support the controlled transfer/batch trial. It never supplies inference

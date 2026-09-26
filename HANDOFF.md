@@ -2,6 +2,44 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Final-prefill output / Q6_K checkpoint (2026-09-26)
+
+Branch `agent/native-metal-ffn-integration`, baseline `1ae5824a`. Implemented
+`ALIGN_LLM_PREFILL_FINAL_LOGITS=1` by default; `0` restores all chunk outputs.
+Nonfinal prefill executes every recurrent/KV state root and its producers, while
+omitting the final layer's unused output tail and vocabulary head/readback.
+Both generation paths and fixed 64-hex graph identities include the selection.
+Read `docs/final-prefill-q6-trial.md` and its two raw receipts before resuming.
+
+Completed: managed build, formatting, strict Python boundary, configuration
+refusals, 2B/0.8B generation and HTTP/SSE owners. Same-width old/new captures
+at 128/256/512 have zero difference across 71,516,160 floats; seven graphs have
+588 identical full resident-state hashes. Cross-width differences remain
+separate. Default-1/explicit-0 qualification also passes. Metal peak allocation
+is unchanged; nonfinal MUL_MAT falls 187 -> 181 with all state writes retained.
+
+Measured: five alternating worker old/new/pinned-llama groups and same-binary
+HTTP/SSE OFF/ON pairs, all samples retained. At 700/64 paired median request
+improvements are 2.44% HTTP, 1.45% SSE, first-token 4.78%, all five pairs positive.
+1536/1 improves 6.12% HTTP and 5.21% SSE. Worker 330/64 is slower; 200/32 SSE
+has a slower marginal median despite a positive paired median. Desktop activity
+is material. Adopt for the qualified long-input benefit, exact output/state,
+unchanged allocation and low maintenance cost; no universal gain or llama win.
+
+Actual-weight/activation native Q6_K paired-load experiment is complete: full
+vocabulary and 257-row-tail checks are exact, but every five-pair range crosses
+zero. Keep the independent probe/evidence, do not integrate this kernel.
+The capability awaits one fresh comprehensive review before the local checkpoint
+is closed; no publication or merge is requested. No new Align capability gap.
+
+Next native work: attribute the Q6_K output projection inside real-model decode
+and calibrate attainable device-read bandwidth before a different work/layout
+mapping; alternatively test bounded tiled gate/up/SiLU/down fusion. Neither is
+implemented. Synchronous-upload memory-pressure qualification remains deferred;
+this trial fixes upload to legacy. CPU/CUDA Qwen3.5 and Gemma semantic admission
+remain deferred under existing restrictions. Older sections below retain their
+historical next actions and decisions; this section owns current execution state.
+
 ## Synchronous upload / prefill checkpoint (2026-09-26)
 
 Branch `agent/native-metal-ffn-integration`, baseline `4f56f410`. Implemented
