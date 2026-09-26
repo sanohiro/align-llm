@@ -4,7 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Qwen3.5 mapped-weight trial (2026-09-27)
 
-Branch `agent/native-metal-ffn-integration`, baseline `9c61d3f9`. A default-off
+Branch `agent/native-metal-ffn-integration`, baseline `9c61d3f9`, reviewed
+implementation/evidence checkpoint `4c4aeaa9`. A default-off
 `ALIGN_LLM_MAPPED_WEIGHTS=1` path now maps the actual Alignpack and places its
 planned tensors in a host-backed Metal buffer. Align owns mode selection, pack
 validation, plan, admission and session lifetime; the thin shim owns mmap,
@@ -19,13 +20,12 @@ assumes a stable local pack and stays default-off. Process RSS/vmmap does not
 establish total GPU physical-memory savings. Build, formatter, strict Python
 boundary and measurement-input owner pass. One comprehensive host-native review
 found a relative-pack-path refusal; it was fixed and a real 2B relative-path
-request passes. No valid finding remains unresolved. Raw captures and diagnostic memory logs are retained
-under the resolved Git common directory. This section supersedes the older
+request passes. No valid finding remains unresolved. Raw captures and diagnostic
+memory logs are retained under the resolved Git common directory. This section supersedes the older
 mapped-weight next action below; no publication or merge is claimed.
 
-Next: record the reviewed local checkpoint. For further speed work, compare
-matched endpoint command-buffer and graph
-preparation costs on 200/32; if device time remains dominant, test a larger
+Next: compare matched endpoint command-buffer and graph preparation costs on
+200/32; if device time remains dominant, test a larger
 gate/up/activation/down fusion or a different Q6_K mapping with the existing
 exact-logit/state oracle. CPU/CUDA admission and Gemma semantics remain
 deferred; no new Align language gap was found in this trial.
