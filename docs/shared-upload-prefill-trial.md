@@ -196,7 +196,10 @@ are retained under the resolved Git common directory's
 Git. Baseline/candidate main SHA-256 values are
 `a1a06bd14e8b0849ef6e4fc49e1ca3911d308dbba5ed261ff5eea6ff4211b822` /
 `64833fcf3a09ce18d001c1a3a4cdaf9550b73c05de4c873171b9eee00078b6cc`.
-The receipt binds each linked shim and changed implementation/tool source.
+The receipt binds each linked shim and measurement-producer implementation/tool
+source at `b7ef9bd20a40f36e9d30e3485243b55973b2b93a`. The subsequent review repair
+changes only invalid campaign admission; historical timing/source identities remain
+unchanged.
 
 
 ## Reproduction and reuse
@@ -247,3 +250,21 @@ chunks, while explicitly retaining every recurrent/KV state update. For the
 remaining decode GPU gap, isolate the real Q6_K output projection and the larger
 FFN consumer, as the earlier binary diagnosis proposed. Neither speculative
 optimization is counted as implemented or measured here.
+
+## Review and repair
+
+One fresh independent comprehensive review of `b7ef9bd2` against `4f56f410`
+returned one P2 finding: an empty configured HTTP/SSE workload could emit COMPLETE
+without requests. Accepted and repaired by validating the nonempty list and every
+pair before artifact access or server startup. The same root-cause audit found
+fixed nonempty cases/minimum pairs in the worker tool and nonempty capture admission
+in the oracle. No other findings were reported.
+
+`python3 scripts/test-host-reuse-config` passes 18 CLI refusal cases, including a
+malformed later row, plus acceptance of the default and actual recorded workloads.
+Strict Python boundary and diff checks pass after repair. Valid request execution
+and all runtime sources are unchanged, so the recorded measurements remain valid;
+no GPU rerun is needed for this input-only repair. The repair delta was inspected
+for unrelated behavior. The local review envelope retains reviewed head, comparison
+and integration bases, the finding and its disposition in the Git common directory.
+No publication preflight, PR or merge is claimed.

@@ -39,8 +39,14 @@ attribution. These follow-ons are not implemented. CPU/CUDA native Qwen3.5 and
 full private-Metal qualification remain deferred. Request 122 records the
 non-blocking imported-constant initializer gap; direct references work.
 
-The local implementation and measurement checkpoint is complete; one comprehensive
-review remains before finalizing this checkpoint. No publication or merge claimed.
+The local implementation/evidence checkpoint is `b7ef9bd2`. One fresh comprehensive
+review found one P2 in the independent HTTP measurement tool: empty cases could
+report COMPLETE. Accepted and repaired with upfront list/pair validation and
+`test-host-reuse-config` (18 refusals plus default/recorded acceptance). Runtime
+code and the valid measured campaign are unchanged; strict Python boundary and
+diff checks pass. Review envelope and finding disposition are retained in the
+resolved Git common directory. No valid finding remains unresolved. The local
+checkpoint is complete; no publication or merge claimed.
 
 ## Retained host-work checkpoint (2026-09-26)
 

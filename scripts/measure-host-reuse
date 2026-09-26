@@ -53,6 +53,19 @@ def request(port, body):
         connection.close()
 
 
+def workloads(cfg):
+    cases = cfg.get('cases', [[64,16], [200,64], [330,64], [64,16]])
+    if type(cases) is not list or not cases:
+        raise ValueError('cases must be a nonempty list of prompt/output pairs')
+    for case in cases:
+        if type(case) is not list or len(case) != 2:
+            raise ValueError('cases must contain prompt/output pairs')
+        prompt, steps = case
+        if type(prompt) is not int or type(steps) is not int or not 64 <= prompt <= 2048 or not 1 <= steps <= 127 or prompt + steps - 1 > 2175:
+            raise ValueError('case exceeds measurement session bounds')
+    return cases
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True,
@@ -62,6 +75,7 @@ def main():
     if args.output.exists():
         parser.error('output must be new')
     cfg = json.loads(args.config.read_text())
+    cases = workloads(cfg)
     env = {k: v for k, v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_', 'ALIGN_LLM_SYNC_WEIGHT_UPLOAD', 'ALIGN_LLM_PREFILL_CHUNK'))}
     report = dict(schema_version=1, status='INCOMPLETE', native_enabled=False,
                   model_sha256=digest(cfg['model']), align_revision=Path('.align-revision').read_text().strip(),
@@ -113,9 +127,7 @@ def main():
             report['arms'][name] = dict(binary_sha256=digest(arm['binary']), options_sha256=digest(arm['options']),
                 bundle_id=json.loads((Path(arm['lib'])/'manifest.json').read_text())['bundle_id'],
                 startup_ns=time.monotonic_ns()-started, execution=dict(sync_weight_upload=sync, prefill_chunk=chunk))
-        for prompt, steps in cfg.get('cases', ((64,16), (200,64), (330,64), (64,16))):
-            if type(prompt) is not int or type(steps) is not int or not 64 <= prompt <= 2048 or not 1 <= steps <= 127 or prompt + steps - 1 > 2175:
-                raise ValueError('case exceeds measurement session bounds')
+        for prompt, steps in cases:
             body = dict(model='host-reuse', temperature=0, max_tokens=steps, stream=False,
                         messages=[dict(role='system',content='You are a coding assistant. Return a concise patch-oriented answer.'),
                                   dict(role='user',content='List the integers from 1 to 1000 in ascending order, separated by single spaces. Output only the integers. '+'hello '*(prompt-56))])

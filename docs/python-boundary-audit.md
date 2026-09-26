@@ -3,7 +3,8 @@
 `scripts/measure-host-reuse` is `BENCHMARK_OR_MEASUREMENT`: an independent
 HTTP/SSE caller compares explicit native binaries, checks exact output and token
 counts, and retains alternating timing samples. Explicit per-arm upload/batch settings and optional larger prompt cases support the controlled transfer/batch trial. It never supplies inference
-logic or participates in product startup.
+logic or participates in product startup. Workload collections are validated before launching servers.
+`scripts/test-host-reuse-config` is `CI_OR_DEVELOPER_TOOL`: it checks measurement-input refusal without loading a model or starting a server.
 
 `scripts/test-development-preflight` remains `BUILD_OR_DEVELOPER_TOOL`; its hosted
 20-minute hosted and installed-profile 15-minute timeout assertions validate publication
