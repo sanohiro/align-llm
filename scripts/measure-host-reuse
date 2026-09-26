@@ -62,7 +62,7 @@ def main():
     if args.output.exists():
         parser.error('output must be new')
     cfg = json.loads(args.config.read_text())
-    env = {k: v for k, v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_'))}
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_', 'ALIGN_LLM_SYNC_WEIGHT_UPLOAD', 'ALIGN_LLM_PREFILL_CHUNK'))}
     report = dict(schema_version=1, status='INCOMPLETE', native_enabled=False,
                   model_sha256=digest(cfg['model']), align_revision=Path('.align-revision').read_text().strip(),
                   ggml_revision=Path('.llama-revision').read_text().strip(), arms={}, cases=[],
@@ -74,6 +74,12 @@ def main():
     try:
         for name in ('control', 'candidate'):
             arm = cfg[name]
+            execution = arm.get('execution', {})
+            if set(execution) - {'sync_weight_upload', 'prefill_chunk'}:
+                raise ValueError('unknown execution setting')
+            sync, chunk = execution.get('sync_weight_upload', '0'), execution.get('prefill_chunk', '128')
+            if sync not in ('0', '1') or chunk not in ('128', '256', '512'):
+                raise ValueError('invalid execution setting')
             with socket.socket() as listener:
                 listener.bind(('127.0.0.1', 0))
                 port = listener.getsockname()[1]
@@ -82,7 +88,8 @@ def main():
             try:
                 process = subprocess.Popen([arm['binary'], '--serve-openai', cfg['model'], cfg['pack'], cfg['geometry'],
                                             arm['options'], '0', 'host-reuse', str(port)], stdout=log, stderr=log,
-                                           env=dict(env, DYLD_LIBRARY_PATH=arm['lib'], ALIGN_LLM_NATIVE_SWIGLU='0'))
+                                           env=dict(env, DYLD_LIBRARY_PATH=arm['lib'], ALIGN_LLM_NATIVE_SWIGLU='0',
+                                                    ALIGN_LLM_SYNC_WEIGHT_UPLOAD=sync, ALIGN_LLM_PREFILL_CHUNK=chunk))
             except BaseException:
                 log.close()
                 raise
@@ -105,8 +112,10 @@ def main():
                     connection.close()
             report['arms'][name] = dict(binary_sha256=digest(arm['binary']), options_sha256=digest(arm['options']),
                 bundle_id=json.loads((Path(arm['lib'])/'manifest.json').read_text())['bundle_id'],
-                startup_ns=time.monotonic_ns()-started)
-        for prompt, steps in ((64,16), (200,64), (330,64), (64,16)):
+                startup_ns=time.monotonic_ns()-started, execution=dict(sync_weight_upload=sync, prefill_chunk=chunk))
+        for prompt, steps in cfg.get('cases', ((64,16), (200,64), (330,64), (64,16))):
+            if type(prompt) is not int or type(steps) is not int or not 64 <= prompt <= 2048 or not 1 <= steps <= 127 or prompt + steps - 1 > 2175:
+                raise ValueError('case exceeds measurement session bounds')
             body = dict(model='host-reuse', temperature=0, max_tokens=steps, stream=False,
                         messages=[dict(role='system',content='You are a coding assistant. Return a concise patch-oriented answer.'),
                                   dict(role='user',content='List the integers from 1 to 1000 in ascending order, separated by single spaces. Output only the integers. '+'hello '*(prompt-56))])

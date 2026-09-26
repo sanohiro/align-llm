@@ -324,6 +324,7 @@ extern "C" link("align_ggml_shim") {
     ne2: i64,
     ne3: i64,
   ) -> i64
+  fn align_gpu_weight_upload_mode(owner: raw, mode: i32) -> i32
   fn align_gpu_weights_begin(owner: raw, tensor_count: i64) -> i32
   fn align_gpu_weight_add(
     owner: raw,
@@ -846,6 +847,16 @@ pub fn gpu_weight_allocation_bytes(
     )
     if bytes <= 0 { return Err(gpu_fault_for(bytes)) }
     return Ok(bytes)
+  }
+}
+
+pub fn gpu_weight_upload_mode(borrow owner: GpuDevice, synchronous: bool) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  mode := if synchronous { 1 as i32 } else { 0 as i32 }
+  unsafe {
+    status := align_gpu_weight_upload_mode(resource.raw(resource.borrow(owner)), mode) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
   }
 }
 

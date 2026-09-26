@@ -15,6 +15,9 @@ def main():
     weights.add_argument('gguf',type=Path);weights.add_argument('geometry',type=Path);weights.add_argument('capture',type=Path)
     logits=sub.add_parser('logits')
     logits.add_argument('control',type=Path);logits.add_argument('candidate',type=Path)
+    logits.add_argument('--requests', nargs='+', help='explicit prompt:completion counts in capture order')
+    logits.add_argument('--control-chunk', type=int, choices=(128,256,512))
+    logits.add_argument('--candidate-chunk', type=int, choices=(128,256,512))
     args=parser.parse_args()
     if args.mode=='weights':
         geometry=json.loads(args.geometry.read_text())
@@ -32,13 +35,36 @@ def main():
         if count==0:raise ValueError('no FFN weights')
         print(f'GGUF weight bytes PASS: {count} tensors')
         return
-    names=sorted(p.name for p in args.control.glob('*.bin'))
-    if not names or names!=sorted(p.name for p in args.candidate.glob('*.bin')):
-        raise ValueError('missing or differing capture sets')
+    control_names=sorted(p.name for p in args.control.glob('*.bin'))
+    candidate_names=sorted(p.name for p in args.candidate.glob('*.bin'))
+    configured=(args.requests is not None, args.control_chunk is not None, args.candidate_chunk is not None)
+    if any(configured) and not all(configured):
+        raise ValueError('request alignment requires counts and both chunk widths')
+    excluded=[0,0]
+    if args.requests:
+        requests=[tuple(map(int, value.split(':'))) for value in args.requests]
+        if any(len(row)!=2 or not 1<=row[0]<=2048 or not 1<=row[1]<=4096 for row in requests):
+            raise ValueError('invalid request counts')
+        selected=[]
+        for names,chunk in ((control_names,args.control_chunk),(candidate_names,args.candidate_chunk)):
+            offset=0; chosen=[]
+            for prompt,steps in requests:
+                prefills=(prompt+chunk-1)//chunk
+                chosen.extend(range(offset+prefills-1,offset+prefills+steps-1))
+                offset+=prefills+steps-1
+            if names!=[f'{i:04d}.bin' for i in range(offset)]:
+                raise ValueError('raw capture count/order differs from declared requests')
+            selected.append([names[i] for i in chosen])
+        excluded=[len(control_names)-len(selected[0]),len(candidate_names)-len(selected[1])]
+        pairs=list(zip(*selected))
+    else:
+        if not control_names or control_names!=candidate_names:
+            raise ValueError('missing or differing capture sets')
+        pairs=list(zip(control_names,candidate_names))
     maximum=0.;total=0.;elements=0
-    for name in names:
+    for name,candidate_name in pairs:
         a=array('f');b=array('f')
-        a.frombytes((args.control/name).read_bytes());b.frombytes((args.candidate/name).read_bytes())
+        a.frombytes((args.control/name).read_bytes());b.frombytes((args.candidate/candidate_name).read_bytes())
         if sys.byteorder!='little':a.byteswap();b.byteswap()
         if not a or len(a)!=len(b):raise ValueError('capture extent mismatch')
         ai=bi=0
@@ -50,6 +76,6 @@ def main():
             if x>a[ai]:ai=i
             if y>b[bi]:bi=i
         if ai!=bi:raise ValueError(f'greedy argmax mismatch: {name}: {ai} vs {bi}')
-    print(json.dumps(dict(status='PASS',vectors=len(names),elements=elements,max_abs=maximum,mean_abs=total/elements,tolerance_abs=0.01,greedy_argmax='identical')))
+    print(json.dumps(dict(status='PASS',vectors=len(pairs),excluded_nonfinal_prefill=excluded,requests=args.requests,control_chunk=args.control_chunk,candidate_chunk=args.candidate_chunk,elements=elements,max_abs=maximum,mean_abs=total/elements,tolerance_abs=0.01,greedy_argmax='identical')))
 
 if __name__=='__main__':main()

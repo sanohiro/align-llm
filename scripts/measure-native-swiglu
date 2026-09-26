@@ -24,6 +24,7 @@ def main():
     parser.add_argument('--config', type=Path, required=True,
                         help='JSON: model, pack, geometry, control/candidate {binary,options,lib}, llama, trace')
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--wall-only', action='store_true', help='omit Align phase interposer; report phase clocks as unavailable')
     parser.add_argument('--pairs', type=int, default=5)
     parser.add_argument('--native-ab', action='store_true', help='same candidate binary/bundle with fusion disabled versus enabled; no reference rerun')
     parser.add_argument('--native-control', action='store_true', help='enable native fusion on the explicitly supplied prior control build; retain reference arm')
@@ -38,8 +39,18 @@ def main():
         cfg['control']=dict(cfg['candidate'])
         cfg['control_commit']=None
     arms=('control','candidate') if args.native_ab else ('control','candidate','llama')
-    env = {k:v for k,v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_'))}
-    report = dict(schema_version=1, artifact_kind='NATIVE_SWIGLU_MEASUREMENT',
+    env = {k:v for k,v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_', 'ALIGN_LLM_SYNC_WEIGHT_UPLOAD', 'ALIGN_LLM_PREFILL_CHUNK'))}
+    execution = {}
+    for arm in ('control', 'candidate'):
+        selected = cfg[arm].get('execution', {})
+        if set(selected) - {'sync_weight_upload', 'prefill_chunk'}:
+            raise ValueError('unknown execution setting')
+        sync = selected.get('sync_weight_upload', '0')
+        chunk = selected.get('prefill_chunk', '128')
+        if sync not in ('0', '1') or chunk not in ('128', '256', '512'):
+            raise ValueError('invalid execution setting')
+        execution[arm] = dict(sync_weight_upload=sync, prefill_chunk=chunk)
+    report = dict(schema_version=2, artifact_kind='NATIVE_SWIGLU_MEASUREMENT',
                   align_revision=Path('.align-revision').read_text().strip(),
                   policy='2026-09-26-no-percentage-floor', status='INCOMPLETE',
                   control_kind='same_binary_same_bundle_native_off' if args.native_ab else ('both_native_disabled' if args.native_disabled else ('prior_native_source' if args.native_control else 'unchanged_align_source')),
@@ -50,7 +61,7 @@ def main():
                   options_sha256={arm:digest(cfg[arm]['options']) for arm in ('control','candidate')},
                   control_commit=cfg['control_commit'], candidate_patch_sha256=digest('scripts/native-metal-swiglu.patch'),
                   note='Startup is construction-to-ready with OS file cache uncontrolled. Graph phase includes synchronization; not shader-only time.',
-                  cases=[], adoption='ASSESSMENT_REQUIRED')
+                  phase_instrumented=not args.wall_only, execution=execution, cases=[], adoption='ASSESSMENT_REQUIRED')
     def save(): args.output.write_text(json.dumps(report,indent=2)+'\n')
     save()
     try:
@@ -78,22 +89,31 @@ def main():
                     c=cfg[arm]
                     e=dict(env,DYLD_LIBRARY_PATH=c['lib'],DYLD_INSERT_LIBRARIES=cfg['trace'],
                            ALIGN_LLM_NATIVE_SWIGLU='1' if not args.native_disabled and (arm=='candidate' or args.native_control) else '0')
+                    if args.wall_only:e.pop('DYLD_INSERT_LIBRARIES')
+                    e['ALIGN_LLM_SYNC_WEIGHT_UPLOAD']=execution[arm]['sync_weight_upload']
+                    e['ALIGN_LLM_PREFILL_CHUNK']=execution[arm]['prefill_chunk']
                     started=time.monotonic_ns()
                     with Session([c['binary'],'--runtime-session',cfg['model'],cfg['pack'],cfg['geometry'],c['options'],'0'],timeout=180,env=e) as session:
                         startup=time.monotonic_ns()-started
+                        first_wall=None
+                        outputs=[]
                         for _ in range(3):
                             start=time.monotonic_ns()
                             result=session.generate(dict(schema_version=1,system=SYSTEM,user=user,max_tokens=steps,temperature=0.0,seed=None))
                             wall=time.monotonic_ns()-start
+                            if first_wall is None:first_wall=wall
+                            outputs.append(result['output'])
                             if result['prompt_tokens']!=len(ids) or result['completion_tokens']!=steps:
                                 raise ValueError('actual processed token count differs')
                         session.log.seek(0);log=session.log.read().decode('utf-8','replace')
                     graphs=[(int(k),int(t)) for k,t in re.findall(r'Q35_TIMING graph_kind=(\d+) elapsed_ns=(\d+) status=0',log)]
-                    count=(len(ids)+127)//128+steps-1
-                    if len(graphs)!=3*count:raise ValueError(f'phase graph count mismatch: {len(graphs)} != {3*count}')
+                    if len(set(outputs))!=1:raise ValueError('repeated output disagreement')
+                    chunk=int(execution[arm]['prefill_chunk'])
+                    count=(len(ids)+chunk-1)//chunk+steps-1
+                    if not args.wall_only and len(graphs)!=3*count:raise ValueError(f'phase graph count mismatch: {len(graphs)} != {3*count}')
                     recent=graphs[-count:]
-                    return dict(wall_ns=wall,startup_ns=startup,prefill_ns=sum(t for k,t in recent if k==0),
-                                decode_ns=sum(t for k,t in recent if k!=0),output=result['output'])
+                    return dict(wall_ns=wall,startup_ns=startup,first_request_ns=first_wall,first_ready_ns=startup+first_wall,prefill_graphs=(len(ids)+chunk-1)//chunk,prefill_ns=None if args.wall_only else sum(t for k,t in recent if k==0),
+                                decode_ns=None if args.wall_only else sum(t for k,t in recent if k!=0),output=result['output'])
                 def llama():
                     started=time.monotonic_ns()
                     with tempfile.TemporaryFile(mode='w+') as errors:
@@ -125,7 +145,7 @@ def main():
                     case['pairs'].append(row);save()
                     if len({v['output'] for v in row.values()})!=1:raise ValueError('output disagreement: retained all evidence; no speed claim')
                     print(f'prompt={len(ids)} output={steps} pair={pair} '+str({k:round(v['wall_ns']/1e6,3) for k,v in row.items()}),flush=True)
-                case['median_ms']={arm:{field:statistics.median(r[arm][field]/1e6 for r in case['pairs']) for field in ('wall_ns','prefill_ns','decode_ns','startup_ns')} for arm in arms}
+                case['median_ms']={arm:{field:None if case['pairs'][0][arm][field] is None else statistics.median(r[arm][field]/1e6 for r in case['pairs']) for field in ('wall_ns','prefill_ns','decode_ns','startup_ns')} for arm in arms}
                 save()
         report['status']='PASS'
     except BaseException as error:

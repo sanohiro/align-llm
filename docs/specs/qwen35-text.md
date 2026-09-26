@@ -452,8 +452,10 @@ improvement is below the 15% material floor and supports no faster-than-llama
 claim. CPU and CUDA remain unmeasured pending native session qualification.
 
 The local one-shot `--provider align-runtime` Metal path now loads the source-bound
-pack, allocates fresh attention and recurrent state, runs 128-token prompt chunks,
-and greedily decodes with two parity graphs. `scripts/run-qwen35-generation-smoke`
+pack, allocates fresh attention and recurrent state, runs 128-token prompt chunks by default,
+and greedily decodes with two parity graphs. The controlled upload/prefill trial in
+`gpu-runtime-performance.md` owns opt-in synchronous weight transfer and 256/512-token
+batches; historical 128-token measurements below remain unchanged. `scripts/run-qwen35-generation-smoke`
 compares its output and token counts with the pinned Metal llama.cpp oracle for
 31-, 200-, and 330-token prompts, each with three generated tokens; all pass.
 The latter two cases cross a chunk boundary and a 256-to-512 attention-width

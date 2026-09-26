@@ -18,6 +18,8 @@ int main(int argc, char **argv) {
     assert(align_gpu_attention_policy(&owner) == 0);
     assert(align_gpu_attention_probe(&owner, 2, 256, 128, 4, 2) == 1);
     assert(align_gpu_attention_probe(&owner, 2, 256, 33, 4, 2) == 0);
+    assert(align_gpu_attention_probe(&owner, 512, 512, 128, 4, 2) == 1);
+    assert(align_gpu_attention_probe(&owner, 513, 512, 128, 4, 2) == ALIGN_GPU_CONFIG);
     assert(align_gpu_attention_probe(&owner, 0, 256, 128, 4, 2) == ALIGN_GPU_CONFIG);
     assert(align_gpu_attention_probe(&owner, 2, 256, 128, 3, 2) == ALIGN_GPU_CONFIG);
     assert(owner.memory_allocated == 0 && owner.weights_uploaded == 0);

@@ -1779,6 +1779,7 @@ struct align_gpu_device_state {
     int64_t shape_workspace_peak;
     int memory_planned;
     int memory_allocated;
+    int synchronous_weight_upload;
     int64_t weights_expected;
     int64_t weights_created;
     int64_t weights_uploaded;
@@ -2085,7 +2086,7 @@ int32_t align_gpu_attention_probe(void *owner, int64_t queries, int64_t width,
         int64_t head_dim, int64_t heads, int64_t kv_heads) {
     struct align_gpu_device_state *state = owner;
     if (state == NULL || state->device == NULL || state->memory_planned || state->shape_planning
-        || queries < 1 || queries > 128 || width < 1 || width > 262144
+        || queries < 1 || queries > 512 || width < 1 || width > 262144
         || head_dim < 1 || head_dim > 512 || heads < 1 || heads > 128
         || kv_heads < 1 || kv_heads > heads || heads % kv_heads != 0) { return ALIGN_GPU_CONFIG; }
     /* This engine intentionally owns the real decomposed fallback, not GPU Flash math. */
@@ -2378,6 +2379,16 @@ int64_t align_gpu_weight_metadata_bytes(int64_t tensor_count) {
     return payload + (ALIGN_GGML_TENSOR_ALIGNMENT - 1);
 }
 
+int32_t align_gpu_weight_upload_mode(void *owner, int32_t mode) {
+    struct align_gpu_device_state *state = owner;
+    if (state == NULL || !state->memory_allocated || state->shape_planning
+        || state->weights_expected != 0 || (mode != 0 && mode != 1)) {
+        return ALIGN_GPU_CONFIG;
+    }
+    state->synchronous_weight_upload = mode;
+    return ALIGN_GPU_OK;
+}
+
 int32_t align_gpu_weights_begin(void *owner, int64_t tensor_count) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     int64_t required = align_gpu_weight_metadata_bytes(tensor_count);
@@ -2504,9 +2515,13 @@ int32_t align_gpu_weight_upload(
         return ALIGN_GPU_CONFIG;
     }
     if (ALIGN_GPU_FORCE_TRANSFER_FAILURE) { state->weights_failed = 1; return ALIGN_GPU_TRANSFER; }
-    memcpy(state->staging, data, (size_t) length);
+    const void *source = data;
+    if (!state->synchronous_weight_upload) {
+        memcpy(state->staging, data, (size_t) length);
+        source = state->staging;
+    }
     memcpy((unsigned char *) state->weights_buffer + state->pending_weight_offset + (size_t) offset,
-        state->staging, (size_t) length);
+        source, (size_t) length);
     state->pending_weight_uploaded_bytes += (size_t) length;
     state->weights_uploaded_bytes += length;
     if (state->pending_weight_uploaded_bytes == state->pending_weight_bytes) {

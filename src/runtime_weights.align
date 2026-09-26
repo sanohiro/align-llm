@@ -30,6 +30,11 @@ pub fn allocation_bytes(
   Err(_) => Err(Error.Invalid),
 }
 
+pub fn upload_mode(borrow owner: ggml_ffi.GpuDevice, synchronous: bool) -> Result<(), Error> {
+  ggml_ffi.gpu_weight_upload_mode(owner, synchronous) else { return Err(Error.Invalid) }
+  return Ok(())
+}
+
 pub fn begin(borrow owner: ggml_ffi.GpuDevice, tensor_count: i64) -> Result<(), Error> {
   ggml_ffi.gpu_weights_begin(owner, tensor_count) else {
     return Err(Error.Invalid)

@@ -1,0 +1,30 @@
+module runtime_qwen35_execution
+
+import std.env
+import runtime_attention
+
+pub Config {
+  synchronous_weights: bool,
+  prefill_chunk: i64,
+}
+
+pub fn read() -> Result<Config, Error> {
+  mut synchronous := false
+  mut chunk := 128
+  match env.get("ALIGN_LLM_SYNC_WEIGHT_UPLOAD") {
+    Some(value) => {
+      if value == "1" { synchronous = true
+      } else if value != "0" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
+  match env.get("ALIGN_LLM_PREFILL_CHUNK") {
+    Some(value) => {
+      if value == "512" { chunk = runtime_attention.MAX_PREFILL
+      } else if value == "256" { chunk = 256
+      } else if value != "128" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
+  return Ok(Config { synchronous_weights: synchronous, prefill_chunk: chunk })
+}

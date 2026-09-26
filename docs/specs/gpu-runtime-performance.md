@@ -42,6 +42,39 @@ after observing failures.
 This section supersedes historical percentage-based admission/shipping prose
 elsewhere in this repository. Historical receipts must not be rewritten.
 
+### Controlled upload and prefill trial (2026-09-26)
+
+Hypotheses: synchronous tensor upload removes the Metal shared-buffer staging,
+blit and per-chunk wait; larger prefill batches reduce graph boundaries. Measure
+these independently before combining. Neither changes weights, tokenizer or math
+semantics; batch reduction order may change rounding, so exact generation owners
+and the existing 0.01 absolute logit bound remain required.
+
+| Contract | Definition |
+| --- | --- |
+| Inputs / owner | `runtime_qwen35_execution.read` reads `ALIGN_LLM_SYNC_WEIGHT_UPLOAD` (`0` default, `1` opt-in) and `ALIGN_LLM_PREFILL_CHUNK` (`128` default, `256` or `512`) once per Qwen3.5 session before allocation. Other strings fail with `Error.Invalid`; no persisted format changes. |
+| ABI | `align_gpu_weight_upload_mode(void *owner, int32_t mode)` accepts 0/1 after memory allocation and before weights begin, outside shape planning. Invalid owner/order/mode returns CONFIG without mutation. Align owns selection; real/stub shims own transfer mechanics. |
+| Transfer / lifetime | Mode 1 calls synchronous `ggml_backend_tensor_set` directly on the borrowed chunk. The current Metal shared allocation copies directly; private backends use their synchronous implementation. No borrowed pointer survives return. Mode 0 retains staging + async set + wait. Select after one backend synchronization; all upload bounds, failure injection and counters stay. No mmap or ownership transfer. |
+| Memory / ceiling | Existing staging remains allocated and budgeted. One scalar upload mode; one scalar session batch width; at most 512 input rows and the existing device/workspace budget. No additional retained weight copy. Each experiment at most 900 seconds; each request at most 180 seconds; five alternating pairs with all samples retained. |
+| Batching / identity | Graph builders reference the shared attention maximum 512; the thin ABI validates the same bound. Actual count, geometry and graph kind already enter graph identity. Token/position/mask buffers match the selected session width. Decode and per-request reset remain unchanged. |
+| Results / assessment | Report construction-to-ready, first request and warm request, prefill/decode and traced upload boundaries. OS cache is uncontrolled; do not call a first process disk-cold. Compare upload-only, batch-only and optional combined arms against old Align and pinned llama.cpp. Defaults remain legacy until evidence and review. |
+
+| Closure | Implementation and acceptance |
+| --- | --- |
+| Configuration / malformed / no mutation | Execution parser and real/stub mode setters; focused C upload owner covers invalid modes, lifecycle order and independent owners; real session invalid-environment probes cover parser refusal. |
+| Upload construction / success / failure | `ggml_ffi`, `runtime_weights`, generation prepare and both shims; `run-gpu-weight-upload-smoke` checks multi-chunk payload, bounds, transfer failure, unchanged staging in direct mode, legacy copy and counters. Existing device owner covers resource cleanup. |
+| Batch construction / bounds / state | Generation and model/attention/recurrent/FFN builders; `run-gpu-attention-policy-smoke` tests 512 admission, 513 refusal and allocation faults; generation and HTTP/SSE owners on 2B/0.8B, plus repeated requests across a 512-token boundary. Invalid/early exits use existing Session resource cleanup; no new external allocation owner. |
+| Real success / regression / cleanup | `run-qwen35-generation-smoke`, `run-openai-serving-smoke`, controlled measurement callers and existing logit oracle. Retained requests cover reset and recovery. No new schema, cache migration or process concurrency policy. |
+
+Local closure: all named owners and paired campaigns completed; see
+`../shared-upload-prefill-trial.md` and its raw receipt. Keep defaults unchanged:
+startup improves, warm inference is inconclusive and memory accounting remains
+a follow-up. No universal improvement floor is applied.
+
+Author consistency pass: the synchronous setter borrows bytes only until return;
+shared versus private memory is selected by the backend, never inferred from a
+host pointer or model name. The batch cap controls admission and allocation alike.
+
 Current measurement output changes (independent tooling, not runtime formats):
 `measure-cuda-optimization` reports schema 3, `quality_passed`, `faster_pairs`,
 `decision=ASSESSMENT_REQUIRED` and a regression warning; successful quality and

@@ -20,14 +20,16 @@ static double now(void) {
     return (double) mach_absolute_time() * base.numer / base.denom / 1e9;
 }
 
+// Metal resource totals are distinct from the OS process physical-footprint ledger.
 static void traced_commit(id<MTLCommandBuffer> object, SEL selector) {
     unsigned long number = atomic_fetch_add(&serial, 1);
     double submitted = now();
     // Read timestamps only on completion. Do not add another GPU wait or dispatch.
     [object addCompletedHandler:^(id<MTLCommandBuffer> completed) {
-        fprintf(stderr, "METAL_CB id=%lu submit=%.9f gpu_start=%.9f gpu_end=%.9f completed=%.9f status=%lu\n",
+        fprintf(stderr, "METAL_CB id=%lu submit=%.9f gpu_start=%.9f gpu_end=%.9f completed=%.9f status=%lu metal_allocated_bytes=%llu\n",
                 number, submitted, completed.GPUStartTime, completed.GPUEndTime,
-                now(), (unsigned long) completed.status);
+                now(), (unsigned long) completed.status,
+                (unsigned long long) completed.commandQueue.device.currentAllocatedSize);
     }];
     original_commit(object, selector);
 }

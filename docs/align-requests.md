@@ -16936,3 +16936,26 @@ stream input helper with unchanged disconnect/recovery behavior. Until then,
 `runtime_qwen35_generation.stream_next` writes the small input fields locally;
 this bounded duplication is the recorded application cost, not a compatibility
 layer or a hypothetical compiler dependency.
+
+## Request 122 — Imported public constants in constant initializers
+
+Status: PROPOSED
+Priority: low
+Blocking: no
+Blocked gate or slice: none; controlled upload/prefill trial uses the defining constant directly
+Independent work that may continue: direct qualified uses inside functions, runtime implementation and measurements
+Resume condition: shipped constant evaluation resolves imported public scalar constants with visibility and cycle checks
+Align commit or pull request: none; consumer pin b20429be50d6ab889496a0589143320683b29aeb rejects the initializer
+align-llm verification: build rejected `pub MAX_PREFILL := runtime_attention.MAX_PREFILL`; direct uses avoid the alias
+
+Classification: compiler constant-evaluation gap, not model execution policy.
+Sibling `align_sema/src/lib.rs` at `c2f32a2d213fcba6678f7c4dfeca5dac11e308a9`
+explicitly rejects qualified references in `ConstEval::expr`; field-access
+initializers reach the generic constant-initializer rejection. The language guide
+allows exported constants to be named with `module.NAME`, but the implemented
+initializer subset does not compose this use. The application keeps one public
+limit in `runtime_attention` and refers to it directly in function bodies.
+Proposed surface: ordinary `pub LIMIT := module.LIMIT`, with no new syntax.
+Acceptance: whole/per-unit compilation folds imported public scalars and rejects
+private references and cycles deterministically; the two-module witness and an
+align-llm build pass. This is non-blocking and introduces no compatibility layer.

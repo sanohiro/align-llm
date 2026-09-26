@@ -2,6 +2,7 @@ module runtime_qwen35_ffn
 
 import std.env
 import ggml_ffi
+import runtime_attention
 import runtime_qwen35_geometry
 import runtime_qwen35_roles
 
@@ -25,7 +26,7 @@ pub fn build_many(
 ) -> Result<(), Error> {
   if !runtime_qwen35_geometry.valid_layer_pattern(g)
     || layer < 0 || layer >= g.n_layer
-    || count < 1 || count > 128
+    || count < 1 || count > runtime_attention.MAX_PREFILL
     || ggml_ffi.handle_absent(ctx)
     || ggml_ffi.slot_ne(slots, INPUT, 0) != g.n_embd
     || ggml_ffi.slot_ne(slots, INPUT, 1) != count

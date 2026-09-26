@@ -1,6 +1,7 @@
 module runtime_qwen35_recurrent
 
 import ggml_ffi
+import runtime_attention
 import runtime_qwen35_geometry
 import runtime_qwen35_roles
 import runtime_qwen35_state
@@ -42,7 +43,7 @@ pub fn build_many(
 ) -> Result<(), Error> {
   if !runtime_qwen35_geometry.valid_layer_pattern(g)
     || layer < 0 || layer >= g.n_layer || runtime_qwen35_state.is_attention(g, layer)
-    || count < 1 || count > 128
+    || count < 1 || count > runtime_attention.MAX_PREFILL
     || g.ssm_inner_size / g.ssm_time_step_rank != g.ssm_state_size
     || g.ssm_time_step_rank % g.ssm_group_count != 0
     || ggml_ffi.handle_absent(ctx) || ggml_ffi.handle_absent(graph)

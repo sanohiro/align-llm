@@ -2,6 +2,46 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Synchronous upload / prefill checkpoint (2026-09-26)
+
+Branch `agent/native-metal-ffn-integration`, baseline `4f56f410`. Implemented
+independently selectable synchronous weight upload and 128/256/512 prefill.
+Defaults remain legacy (`0`/`128`). Align owns policy, loading and graph/state
+control; ggml owns buffers and kernels. No mmap, changed weights or Python
+product dependency. Read `docs/shared-upload-prefill-trial.md` and its raw
+receipt before resuming. All intentional changes belong to this local trial.
+
+Completed: managed build, formatting, strict Python boundary, device cleanup/
+allocation faults, direct upload bounds/failure/isolation owner, real 512/513
+attention owner, 2B defaults/direct generation, 2B/0.8B combined generation and
+HTTP/SSE, 0.8B direct/256 generation, invalid environment refusal, and a private
+Metal legacy/direct 31/3 compatibility check. Direct upload equals all 134 raw
+logit vectors; batch/combined equal 128 token-aligned vectors across repeated
+64/16, 200/32, 700/64, 64/16 requests, maximum difference zero. Six versus one
+nonfinal prefill vectors occur at different positions and remain retained.
+
+Measured: startup improves in all 15 alternating pairs, workload medians about
+1.00–1.08 s -> 0.49–0.58 s. Pre-first-graph Metal commands fall 1369 -> 1 and
+actual shim disassembly confirms the direct branch. Warm inference improvement
+is not established. Batch-only 200/32 shows a small mixed result; the 330/64
+campaign has a slower median. Combined 700/64 is slower in 4/5 HTTP and 3/5 SSE
+pairs. Desktop activity is material; no samples were excluded.
+
+Metal resource maxima are equal for legacy/direct at 200/32 (1,290,174,464 bytes),
+but OS footprint at 700/16 is 147.1M versus 1.3G after CPU initialization. Do not
+infer equal system RAM pressure from the allocation count. Both knobs stay
+experimental; the result is a startup improvement, not a decode victory.
+
+Next: qualify CPU/GPU shared-page residency/accounting under memory pressure;
+then skip unused nonfinal-prefill vocabulary projections/readbacks while retaining
+all recurrent/KV updates; continue actual Q6_K output-projection/whole-FFN decode
+attribution. These follow-ons are not implemented. CPU/CUDA native Qwen3.5 and
+full private-Metal qualification remain deferred. Request 122 records the
+non-blocking imported-constant initializer gap; direct references work.
+
+The local implementation and measurement checkpoint is complete; one comprehensive
+review remains before finalizing this checkpoint. No publication or merge claimed.
+
 ## Retained host-work checkpoint (2026-09-26)
 
 Branch `agent/native-metal-ffn-integration`, implementation/evidence `a00052d6`,

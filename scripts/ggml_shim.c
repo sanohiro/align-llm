@@ -1053,6 +1053,7 @@ struct align_gpu_device_state {
     int64_t shape_workspace_peak;
     int memory_planned;
     int memory_allocated;
+    int synchronous_weight_upload;
     int64_t weights_expected;
     int64_t weights_created;
     int64_t weights_uploaded;
@@ -1419,7 +1420,7 @@ int32_t align_gpu_attention_probe(void *owner, int64_t queries, int64_t width,
     struct ggml_tensor *q, *k, *v, *mask, *half_mask, *half_k, *half_v, *attention;
     int supported;
     if (state == NULL || state->device == NULL || state->memory_planned || state->shape_planning
-        || queries < 1 || queries > 128 || width < 1 || width > 262144
+        || queries < 1 || queries > 512 || width < 1 || width > 262144
         || head_dim < 1 || head_dim > 512 || heads < 1 || heads > 128
         || kv_heads < 1 || kv_heads > heads || heads % kv_heads != 0) {
         return ALIGN_GPU_CONFIG;
@@ -1815,6 +1816,19 @@ int64_t align_gpu_weight_metadata_bytes(int64_t tensor_count) {
     return payload + (GGML_MEM_ALIGN - 1);
 }
 
+int32_t align_gpu_weight_upload_mode(void *owner, int32_t mode) {
+    struct align_gpu_device_state *state = owner;
+    if (state == NULL || !state->memory_allocated || state->shape_planning
+        || state->weights_expected != 0 || (mode != 0 && mode != 1)) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if (state->backend == NULL) { return ALIGN_GPU_CONFIG; }
+    /* Establish readiness before allowing CPU writes to a shared allocation. */
+    align_gpu_synchronize(state);
+    state->synchronous_weight_upload = mode;
+    return ALIGN_GPU_OK;
+}
+
 int32_t align_gpu_weights_begin(void *owner, int64_t tensor_count) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     int64_t required = align_gpu_weight_metadata_bytes(tensor_count);
@@ -1998,10 +2012,15 @@ int32_t align_gpu_weight_upload(
         return ALIGN_GPU_CONFIG;
     }
     if (ALIGN_GPU_FORCE_TRANSFER_FAILURE) { state->weights_failed = 1; return ALIGN_GPU_TRANSFER; }
-    memcpy(state->staging, data, (size_t) length);
-    ggml_backend_tensor_set_async(
-        state->backend, state->pending_weight, state->staging, (size_t) offset, (size_t) length);
-    align_gpu_synchronize(state);
+    if (state->synchronous_weight_upload) {
+        /* Shared Metal buffers copy directly. Other buffers retain backend synchronization. */
+        ggml_backend_tensor_set(state->pending_weight, data, (size_t) offset, (size_t) length);
+    } else {
+        memcpy(state->staging, data, (size_t) length);
+        ggml_backend_tensor_set_async(
+            state->backend, state->pending_weight, state->staging, (size_t) offset, (size_t) length);
+        align_gpu_synchronize(state);
+    }
     state->pending_weight_uploaded_bytes += (size_t) length;
     state->weights_uploaded_bytes += length;
     if (state->pending_weight_uploaded_bytes == logical) {
