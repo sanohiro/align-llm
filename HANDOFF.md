@@ -4,8 +4,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Active native FFN integration (2026-09-26)
 
-Branch: `agent/native-metal-ffn-integration`, based on `ca609a41`; implementation
-and measurements committed at `d2319d03`.
+Branch: `agent/native-metal-ffn-integration`, based on `ca609a41`; initial implementation
+and measurements at `d2319d03`, follow-up at `33e0e444`.
 The merged synthetic FFN probe is the starting point. The current inference
 policy in `docs/specs/gpu-runtime-performance.md` withdraws all fixed improvement
 floors and permits real-model trial integration before whole-request evidence.
@@ -55,7 +55,9 @@ The IQ3_XXS narrow-row idle-lane fix does not apply to this Q4_0 width-2048 path
 Next: measure the Q6_K full-vocabulary projection with real final activations and
 try its load/work mapping; then a tiled gate/up/SiLU/down consumer with bounded
 partial-output reduction. Neither is implemented. Do not continue launch-size
-sweeps without a new concrete hypothesis. Finish one follow-up review first.
+sweeps without a new concrete hypothesis. The follow-up at `33e0e444` received
+one fresh independent comprehensive CLEAN review against `b1d24207`, findings
+none; no repair was needed.
 CPU/CUDA fusion and Gemma semantic admission remain explicitly deferred until
 a useful Metal specialization is demonstrated. Existing fallbacks remain.
 All current changes belong to this capability; no unrelated work was present.
