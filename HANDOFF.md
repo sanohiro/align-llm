@@ -28,6 +28,10 @@ eight cases; several requests regress or have no robust gain. Even the no-op
 not claim a llama.cpp win. No samples were excluded. Full raw paired evidence
 and source/binary identities are in the tracked receipt; 576 full-logit binary
 captures and diagnostic logs are in the resolved Git common directory.
+Implementation/evidence checkpoint `3f0904d6` received one fresh host-native
+comprehensive review (`codex review --commit 3f0904d6`): CLEAN, findings none.
+The review envelope is retained in the resolved Git common directory. The
+local checkpoint is complete; no publication or merge is claimed.
 
 Next: attribute the real-model decode Q6_K output projection and the 24-layer
 gate/up/SiLU/down path with device timing, command boundaries and attainable
