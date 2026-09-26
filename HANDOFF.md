@@ -29,8 +29,11 @@ unchanged allocation and low maintenance cost; no universal gain or llama win.
 Actual-weight/activation native Q6_K paired-load experiment is complete: full
 vocabulary and 257-row-tail checks are exact, but every five-pair range crosses
 zero. Keep the independent probe/evidence, do not integrate this kernel.
-The capability awaits one fresh comprehensive review before the local checkpoint
-is closed; no publication or merge is requested. No new Align capability gap.
+Implementation/evidence checkpoint `1920cb04` received one fresh independent
+comprehensive review: CLEAN, findings none. Source/artifact identities, all
+paired statistics and complete state-plane records were independently checked;
+the review envelope is retained in the resolved Git common directory. The local
+checkpoint is complete; no publication or merge is claimed. No new Align gap.
 
 Next native work: attribute the Q6_K output projection inside real-model decode
 and calibrate attainable device-read bandwidth before a different work/layout
