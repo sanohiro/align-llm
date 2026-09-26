@@ -2,6 +2,32 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Qwen3.5 decode attribution checkpoint (2026-09-26)
+
+Branch `agent/native-metal-ffn-integration`, following `aa54a963`. Read
+`docs/qwen35-decode-attribution.md` and the compact raw receipt. An independent
+Metal pipeline/launch census on the actual 2B request found 663 Align versus
+682 pinned-llama decode dispatches, with 613 identical function/launch
+signatures including every major Q4/Q5/Q6 matrix-vector, attention, recurrent
+and convolution kernel. The dominant kernels are not missing from Align. A
+diagnostic graph that omits only the last Q6_K output projection (node 1,109 of
+1,110) changes paired synchronized decode times by 3.718–7.999 ms, but corrupts
+the second token and is not an inference candidate. The M1 trace has no shader
+timeline; dispatch-boundary timestamp counters are unavailable. No product code
+or inference default changed; probe binaries and full traces remain untracked.
+
+Next: make a bounded mapped-Alignpack weight trial reviewable. First record its
+ownership/ABI contract and closure cases under `docs/specs/` because it changes
+the pack-file-to-device ownership boundary. Keep Align in charge of selection,
+validation and session lifetime, with the current upload path as rollback.
+Implement an opt-in real-model path, qualify bytes/logits/state and cleanup, then
+measure construction, first use, warm prefill/decode, complete requests and
+physical memory under controlled matched conditions. Source/binary evidence
+shows pinned llama.cpp maps weight pages while Align currently copies into a
+ggml-owned Metal buffer; this remains a causal hypothesis for the decode gap,
+not a proven speed gain. No new Align gap has been established yet. CPU/CUDA
+Qwen3.5 qualification and Gemma semantic admission remain deferred.
+
 ## Final-layer single-row FFN checkpoint (2026-09-26)
 
 Branch `agent/native-metal-ffn-integration`, baseline `9e1719c9`. Implemented
@@ -33,11 +59,9 @@ comprehensive review (`codex review --commit 3f0904d6`): CLEAN, findings none.
 The review envelope is retained in the resolved Git common directory. The
 local checkpoint is complete; no publication or merge is claimed.
 
-Next: attribute the real-model decode Q6_K output projection and the 24-layer
-gate/up/SiLU/down path with device timing, command boundaries and attainable
-bandwidth; select a bounded larger fusion or layout experiment only after that
-attribution. Do not repeat the previous exact but neutral paired-load mapping.
-CPU/CUDA Qwen3.5 qualification and Gemma semantic admission remain deferred.
+The subsequent decode diagnostic above completed the Q6_K projection and
+dispatch census. It did not establish a new Q6_K kernel gain or per-shader
+timing. The top section owns the current next action.
 
 ## Final-prefill output / Q6_K checkpoint (2026-09-26)
 

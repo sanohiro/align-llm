@@ -158,6 +158,12 @@ are exact, but every five-pair improvement range crosses zero in traced and
 untraced campaigns. Do not integrate this paired-load kernel. Retain the
 independent probe and all samples; next attribution/mapping hypotheses are in
 `../final-prefill-q6-trial.md`. This result imposes no general backend restriction.
+The subsequent real-model decode diagnostic found matching Q6_K and other major
+Metal kernel launch signatures in Align and pinned llama.cpp; its deliberately
+pruned graph bounds connected projection cost but is not an inference path. See
+`../qwen35-decode-attribution.md`. The next experiment is mapped weight storage,
+with its ownership contract to be recorded before implementation. Mapping is a
+testable hypothesis for the remaining GPU-interval gap, not an established cause.
 
 ### Controlled upload and prefill trial (2026-09-26)
 
