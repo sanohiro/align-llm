@@ -29,8 +29,18 @@ One fresh independent comprehensive review of `a00052d6` against `6124e90b`
 completed CLEAN, findings none; no repair was needed. Its envelope is retained
 in the resolved Git common directory under `reviews/host-reuse-a00052d6.json`.
 
-Next: real Q6_K output-projection/whole-FFN GPU attribution, and separately the
-startup upload copy/blit/wait hypothesis. Do not
+Completed pinned llama.cpp binary follow-up: inspected actual driver/libllama/
+Metal host assembly and runtime paths. Mapped weights avoid Align's upload
+sequence; reference prefill uses one 200-token batch versus Align 128+72.
+`llama_decode` returns asynchronously and waits in `llama_get_logits`; complete
+readiness is about 27.06 ms, not the 1.38 ms decode return. GPU interval union
+is 26.42 ms versus Align 27.80 ms in diagnostic runs; no shader-level causal
+claim. See `docs/llama-binary-comparison.md`; local raw diagnostics reside in the
+resolved Git common directory under `diagnostics/llama-binary-2026-09-26`.
+
+Next: controlled larger-prefill-batch trial; separately mapped/host-visible
+weight loading and cold/warm first use; then real Q6_K output-projection/whole-
+FFN attribution of the remaining decode GPU gap. Do not
 repeat host tweaks or launch-size sweeps without new evidence. Request 121 records
 the non-blocking resource/sibling-view compiler limitation. CPU/CUDA native
 Qwen3.5 and Gemma semantic admission remain deferred under existing restrictions.
