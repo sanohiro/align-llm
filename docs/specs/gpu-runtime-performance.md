@@ -121,6 +121,34 @@ test case, not a model-name gate or a universal Qwen/Gemma layout assumption.
 | Rebuild / cleanup | Graph invalidation, reusable views/descriptor and close | `scripts/run-qwen35-generation-smoke` repeated requests and changed decode width; `scripts/run-qwen35-native-conv-copy-smoke` confirms no stale descriptor content across requests. |
 | Performance / portability | Paired worker and pinned llama.cpp callers, backend parity register | Existing Qwen3.5 paired worker/phase/footprint measurement callers record three lengths, startup and memory receipts on M1. Another Metal device and CUDA remain explicitly unmeasured until available. |
 
+### Native Metal prefill recurrent-state copy trial (2026-09-28)
+
+The merged decode trial leaves recurrent state publication inside ggml for
+prefill. An actual 2B Q4_0 two-chunk trace at 128 and 71 prompt tokens found
+18 convolution and 18 DeltaNet state `CPY` nodes in each prefill graph. The
+DeltaNet source/destination are contiguous F32, `[128,128,16,1]` and 1 MiB.
+The convolution source/destination are F32 `[3,6144,1,1]`; the source row
+stride is 524 bytes for the 128-token chunk and 296 bytes for the 71-token
+chunk, while the resident destination row stride is 12 bytes. The same shared
+Metal workspace and resident allocations admitted by the decode trial appear
+in the trace. These are measured layouts, not fixed model-name conditions.
+
+| Contract | Definition |
+| --- | --- |
+| Selection / input | `ALIGN_LLM_NATIVE_PREFILL_STATE_COPY` is absent/`0` by default and `1` only when both `ALIGN_LLM_NATIVE_STATE_COPY=1` and `ALIGN_LLM_NATIVE_CONV_COPY=1`. Align snapshots the flag at Qwen3.5 session construction; malformed values or unmet dependencies refuse before model weight/workspace setup. Prefill mode enters the graph key. The original ggml prefill graph and native decode modes remain available. No GGUF, pack, Model IR, runtime options or request wire change. |
+| Graph / native operation | For the selected prefill graph, Align expands the 36 state sources as explicit roots and registers their inactive resident destinations, omitting only their ggml `CPY` nodes. The existing checked F32 contiguous blit and strided-row Metal compute path handle source shape, stride, bounded span and shared backing. The shim extends its admission to prefill only when this flag is selected; no model-name or fixed `128`/`71` token predicate. Other prefill copies, model operations and logits remain in ggml. |
+| Ordering / ownership | The synchronous ggml producer graph completes before the independent native command reads source views. Its 18 blits and 18 strided copies share one command buffer. Align may read logits while it runs, but explicitly waits for native completion before recurrent parity advances, before a next prefill chunk can read that state, and before request return. Failure leaves the session unhealthy; invalidation/close drain pending work before borrowed workspace or resident allocations are released. The descriptor buffer and Metal views remain session-owned and reusable, with no second state plane. |
+| Results / cache | Registration, submit and completion failures use the existing `Result`/controlled worker-failure path. Graph-local registrations clear on invalidation; source layout is rechecked on each new graph/commit. The in-memory graph key gains the mode. Persisted schema/version: N/A; no persisted data changes. |
+| Correctness / measurement / ceiling | Require exact 2B full logits and all resident planes after each prefill/decode graph, 2B/0.8B generation and repeated requests, invalid-option and native submit/completion fault owners, and actual 128/71 plus short/long chunk shapes before timing. Compare same-binary mixed-decode control with prefill mode on, plus ordinary Align and pinned llama.cpp, using identical GGUF/input IDs/output counts at 64/16, 200/32 and 330/64. Run warm-up and five alternating pairs; separate prefill, decode, whole request, construction/load and process footprint. Keep all adverse samples. Build <=900 s, each campaign <=900 s, request <=180 s; no new model-sized buffer or extra state readback. Adoption is assessed without a universal percentage floor. |
+
+| Closure case | Owner | Evidence to produce |
+| --- | --- | --- |
+| Construction / malformed mode | `runtime_qwen35_execution`, generation preparation, native mode admission | Existing real-model copy owner with prefill variant checks dependent/invalid modes before ready; ordinary and decode-only controls still run. |
+| Success / chunk variation | Recurrent graph, checked shim and native command, generation parity | Trace-based owner compares complete logits/state and counts 36 removed prefill `CPY` nodes for short and chunked requests; 2B/0.8B generation owners pass. |
+| Failure / early exit | Native submit/completion plus existing unhealthy session | Test-only fault builds exercise the real first prefill command, require failed envelope/no token/exit 2 and native/request markers; ordinary mode still completes. |
+| Rebuild / cleanup | Graph invalidation, borrowed views, descriptor reuse and session close | Repeated short/long/short session owner and full state hashes show no stale source/descriptor across chunk widths; existing close drains pending work. |
+| Performance / portability | Same-binary worker/phase/footprint callers, backend parity | Actual 2B M1 campaigns at three lengths record prefill/decode/whole/startup/memory and pinned reference. Another Metal device and CUDA are deferred with explicit backend parity status. |
+
 ### Final-chunk logits trial (2026-09-26)
 
 Remove unused intermediate-prefill output work on the current 2B consumer. The

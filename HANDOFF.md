@@ -2,12 +2,39 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active native Metal convolution-state copy trial (2026-09-27)
+## Active native Metal prefill state-copy trial (2026-09-28)
 
-Branch `agent/native-metal-conv-state-copy` from `main` at `9ff42d21` (PR #309
-merged). GPU inference remains the priority. Extend the Align-selected native
-decode boundary to the 18 strided convolution-state copies while preserving
-the already qualified Delta-only mode and ordinary ggml graph as controls.
+Branch `agent/native-metal-prefill-state-copy` from merged `main` at
+`df6d3cdc` (PR #310). GPU inference remains the priority. The immediate
+consumer capability extends the Align-selected independent Metal state-copy
+command to prefill without changing the default ggml graph or the merged
+decode-only modes. The public option, failure/ownership closure, cost ceiling
+and evidence owners are in `docs/specs/gpu-runtime-performance.md`.
+
+The implementation and result are in `docs/qwen35-native-prefill-copy-trial.md`.
+The selectable prefill route removes 36 ggml state `CPY` nodes per prefill
+graph, and Align waits for the native command before parity publication in
+ordinary and streaming generation. The final 2B owner passed 48 exact full
+logits and 4,116 resident planes over short/128+71/short requests; 2B/0.8B
+generation, 0.8B SSE/recovery, invalid-mode and both native failure owners
+passed. The fixed-binary five-pair 2B untraced comparison versus the already
+native mixed-decode route found paired control-minus-prefill medians of
+-4.449, -17.033 and -17.426 ms at 64/16, 200/32 and 330/64, with the two
+longer conditions losing four of five pairs. Ordinary Align still lost all
+15 pairs because the candidate includes the earlier decode improvement.
+Instrumented prefill graph/submission call savings were outweighed by native completion
+waits; the process-footprint screen resolved no difference. Keep the prefill
+option default-off and retain mixed decode as the preferred tested route.
+Next: complete final owner/preflight, one independent review, PR checks and
+merge; then refresh `main` and begin the next GPU capability. Another Metal
+host and CUDA remain deferred until available.
+
+## Completed native Metal convolution-state copy trial (2026-09-27)
+
+Branch `agent/native-metal-conv-state-copy` merged as PR #310 at
+`df6d3cdc`. It extended the Align-selected native decode boundary to the 18
+strided convolution-state copies while preserving the Delta-only and ordinary
+ggml graph controls.
 The plan and cost ceiling are in `docs/specs/gpu-runtime-performance.md`; the
 implementation and result are in `docs/qwen35-native-conv-copy-trial.md`.
 
@@ -28,11 +55,10 @@ ordinary Align and pinned llama.cpp. Paired Delta-only-minus-mixed medians were
 adverse whole-request pairs; the mixed session's startup was slower, while the
 five-pair process-footprint screen found no resolved after-request difference.
 All receipts are under `eval/benchmarks/qwen35-native-conv-copy-2026-09-27-*`.
-`python3 scripts/check-python-boundary --strict` passed before the final
-documentation batch. Next: run `gmake fmt`, the focused owners and one fresh
-comprehensive review, repair accepted findings, run `scripts/pre-pr` for the
-exact head, then publish and merge. A second Metal host and CUDA remain
-unmeasured; defer their qualification until device/session support is available.
+`gmake fmt`, strict Python boundary, focused real-model/failure owners and
+`scripts/pre-pr` passed at `e73e9233`. The comprehensive independent review
+was CLEAN with no findings; all three PR checks passed before merge. A second
+Metal host and CUDA remain unmeasured until device/session support is available.
 
 ## Completed independent Metal state-copy failure qualification (2026-09-27)
 

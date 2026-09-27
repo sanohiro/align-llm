@@ -98,7 +98,10 @@ pub fn build_many(
   }
   ggml_ffi.op_view_2d(ctx, slots, 34, 33, g.ssm_conv_kernel - 1, channels,
     1, 0, count, "q35_recurrent_conv_next") else { return Err(Error.Invalid) }
-  if kind != ggml_ffi.GPU_GRAPH_PREFILL && ggml_ffi.gpu_native_conv_copy_enabled(owner) {
+  if (kind == ggml_ffi.GPU_GRAPH_PREFILL
+      && ggml_ffi.gpu_native_prefill_state_copy_enabled(owner))
+    || (kind != ggml_ffi.GPU_GRAPH_PREFILL
+      && ggml_ffi.gpu_native_conv_copy_enabled(owner)) {
     destination := runtime_qwen35_state.write_index(
       g, state, layer, runtime_qwen35_state.CONV)?
     ggml_ffi.gpu_native_conv_copy_register(owner, kind, slots, 34, destination) else {
@@ -159,7 +162,10 @@ pub fn build_many(
     1, 1, count, "q35_recurrent_delta_next") else { return Err(Error.Invalid) }
   ggml_ffi.op_reshape_3d(ctx, slots, 54, 52, g.ssm_state_size, g.ssm_state_size,
     g.ssm_time_step_rank, "q35_recurrent_delta_next_shape") else { return Err(Error.Invalid) }
-  if kind != ggml_ffi.GPU_GRAPH_PREFILL && ggml_ffi.gpu_native_state_copy_enabled(owner) {
+  if (kind == ggml_ffi.GPU_GRAPH_PREFILL
+      && ggml_ffi.gpu_native_prefill_state_copy_enabled(owner))
+    || (kind != ggml_ffi.GPU_GRAPH_PREFILL
+      && ggml_ffi.gpu_native_state_copy_enabled(owner)) {
     destination := runtime_qwen35_state.write_index(
       g, state, layer, runtime_qwen35_state.DELTA)?
     ggml_ffi.gpu_native_state_copy_register(owner, kind, slots, 54, destination) else {

@@ -21,10 +21,13 @@ def main() -> None:
     binary = Path(os.environ["QWEN35_NATIVE_COPY_BINARY"]).resolve()
     fault = os.environ["QWEN35_NATIVE_COPY_FAILURE"]
     conv = os.environ.get("QWEN35_NATIVE_CONV_COPY", "0")
+    prefill = os.environ.get("QWEN35_NATIVE_PREFILL_COPY", "0")
     if fault not in ("submit", "complete"):
         raise RuntimeError("expected submit or complete native copy failure")
     if conv not in ("0", "1"):
         raise RuntimeError("expected 0 or 1 for native convolution copy")
+    if prefill not in ("0", "1") or (prefill == "1" and conv != "1"):
+        raise RuntimeError("native prefill copy requires native convolution copy")
     expected = os.environ["QWEN35_EXPECTED_SHA256"]
     digest = hashlib.sha256()
     with model.open("rb") as source:
@@ -45,6 +48,7 @@ def main() -> None:
     # The forced native fault must be irrelevant when Align selects its ggml copy graph.
     environment["ALIGN_LLM_NATIVE_STATE_COPY"] = "0"
     environment["ALIGN_LLM_NATIVE_CONV_COPY"] = "0"
+    environment["ALIGN_LLM_NATIVE_PREFILL_STATE_COPY"] = "0"
     with Session(command, timeout=180, env=environment) as session:
         result = session.generate(request)
         if result["completion_tokens"] != 2 or result["prompt_tokens"] != 31:
@@ -53,6 +57,7 @@ def main() -> None:
 
     environment["ALIGN_LLM_NATIVE_STATE_COPY"] = "1"
     environment["ALIGN_LLM_NATIVE_CONV_COPY"] = conv
+    environment["ALIGN_LLM_NATIVE_PREFILL_STATE_COPY"] = prefill
     session = Session(command, timeout=180, env=environment)
     try:
         raw = json.dumps(request, separators=(",", ":")).encode("utf-8")
@@ -72,7 +77,8 @@ def main() -> None:
             raise RuntimeError("the expected native failure injection was not reached")
         if f"native_state_copy request {'completion' if fault == 'complete' else 'submit'} failure" not in diagnostic:
             raise RuntimeError(f"the native fault was not reported by the request path: {diagnostic[-2000:]}")
-        print(f"state-copy=1 conv-copy={conv}: failed envelope, no result or token, worker exit {code}")
+        print(f"state-copy=1 conv-copy={conv} prefill-copy={prefill}: "
+              f"failed envelope, no result or token, worker exit {code}")
     finally:
         session.close(check=False)
 

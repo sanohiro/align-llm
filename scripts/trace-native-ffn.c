@@ -18,14 +18,31 @@ static uint64_t now_ns(void) {
         { (const void *)(unsigned long)&replacement, (const void *)(unsigned long)&original }
 
 extern int32_t align_gpu_graph_compute(void *, int32_t, const void *, int64_t, void *);
+static _Thread_local int last_graph_kind = -1;
+static _Thread_local int inside_graph_compute = 0;
 static int32_t timed_graph_compute(void *owner, int32_t kind, const void *key, int64_t length, void *graph) {
     uint64_t start = now_ns();
+    inside_graph_compute = 1;
     int32_t result = align_gpu_graph_compute(owner, kind, key, length, graph);
+    inside_graph_compute = 0;
+    if (result == 0) last_graph_kind = kind;
     fprintf(stderr, "Q35_TIMING graph_kind=%d elapsed_ns=%llu status=%d\n", kind,
             (unsigned long long) (now_ns() - start), result);
     return result;
 }
 INTERPOSE(timed_graph_compute, align_gpu_graph_compute);
+
+extern int32_t align_gpu_native_state_copy_finish(void *);
+static int32_t timed_native_copy_finish(void *owner) {
+    uint64_t start = now_ns();
+    int32_t result = align_gpu_native_state_copy_finish(owner);
+    if (!inside_graph_compute) {
+        fprintf(stderr, "Q35_TIMING native_wait_kind=%d elapsed_ns=%llu status=%d\n",
+                last_graph_kind, (unsigned long long) (now_ns() - start), result);
+    }
+    return result;
+}
+INTERPOSE(timed_native_copy_finish, align_gpu_native_state_copy_finish);
 
 extern int ggml_backend_graph_compute(void *, void *);
 static int timed_backend_compute(void *backend, void *graph) {

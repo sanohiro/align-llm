@@ -1069,6 +1069,7 @@ struct align_gpu_device_state {
     int synchronous_weight_upload;
     int native_state_copy;
     int native_conv_copy;
+    int native_prefill_state_copy;
     void *native_state_copy_context;
     int native_state_copy_count[ALIGN_GPU_GRAPH_KINDS];
     struct ggml_tensor *native_state_copy_sources[ALIGN_GPU_GRAPH_KINDS][64];
@@ -2613,6 +2614,26 @@ int32_t align_gpu_native_conv_copy_enabled(void *owner) {
     return state != NULL && state->native_conv_copy == 1 ? 1 : 0;
 }
 
+int32_t align_gpu_native_prefill_state_copy_mode(void *owner, int32_t mode) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || (mode != 0 && mode != 1) || state->weights_finished
+        || state->workspace_prepared) return ALIGN_GPU_CONFIG;
+    if (mode == 0) return state->native_prefill_state_copy ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+#if defined(__APPLE__)
+    if (!state->native_state_copy || !state->native_conv_copy
+        || state->native_state_copy_context == NULL) return ALIGN_GPU_CONFIG;
+    state->native_prefill_state_copy = 1;
+    return ALIGN_GPU_OK;
+#else
+    return ALIGN_GPU_UNSUPPORTED;
+#endif
+}
+
+int32_t align_gpu_native_prefill_state_copy_enabled(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state != NULL && state->native_prefill_state_copy == 1 ? 1 : 0;
+}
+
 int32_t align_gpu_native_state_copy_register(void *owner, int32_t kind,
         void *slots, int64_t source, int64_t destination) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
@@ -2620,7 +2641,8 @@ int32_t align_gpu_native_state_copy_register(void *owner, int32_t kind,
     struct ggml_tensor *dst = align_gpu_kv_at(state, destination);
     int at;
     if (state == NULL || !state->native_state_copy
-        || (kind != ALIGN_GPU_GRAPH_DECODE && kind != ALIGN_GPU_GRAPH_DECODE_ALT)
+        || (kind != ALIGN_GPU_GRAPH_DECODE && kind != ALIGN_GPU_GRAPH_DECODE_ALT
+            && (kind != ALIGN_GPU_GRAPH_PREFILL || !state->native_prefill_state_copy))
         || state->graph_prepared[kind] || src == NULL || dst == NULL
         || src->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32
         || !ggml_is_contiguous(src) || !ggml_is_contiguous(dst)
@@ -2647,7 +2669,8 @@ int32_t align_gpu_native_conv_copy_register(void *owner, int32_t kind,
     int at;
     uint64_t row_bytes;
     if (state == NULL || !state->native_conv_copy
-        || (kind != ALIGN_GPU_GRAPH_DECODE && kind != ALIGN_GPU_GRAPH_DECODE_ALT)
+        || (kind != ALIGN_GPU_GRAPH_DECODE && kind != ALIGN_GPU_GRAPH_DECODE_ALT
+            && (kind != ALIGN_GPU_GRAPH_PREFILL || !state->native_prefill_state_copy))
         || state->graph_prepared[kind] || src == NULL || dst == NULL
         || src->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32
         || src->ne[0] < 1 || src->ne[1] < 1 || src->ne[2] != 1 || src->ne[3] != 1
