@@ -2,12 +2,31 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active native Metal convolution-state copy trial (2026-09-27)
+## Active native Metal prefill state-copy trial (2026-09-28)
 
-Branch `agent/native-metal-conv-state-copy` from `main` at `9ff42d21` (PR #309
-merged). GPU inference remains the priority. Extend the Align-selected native
-decode boundary to the 18 strided convolution-state copies while preserving
-the already qualified Delta-only mode and ordinary ggml graph as controls.
+Branch `agent/native-metal-prefill-state-copy` from merged `main` at
+`df6d3cdc` (PR #310). GPU inference remains the priority. The immediate
+consumer capability extends the Align-selected independent Metal state-copy
+command to prefill without changing the default ggml graph or the merged
+decode-only modes. The public option, failure/ownership closure, cost ceiling
+and evidence owners are in `docs/specs/gpu-runtime-performance.md`.
+
+A temporary real 2B Q4_0 graph diagnostic (under the Git common directory,
+not product source) found 18 F32 DeltaNet and 18 strided convolution resident
+copies per 128- and 71-token prefill chunk. DeltaNet is contiguous 1 MiB;
+convolution is `[3,6144,1,1]` with source row strides 524 and 296 bytes and
+12-byte contiguous destination rows. These actual layouts motivate using the
+existing checked native command. Next: connect prefill source roots and wait
+before parity publication, qualify exact full logits/state and failure paths,
+then compare same-binary real requests and memory. Another Metal host and CUDA
+remain deferred until available.
+
+## Completed native Metal convolution-state copy trial (2026-09-27)
+
+Branch `agent/native-metal-conv-state-copy` merged as PR #310 at
+`df6d3cdc`. It extended the Align-selected native decode boundary to the 18
+strided convolution-state copies while preserving the Delta-only and ordinary
+ggml graph controls.
 The plan and cost ceiling are in `docs/specs/gpu-runtime-performance.md`; the
 implementation and result are in `docs/qwen35-native-conv-copy-trial.md`.
 
@@ -28,11 +47,10 @@ ordinary Align and pinned llama.cpp. Paired Delta-only-minus-mixed medians were
 adverse whole-request pairs; the mixed session's startup was slower, while the
 five-pair process-footprint screen found no resolved after-request difference.
 All receipts are under `eval/benchmarks/qwen35-native-conv-copy-2026-09-27-*`.
-`python3 scripts/check-python-boundary --strict` passed before the final
-documentation batch. Next: run `gmake fmt`, the focused owners and one fresh
-comprehensive review, repair accepted findings, run `scripts/pre-pr` for the
-exact head, then publish and merge. A second Metal host and CUDA remain
-unmeasured; defer their qualification until device/session support is available.
+`gmake fmt`, strict Python boundary, focused real-model/failure owners and
+`scripts/pre-pr` passed at `e73e9233`. The comprehensive independent review
+was CLEAN with no findings; all three PR checks passed before merge. A second
+Metal host and CUDA remain unmeasured until device/session support is available.
 
 ## Completed independent Metal state-copy failure qualification (2026-09-27)
 
