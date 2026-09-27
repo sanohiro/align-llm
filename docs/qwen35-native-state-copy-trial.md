@@ -164,8 +164,8 @@ session; it does not allocate a duplicate resident plane.
 Retain the native route as an opt-in experiment. It is correct on the tested
 real-model paths and improves 15/15 reviewed paired warm requests on this M1 against
 both unchanged Align and pinned llama.cpp, with positive medians at all three
-lengths. Default use still needs focused native failure
-injection and qualification beyond this one host; startup remains materially
+lengths. Focused native failure propagation is qualified on this M1. Default
+use still needs qualification beyond this one host; startup remains materially
 slower than llama.cpp. The ggml copy-source patch stays a historical local
 result, not the operating plan.
 
