@@ -1,0 +1,73 @@
+device name=Apple M1 simd=32 max_group=768
+check layer=-1 splits=1 max_abs=1.78813934e-07
+check layer=-1 splits=2 max_abs=1.86264515e-07
+check layer=-1 splits=4 max_abs=1.78813934e-07
+case layer=tail hidden=160 rows=64 setup_ms=15.8946
+check layer=3 splits=1 max_abs=3.53902578e-08
+check layer=3 splits=2 max_abs=3.7252903e-08
+check layer=3 splits=4 max_abs=3.91155481e-08
+case layer=3 hidden=6144 rows=2048 setup_ms=6.1745 weight_bytes=7077888
+pair layer=3 control=ggml splits=1 index=0 control_ms=0.496979 control_gpu_ms=0.000000 split_ms=0.482823 split_gpu_ms=0.210512 difference_ms=0.014156
+pair layer=3 control=ggml splits=1 index=1 control_ms=0.479737 control_gpu_ms=0.000000 split_ms=0.459806 split_gpu_ms=0.210352 difference_ms=0.019931
+pair layer=3 control=ggml splits=1 index=2 control_ms=0.498717 control_gpu_ms=0.000000 split_ms=0.468833 split_gpu_ms=0.211273 difference_ms=0.029884
+pair layer=3 control=ggml splits=1 index=3 control_ms=0.510108 control_gpu_ms=0.000000 split_ms=0.496050 split_gpu_ms=0.210606 difference_ms=0.014058
+pair layer=3 control=ggml splits=1 index=4 control_ms=0.536608 control_gpu_ms=0.000000 split_ms=0.470821 split_gpu_ms=0.210835 difference_ms=0.065788
+summary layer=3 control=ggml splits=1 control_median_ms=0.498717 control_gpu_median_ms=0.000000 split_median_ms=0.470821 split_gpu_median_ms=0.210606 paired_difference_median_ms=0.019931
+pair layer=3 control=ggml splits=2 index=0 control_ms=0.520086 control_gpu_ms=0.000000 split_ms=0.506685 split_gpu_ms=0.221881 difference_ms=0.013400
+pair layer=3 control=ggml splits=2 index=1 control_ms=0.529056 control_gpu_ms=0.000000 split_ms=0.509529 split_gpu_ms=0.221952 difference_ms=0.019527
+pair layer=3 control=ggml splits=2 index=2 control_ms=0.499802 control_gpu_ms=0.000000 split_ms=0.488039 split_gpu_ms=0.220494 difference_ms=0.011763
+pair layer=3 control=ggml splits=2 index=3 control_ms=0.532781 control_gpu_ms=0.000000 split_ms=0.525140 split_gpu_ms=0.236265 difference_ms=0.007642
+pair layer=3 control=ggml splits=2 index=4 control_ms=0.534202 control_gpu_ms=0.000000 split_ms=0.533340 split_gpu_ms=0.222412 difference_ms=0.000862
+summary layer=3 control=ggml splits=2 control_median_ms=0.529056 control_gpu_median_ms=0.000000 split_median_ms=0.509529 split_gpu_median_ms=0.221952 paired_difference_median_ms=0.011763
+pair layer=3 control=unsplit splits=2 index=0 control_ms=0.503437 control_gpu_ms=0.210521 split_ms=0.515058 split_gpu_ms=0.221246 difference_ms=-0.011621
+pair layer=3 control=unsplit splits=2 index=1 control_ms=0.532646 control_gpu_ms=0.224579 split_ms=0.550888 split_gpu_ms=0.221829 difference_ms=-0.018242
+pair layer=3 control=unsplit splits=2 index=2 control_ms=0.491871 control_gpu_ms=0.210490 split_ms=0.498371 split_gpu_ms=0.219962 difference_ms=-0.006500
+pair layer=3 control=unsplit splits=2 index=3 control_ms=0.528784 control_gpu_ms=0.238975 split_ms=0.515885 split_gpu_ms=0.221869 difference_ms=0.012898
+pair layer=3 control=unsplit splits=2 index=4 control_ms=0.512708 control_gpu_ms=0.211115 split_ms=0.561444 split_gpu_ms=0.244729 difference_ms=-0.048736
+summary layer=3 control=unsplit splits=2 control_median_ms=0.512708 control_gpu_median_ms=0.211115 split_median_ms=0.515885 split_gpu_median_ms=0.221829 paired_difference_median_ms=-0.011621
+pair layer=3 control=ggml splits=4 index=0 control_ms=0.511015 control_gpu_ms=0.000000 split_ms=0.538927 split_gpu_ms=0.255250 difference_ms=-0.027912
+pair layer=3 control=ggml splits=4 index=1 control_ms=0.539667 control_gpu_ms=0.000000 split_ms=0.560475 split_gpu_ms=0.234363 difference_ms=-0.020808
+pair layer=3 control=ggml splits=4 index=2 control_ms=0.581516 control_gpu_ms=0.000000 split_ms=0.558040 split_gpu_ms=0.233204 difference_ms=0.023477
+pair layer=3 control=ggml splits=4 index=3 control_ms=0.545444 control_gpu_ms=0.000000 split_ms=0.549819 split_gpu_ms=0.232731 difference_ms=-0.004375
+pair layer=3 control=ggml splits=4 index=4 control_ms=0.548087 control_gpu_ms=0.000000 split_ms=0.530587 split_gpu_ms=0.234792 difference_ms=0.017500
+summary layer=3 control=ggml splits=4 control_median_ms=0.545444 control_gpu_median_ms=0.000000 split_median_ms=0.549819 split_gpu_median_ms=0.234363 paired_difference_median_ms=-0.004375
+pair layer=3 control=unsplit splits=4 index=0 control_ms=0.525429 control_gpu_ms=0.210798 split_ms=0.554548 split_gpu_ms=0.252575 difference_ms=-0.029119
+pair layer=3 control=unsplit splits=4 index=1 control_ms=0.581792 control_gpu_ms=0.210679 split_ms=0.603767 split_gpu_ms=0.234281 difference_ms=-0.021975
+pair layer=3 control=unsplit splits=4 index=2 control_ms=0.565212 control_gpu_ms=0.210546 split_ms=0.598366 split_gpu_ms=0.232519 difference_ms=-0.033154
+pair layer=3 control=unsplit splits=4 index=3 control_ms=0.574483 control_gpu_ms=0.210383 split_ms=0.642050 split_gpu_ms=0.280654 difference_ms=-0.067567
+pair layer=3 control=unsplit splits=4 index=4 control_ms=0.586210 control_gpu_ms=0.224529 split_ms=0.590769 split_gpu_ms=0.232679 difference_ms=-0.004558
+summary layer=3 control=unsplit splits=4 control_median_ms=0.574483 control_gpu_median_ms=0.210679 split_median_ms=0.598366 split_gpu_median_ms=0.234281 paired_difference_median_ms=-0.029119
+check layer=23 splits=1 max_abs=2.38418579e-07
+check layer=23 splits=2 max_abs=2.38418579e-07
+check layer=23 splits=4 max_abs=2.38418579e-07
+case layer=23 hidden=6144 rows=2048 setup_ms=15.3650 weight_bytes=7077888
+pair layer=23 control=ggml splits=1 index=0 control_ms=0.637517 control_gpu_ms=0.000000 split_ms=0.588279 split_gpu_ms=0.213525 difference_ms=0.049237
+pair layer=23 control=ggml splits=1 index=1 control_ms=0.669758 control_gpu_ms=0.000000 split_ms=0.621789 split_gpu_ms=0.213892 difference_ms=0.047969
+pair layer=23 control=ggml splits=1 index=2 control_ms=0.670073 control_gpu_ms=0.000000 split_ms=0.639479 split_gpu_ms=0.213635 difference_ms=0.030594
+pair layer=23 control=ggml splits=1 index=3 control_ms=0.671350 control_gpu_ms=0.000000 split_ms=0.641515 split_gpu_ms=0.213665 difference_ms=0.029835
+pair layer=23 control=ggml splits=1 index=4 control_ms=0.679123 control_gpu_ms=0.000000 split_ms=0.642963 split_gpu_ms=0.220719 difference_ms=0.036160
+summary layer=23 control=ggml splits=1 control_median_ms=0.670073 control_gpu_median_ms=0.000000 split_median_ms=0.639479 split_gpu_median_ms=0.213665 paired_difference_median_ms=0.036160
+pair layer=23 control=ggml splits=2 index=0 control_ms=0.656933 control_gpu_ms=0.000000 split_ms=0.645508 split_gpu_ms=0.246831 difference_ms=0.011425
+pair layer=23 control=ggml splits=2 index=1 control_ms=0.689381 control_gpu_ms=0.000000 split_ms=0.628929 split_gpu_ms=0.229312 difference_ms=0.060452
+pair layer=23 control=ggml splits=2 index=2 control_ms=0.609734 control_gpu_ms=0.000000 split_ms=0.583471 split_gpu_ms=0.223471 difference_ms=0.026263
+pair layer=23 control=ggml splits=2 index=3 control_ms=0.645546 control_gpu_ms=0.000000 split_ms=0.606719 split_gpu_ms=0.223552 difference_ms=0.038827
+pair layer=23 control=ggml splits=2 index=4 control_ms=0.644490 control_gpu_ms=0.000000 split_ms=0.622594 split_gpu_ms=0.222554 difference_ms=0.021896
+summary layer=23 control=ggml splits=2 control_median_ms=0.645546 control_gpu_median_ms=0.000000 split_median_ms=0.622594 split_gpu_median_ms=0.223552 paired_difference_median_ms=0.026263
+pair layer=23 control=unsplit splits=2 index=0 control_ms=0.657531 control_gpu_ms=0.227019 split_ms=0.656315 split_gpu_ms=0.223154 difference_ms=0.001217
+pair layer=23 control=unsplit splits=2 index=1 control_ms=0.635350 control_gpu_ms=0.220046 split_ms=0.654725 split_gpu_ms=0.225915 difference_ms=-0.019375
+pair layer=23 control=unsplit splits=2 index=2 control_ms=0.639029 control_gpu_ms=0.213883 split_ms=0.677742 split_gpu_ms=0.245206 difference_ms=-0.038712
+pair layer=23 control=unsplit splits=2 index=3 control_ms=0.596854 control_gpu_ms=0.212842 split_ms=0.621894 split_gpu_ms=0.221502 difference_ms=-0.025040
+pair layer=23 control=unsplit splits=2 index=4 control_ms=0.651831 control_gpu_ms=0.235760 split_ms=0.672290 split_gpu_ms=0.248698 difference_ms=-0.020458
+summary layer=23 control=unsplit splits=2 control_median_ms=0.639029 control_gpu_median_ms=0.220046 split_median_ms=0.656315 split_gpu_median_ms=0.225915 paired_difference_median_ms=-0.020458
+pair layer=23 control=ggml splits=4 index=0 control_ms=0.718169 control_gpu_ms=0.000000 split_ms=0.711031 split_gpu_ms=0.234752 difference_ms=0.007138
+pair layer=23 control=ggml splits=4 index=1 control_ms=0.699223 control_gpu_ms=0.000000 split_ms=0.689187 split_gpu_ms=0.235004 difference_ms=0.010036
+pair layer=23 control=ggml splits=4 index=2 control_ms=0.729037 control_gpu_ms=0.000000 split_ms=0.674804 split_gpu_ms=0.234342 difference_ms=0.054233
+pair layer=23 control=ggml splits=4 index=3 control_ms=0.623973 control_gpu_ms=0.000000 split_ms=0.649281 split_gpu_ms=0.282685 difference_ms=-0.025308
+pair layer=23 control=ggml splits=4 index=4 control_ms=0.622608 control_gpu_ms=0.000000 split_ms=0.655263 split_gpu_ms=0.276275 difference_ms=-0.032654
+summary layer=23 control=ggml splits=4 control_median_ms=0.699223 control_gpu_median_ms=0.000000 split_median_ms=0.674804 split_gpu_median_ms=0.235004 paired_difference_median_ms=0.007138
+pair layer=23 control=unsplit splits=4 index=0 control_ms=0.639400 control_gpu_ms=0.228413 split_ms=0.658815 split_gpu_ms=0.234150 difference_ms=-0.019415
+pair layer=23 control=unsplit splits=4 index=1 control_ms=0.638242 control_gpu_ms=0.233538 split_ms=0.645310 split_gpu_ms=0.236321 difference_ms=-0.007069
+pair layer=23 control=unsplit splits=4 index=2 control_ms=0.644285 control_gpu_ms=0.213046 split_ms=0.671289 split_gpu_ms=0.235583 difference_ms=-0.027004
+pair layer=23 control=unsplit splits=4 index=3 control_ms=0.590958 control_gpu_ms=0.213060 split_ms=0.638665 split_gpu_ms=0.254177 difference_ms=-0.047706
+pair layer=23 control=unsplit splits=4 index=4 control_ms=0.636808 control_gpu_ms=0.212487 split_ms=0.686044 split_gpu_ms=0.251581 difference_ms=-0.049235
+summary layer=23 control=unsplit splits=4 control_median_ms=0.638242 control_gpu_median_ms=0.213060 split_median_ms=0.658815 split_gpu_median_ms=0.236321 paired_difference_median_ms=-0.027004
