@@ -81,6 +81,8 @@ make failure-memory-smoke
 
 For local Qwen3.5-2B text chat through the OpenAI-compatible HTTP and streaming
 endpoint, follow the [Apple M1 setup and request guide](docs/qwen35-local-chat.md).
+Reusable GPU profiling, measurement, and kernel lessons are recorded in
+[GPU inference optimization notes](docs/gpu-optimization-lessons.md).
 
 Read [Align development notes](docs/align-development.md) before adding language or standard-library dependencies. Read [AGENTS.md](AGENTS.md) for repository conventions, including the English-only policy for code comments, commits, and pull requests.
 

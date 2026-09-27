@@ -35,6 +35,12 @@ The recipe refuses an occupied output path. To reuse an existing bundle, set
 `BUNDLE` directly to its `bundle/` directory. The backend build details are in
 [Align development notes](align-development.md#provider-development).
 
+Use the ordinary pinned bundle above for the current development route. The
+[contiguous-copy Metal patch trial](qwen35-metal-linear-copy-trial.md) retains
+its measured result and reproduction recipe as historical evidence. The
+independent Metal route is selected by Align and measured against this
+unmodified bundle; the patched bundle is not its deployment dependency.
+
 ## Build the server and prepare the source-bound files
 
 From the repository root, build with the pinned Align compiler and the same

@@ -1,5 +1,10 @@
 # Contiguous F32 Metal copy trial (2026-09-27)
 
+This is a retained historical experiment. Its measured result is unchanged,
+but current development uses the [independent Metal state-copy trial](qwen35-native-state-copy-trial.md)
+against an unmodified ggml bundle. The source patch is not the intended
+deployment route.
+
 ## Hypothesis and implementation
 
 The actual Qwen3.5-2B final decode graph has 18 DeltaNet state copies of
@@ -71,6 +76,16 @@ Metal code as the exact-vector and timed trials.
 The backend recipe smoke, Python-boundary check, and patch identity checks
 passed. CPU, CUDA and Gemma correctness are not asserted by these Metal tests.
 
+The focused [copy geometry owner](../scripts/metal-linear-copy-geometry.cpp)
+ran against the pre-copy control and the clean final plugin. All six cases
+passed with every destination F32 bit matching an independent CPU copy oracle:
+262,143 elements just below the threshold; 262,144 at the threshold; a
+contiguous four-dimensional view; nonzero source/destination offsets; and
+large strided source and destination views. The offset and strided cases also
+checked untouched destination sentinels. Complete control and final
+[geometry receipts](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/geometry-clean.jsonl)
+are retained alongside the [control receipt](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/geometry-control.jsonl).
+
 ## Measurements
 
 The Apple M1 16 GiB host ran five alternating
@@ -91,6 +106,35 @@ including adverse samples, remains in the receipts.
 | Measured recipe, 64 / 16 | +52.866, +49.784 to +57.974 | 5/5 | 590.590 / 537.751 / 575.620 |
 | Measured recipe, 200 / 32 | +99.577, +70.820 to +108.201 | 5/5 | 1346.354 / 1248.917 / 1322.290 |
 | Measured recipe, 330 / 64 | +193.448, +158.645 to +237.385 | 5/5 | 2548.918 / 2342.828 / 2506.181 |
+
+The preceding control is the already experimental adjacent-range bundle. A
+further **same-binary, uninstrumented** campaign compared the clean final
+bundle directly with the pre-adjacent Metal bundle (ID
+`8ae9b7ac9429d393c48f93f54bbe36417f2c0dd788937f307965c5e20b447965`)
+and the same pinned llama.cpp. In-graph greedy was disabled in both Align arms;
+all other request, bundle-core, weight, token, state and storage conditions
+matched. The complete [base comparison receipt](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/base-vs-clean-wall.json)
+retains all output/count checks, order and samples.
+
+| 2B input / output | Base minus clean paired median, range (ms) | Clean wins | Llama minus clean paired median, range (ms) | Clean wins | Base / clean / llama arm medians (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 64 / 16 | +55.011, +48.614 to +62.198 | 5/5 | +37.731, +31.496 to +39.537 | 5/5 | 559.949 / 506.182 / 542.375 |
+| 200 / 32 | +111.526, +90.282 to +117.904 | 5/5 | +74.844, +58.902 to +101.515 | 5/5 | 1280.954 / 1169.142 / 1243.176 |
+| 330 / 64 | +224.990, +210.787 to +247.549 | 5/5 | +151.089, +127.964 to +159.982 | 5/5 | 2430.834 / 2196.728 / 2351.591 |
+
+The same direct-baseline protocol on the independently qualified 0.8B Q4_0
+model also completed five pairs per condition. The clean bundle beat the
+pre-adjacent Align bundle in all 15 pairs. It beat pinned llama.cpp in 14/15;
+one 330/64 reference pair was faster by 15.966 ms. The complete
+[0.8B direct comparison](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/base-vs-clean-08b-wall.json)
+retains that adverse pair, matching outputs, exact processed counts and all
+identities.
+
+| 0.8B input / output | Base minus clean paired median, range (ms) | Clean wins | Llama minus clean paired median, range (ms) | Clean wins | Base / clean / llama arm medians (ms) |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 64 / 16 | +60.626, +38.115 to +99.268 | 5/5 | +27.122, +14.865 to +32.711 | 5/5 | 339.447 / 284.490 / 313.176 |
+| 200 / 32 | +110.062, +61.672 to +173.548 | 5/5 | +55.631, +36.555 to +84.283 | 5/5 | 752.395 / 650.602 / 717.178 |
+| 330 / 64 | +230.010, +121.704 to +236.243 | 5/5 | +93.469, -15.966 to +133.105 | 4/5 | 1483.007 / 1264.940 / 1358.409 |
 
 The measured recipe's request medians are approximately 7–9% below unchanged
 Align and 5–7% below the pinned llama.cpp reference for these warm 2B
@@ -144,36 +188,58 @@ medians were +49.632, -18.433 and -108.795 ms. Construction-to-ready includes
 uncontrolled OS file-cache effects; a startup improvement is not established.
 The measured-recipe first-request paired deltas were +47.931, +96.534 and +208.629 ms,
 consistent with the warm direction, but cold load and request costs should
-not be conflated. No isolated physical-memory peak was measured. The patch
-adds no allocation and the graph/state buffer census is unchanged, which is
-the narrower memory claim supported by the code and binding trace.
+not be conflated. The original campaigns did not measure process memory. The
+patch adds no allocation and the graph/state buffer census is unchanged.
+
+A separate five-pair alternating [macOS process footprint screen](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/footprint.json)
+used the same saved 2B Align binary, one untimed process per arm, a fixed
+200/32 request, three requests per measured process, and control/final bundle
+IDs bound in the receipt. All actual token counts and rendered outputs agreed.
+After the third request, the control/final process `phys_footprint` arm
+medians were 145.345/145.392 MiB, process peak arm medians were
+146.860/146.892 MiB, and RSS arm medians were 175.734/175.781 MiB. Paired
+control-minus-final medians were +0.078, +0.062 and +0.078 MiB respectively;
+individual physical-peak differences spanned -0.219 to +0.109 MiB. Startup
+control-minus-final differences ranged -111.253 to +89.479 ms, median
+-7.009 ms. This does not establish a startup or footprint change. macOS
+`footprint` attributes memory to this worker process; it does not measure
+total system or GPU physical memory. No GPU allocation was added in code.
 
 Portable complete receipts:
 [`wall.json`](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/wall.json),
 [`phase.json`](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/phase.json),
 [`final-wall.json`](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/final-wall.json),
-[`final-08b-wall.json`](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/final-08b-wall.json).
+[`final-08b-wall.json`](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/final-08b-wall.json),
+[`base-vs-clean-wall.json`](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/base-vs-clean-wall.json),
+[`base-vs-clean-08b-wall.json`](../eval/benchmarks/qwen35-metal-linear-copy-2026-09-27/base-vs-clean-08b-wall.json).
 
 ## Decision and next test
 
-Keep this opt-in Metal backend specialization as a successful real-model
-trial. It has exact observed numerics, no new state owner, and a repeatable
-warm-request benefit on the tested 2B and 0.8B models, including a pinned
-llama.cpp lead on all measured arm medians. It is not yet the default production
-bundle: the startup result is inconclusive, physical-memory peak is unmeasured,
-and other hosts/backends/model semantics need their own admission. The default
-ggml Metal bundle remains available for immediate rollback. This decision is
-based on the measured workload and remaining risks, not a fixed percentage.
+Recommend the explicit clean copy-specialized bundle for local Qwen3.5
+inference on the tested Apple M1 host. The patch has exact observed numerics,
+no new state owner, a repeatable warm-request benefit on the tested 2B and
+0.8B models, and a direct lead over the pre-adjacent Metal bundle in all 30
+new pairs. The 2B trial also beat pinned llama.cpp in all 15 new pairs; the
+0.8B trial retained one pinned-reference loss. The focused view owner passes and the
+measured process footprint is effectively unchanged. Keep the ordinary ggml
+bundle as the rollback and retain an explicit bundle selection: startup is
+inconclusive, total GPU/system peak is unmeasured, and other hosts/backends and
+Gemma semantics need their own admission. No universal default is inferred
+from one host. This decision uses the measured workload and remaining risks,
+not a fixed percentage.
 
 The type/size/layout predicate and recipe can be reused for another Qwen size
 whose state copies satisfy it. Gemma can use this backend operation only after
 its architecture-specific model semantics and graph are admitted; its
 activation, normalization, attention and position behavior cannot be inferred
 from this Qwen trial. CUDA needs an independently implemented kernel and a
-qualified host. The next GPU question is whether the remaining convolution
-copy or DeltaNet producer-to-resident boundary can be reduced without
-violating success-only state publication, then whether total command-buffer
-waits or memory bandwidth limit further gains.
+qualified host. A follow-up analysis of the retained raw GPU counters now
+associates Q4_0 and Q6_K decode matrix-vector work in both implementations
+with high buffer-read pressure; its method, samples and attribution limits are
+in [`gpu-optimization-lessons.md`](gpu-optimization-lessons.md). A later larger
+GPU experiment needs a specific weight-traffic or
+prefill compute hypothesis; the remaining strided convolution copy alone is
+small after this specialization.
 
 Rebuild from a clean checkout of the pinned ggml commit and a verified base
 bundle:
@@ -193,3 +259,27 @@ model sizes and `python3 scripts/measure-native-swiglu --native-disabled`
 with the same binary, control bundle, pinned llama executable and prompt IDs.
 The measurement tool retains its historical SwiGLU name; its execution record
 shows native fusion disabled in both Align arms.
+
+For the focused owner, compile
+[`metal-linear-copy-geometry.cpp`](../scripts/metal-linear-copy-geometry.cpp)
+against the pinned ggml headers and the same verified ggml core bundle, then
+run the resulting executable once with each plugin path. The source header
+contains the exact compiler form; the two JSONL receipts above contain every
+case. For the process screen, use a `measure-native-swiglu`-style JSON config
+with `model`, `pack`, `geometry`, `control` and `candidate`, each arm specifying
+the same native `binary`, its own `options` and `lib`, and the common execution
+settings `sync_weight_upload=0`, `prefill_chunk=128`, `final_prefill_logits=1`,
+`final_ffn_row=0`, `mapped_weights=0`, `shared_logits=0`,
+`graph_greedy=0`. `backend_bundle` must match the corresponding `lib`, and
+all other runtime options must match between arms. Then run:
+
+```text
+python3 scripts/measure-metal-worker-footprint --config CONFIG.json --output FOOTPRINT.json
+python3 scripts/measure-native-swiglu --config CONFIG.json --output WALL.json --wall-only --native-disabled
+```
+
+For the direct base comparison, set the config's control bundle to the
+pre-adjacent bundle and candidate to the clean copy bundle; include the pinned
+`llama` executable and `trace` path required by the existing wall harness.
+The footprint screen compares the adjacent-range and clean copy bundles, so
+the two receipts answer different baseline questions.

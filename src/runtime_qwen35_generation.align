@@ -50,6 +50,7 @@ fn key(borrow owner: ggml_ffi.GpuDevice, borrow options: runtime_options.Runtime
   b.write_int(if emit_logits { 1 } else { 0 })
   if last_ffn_row { b.write(":final-ffn-row") }
   if graph_greedy { b.write(":graph-greedy") }
+  if ggml_ffi.gpu_native_state_copy_enabled(owner) { b.write(":native-state-copy") }
   digest := crypto.sha256(b.to_string())
   return encoding.hex_encode(digest[0..digest.len()]).clone()
 }
@@ -206,6 +207,7 @@ pub Session {
   shared_logits: bool,
   neon_greedy: bool,
   graph_greedy: bool,
+  native_state_copy: bool,
   decode_a_slots: buffer,
   decode_b_slots: buffer,
   decode_a_key: string,
@@ -271,6 +273,9 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
         || !ggml_ffi.gpu_ingraph_argmax_supported(owner)))
     || probe_prompt < 1 || probe_prompt > MAX_PROMPT
     || capacity < probe_prompt || capacity > g.context_length { return Err(Error.Invalid) }
+  ggml_ffi.gpu_native_state_copy_select(owner, config.native_state_copy) else {
+    return Err(Error.Invalid)
+  }
   // The retained planes must cover the fixed-width decode graph's padded view.
   runtime_attention.select(owner, probe_prompt, config.prefill_chunk, capacity,
     g.context_length, g.head_dim, g.n_head, g.n_head_kv)?
@@ -363,6 +368,7 @@ pub fn create_session(owner: ggml_ffi.GpuDevice,
       shared_logits: config.shared_logits,
       neon_greedy: config.neon_greedy,
       graph_greedy: config.graph_greedy,
+      native_state_copy: config.native_state_copy,
       decode_a_slots: buffer.filled(SLOT_BYTES, 0 as u8),
       decode_b_slots: buffer.filled(SLOT_BYTES, 0 as u8),
       decode_a_key: "".clone(), decode_b_key: "".clone(),
@@ -524,6 +530,9 @@ fn execute(borrow mut session: Session,
       read_choice(session.owner, decode_b_slots, session.shared_logits,
         session.neon_greedy, session.graph_greedy,
         session.geometry.n_vocab, logits, "q35_provider_decode_logits")?
+    }
+    if session.native_state_copy {
+      ggml_ffi.gpu_native_state_copy_finish(session.owner) else { return Err(Error.Invalid) }
     }
     runtime_qwen35_state.finish(state, true)
     generated.push(token)
@@ -700,6 +709,9 @@ pub fn stream_next(borrow mut session: Session) -> Result<Option<i64>, Error> {
     read_choice(session.owner, current_b_slots, session.shared_logits,
       session.neon_greedy, session.graph_greedy,
       session.geometry.n_vocab, logits, "q35_provider_decode_logits")?
+  }
+  if session.native_state_copy {
+    ggml_ffi.gpu_native_state_copy_finish(session.owner) else { return Err(Error.Invalid) }
   }
   runtime_qwen35_state.finish(session.stream_state, true)
   session.stream_step = session.stream_step + 1

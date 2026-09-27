@@ -1,0 +1,167 @@
+#!/usr/bin/env python3
+"""Independent paired macOS worker footprint screen for two explicit modes."""
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import statistics
+import subprocess
+from tempfile import TemporaryDirectory
+import time
+
+from gpu_session_client import Session
+
+
+def digest(path):
+    with open(path, "rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def footprint(pid):
+    output = subprocess.check_output(
+        ["footprint", "--noCategories", "-f", "bytes", "-p", str(pid)],
+        text=True, timeout=30)
+    values = dict(re.findall(r"^\s*(phys_footprint(?:_peak)?): (\d+) B$", output, re.M))
+    if set(values) != {"phys_footprint", "phys_footprint_peak"}:
+        raise ValueError("macOS footprint counters unavailable")
+    rss = subprocess.check_output(["ps", "-o", "rss=", "-p", str(pid)],
+                                  text=True, timeout=10).strip()
+    return {"physical_bytes": int(values["phys_footprint"]),
+            "physical_peak_bytes": int(values["phys_footprint_peak"]),
+            "rss_bytes": int(rss) * 1024}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    args = parser.parse_args()
+    if args.output.exists():
+        parser.error("output already exists")
+    cfg = json.loads(args.config.read_text())
+    arms = ("control", "candidate")
+    if digest(cfg["control"]["binary"]) != digest(cfg["candidate"]["binary"]):
+        raise ValueError("this screen requires the same Align binary")
+    normalized_options = []
+    for arm in arms:
+        options = json.loads(Path(cfg[arm]["options"]).read_text())
+        if options["backend_bundle"] != cfg[arm]["lib"]:
+            raise ValueError("options and bundle differ")
+        if options["backend"] != "metal" or options["placement"] != "resident":
+            raise ValueError("this screen requires resident Metal")
+        normalized_options.append({k: v for k, v in options.items()
+                                   if k != "backend_bundle"})
+        expected_execution = {"sync_weight_upload": "0", "prefill_chunk": "128",
+                              "final_prefill_logits": "1", "final_ffn_row": "0",
+                              "mapped_weights": "0", "shared_logits": "0",
+                              "graph_greedy": "0"}
+        execution = cfg[arm].get("execution", {})
+        if any(execution.get(key) != value for key, value in expected_execution.items()) \
+                or execution.get("neon_greedy", "0") != "0" \
+                or execution.get("private_buffers", "0") != "0" \
+                or execution.get("native_state_copy", "0") not in ("0", "1") \
+                or set(execution) - (set(expected_execution) |
+                                     {"neon_greedy", "private_buffers", "native_state_copy"}):
+            raise ValueError("this screen requires the recorded common execution")
+    if normalized_options[0] != normalized_options[1]:
+        raise ValueError("runtime options differ beyond the bundle")
+    system = "You are a coding assistant. Return a concise patch-oriented answer."
+    prefix = ("List the integers from 1 to 1000 in ascending order, separated "
+              "by single spaces. Output only the integers. ")
+    environment = {k: v for k, v in os.environ.items() if not k.startswith(
+        ("DYLD_", "GGML_", "ALIGN_LLM_", "ALIGN_FFN_"))}
+    user = None
+    for repeats in range(140, 151):
+        attempt = prefix + "hello " * repeats
+        with TemporaryDirectory() as directory:
+            system_path = Path(directory) / "system"
+            user_path = Path(directory) / "user"
+            system_path.write_text(system)
+            user_path.write_text(attempt)
+            ids = json.loads(subprocess.check_output(
+                [cfg["control"]["binary"], "--prepare-prompt", cfg["model"],
+                 str(system_path), str(user_path)], env=environment))
+        if len(ids) == 200:
+            user = attempt
+            break
+    if user is None:
+        raise ValueError("cannot construct the fixed 200-token input")
+    request = dict(schema_version=1, system=system, user=user,
+                   max_tokens=32, temperature=0.0, seed=None)
+    report = dict(schema_version=1, status="INCOMPLETE", host="Darwin Metal",
+                  metric_scope="process footprint, not system/GPU total",
+                  model_sha256=digest(cfg["model"]),
+                  binary_sha256=digest(cfg["control"]["binary"]),
+                  prompt_ids_sha256=hashlib.sha256(json.dumps(ids).encode()).hexdigest(),
+                  execution={arm: cfg[arm]["execution"] for arm in arms},
+                  bundles={arm: json.loads((Path(cfg[arm]["lib"]) /
+                         "manifest.json").read_text())["bundle_id"] for arm in arms},
+                  pairs=[])
+    def save():
+        args.output.write_text(json.dumps(report, indent=2) + "\n")
+    save()
+
+    def measure(arm):
+        selected = cfg[arm]
+        env = dict(environment, DYLD_LIBRARY_PATH=selected["lib"],
+                   ALIGN_LLM_NATIVE_SWIGLU="0", ALIGN_LLM_SYNC_WEIGHT_UPLOAD="0",
+                   ALIGN_LLM_PREFILL_CHUNK="128", ALIGN_LLM_PREFILL_FINAL_LOGITS="1",
+                   ALIGN_LLM_PREFILL_LAST_FFN_ROW="0", ALIGN_LLM_MAPPED_WEIGHTS="0",
+                   ALIGN_LLM_SHARED_LOGITS="0", ALIGN_LLM_NEON_GREEDY="0",
+                   ALIGN_LLM_GRAPH_GREEDY="0",
+                   ALIGN_LLM_NATIVE_STATE_COPY=selected["execution"].get("native_state_copy", "0"))
+        command = [selected["binary"], "--runtime-session", cfg["model"],
+                   cfg["pack"], cfg["geometry"], selected["options"], "0"]
+        started = time.monotonic_ns()
+        with Session(command, timeout=180, env=env) as session:
+            startup = time.monotonic_ns() - started
+            ready = footprint(session.process.pid)
+            outputs = []
+            for _ in range(3):
+                result = session.generate(request)
+                if (result["prompt_tokens"], result["completion_tokens"]) != (200, 32):
+                    raise ValueError("actual token count differs")
+                outputs.append(result["output"])
+            used = footprint(session.process.pid)
+        if len(set(outputs)) != 1:
+            raise ValueError("repeated request output differs")
+        return dict(startup_ns=startup, ready=ready, after_three_requests=used,
+                    output_sha256=hashlib.sha256(outputs[0].encode()).hexdigest())
+
+    try:
+        warmup = {arm: measure(arm) for arm in arms}
+        if len({row["output_sha256"] for row in warmup.values()}) != 1:
+            raise ValueError("warmup outputs differ")
+        for pair in range(5):
+            order = arms if pair % 2 == 0 else tuple(reversed(arms))
+            row = {arm: measure(arm) for arm in order}
+            if len({sample["output_sha256"] for sample in row.values()}) != 1:
+                raise ValueError("paired outputs differ")
+            report["pairs"].append(row)
+            save()
+            print(f"pair={pair} " + str({arm: row[arm]["after_three_requests"]
+                                        ["physical_peak_bytes"] for arm in arms}),
+                  flush=True)
+        report["paired_control_minus_candidate_median_bytes"] = {
+            stage + "_" + field: statistics.median(
+                row["control"][stage][field] - row["candidate"][stage][field]
+                for row in report["pairs"])
+            for stage, field in (("ready", "physical_bytes"),
+                                 ("after_three_requests", "physical_bytes"),
+                                 ("after_three_requests", "physical_peak_bytes"))}
+        report["startup_control_minus_candidate_median_ns"] = statistics.median(
+            row["control"]["startup_ns"] - row["candidate"]["startup_ns"]
+            for row in report["pairs"])
+        report["status"] = "PASS"
+    except BaseException as error:
+        report["error"] = str(error)
+        save()
+        raise
+    save()
+
+
+if __name__ == "__main__":
+    main()

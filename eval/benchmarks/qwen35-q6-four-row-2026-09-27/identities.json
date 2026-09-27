@@ -1,0 +1,17 @@
+{
+  "ggml_commit": "bb4caa7540188872173c44d161602d9271386413",
+  "align_head": "fc9ffa7417f9dc3b1650fb879e7233f11dd50fc6",
+  "sha256": {
+    "capture_weights": "06e53b86ebe6f3e7a4b83110fd717e847404acd4bbc4670be1c80f241ff4830e",
+    "capture_input_0": "a3a5ec389a0a1af0d76eb5a951aaf20539c09bf159cea4aabfa0a2fa828cc0ce",
+    "capture_input_1": "3781c5249501aab263b73b3f56f89eba2a8b23a962cd44cbc9afacffe7378009",
+    "capture_input_2": "0a8e5bfe0af1f4ba7079aea07f03459b052387ef8559c1b6c8848d2315234212",
+    "base_probe_source": "84c57750a596e2ac114af76060dc5c687a28b97563f8eed09dd7fbced929f21f",
+    "four_row_patch": "2dcba041cd8d42291b350d73b66f3dff2289637150f25915c3fea7f712ead304",
+    "four_row_binary": "dc001c7823a985438ed712e250904b068bd7d2c46616cf03b2607533ddf4c789",
+    "two_row_binary": "48cebb7369905f60508f567cd14e454bca57190713c046ae545da1f383502321",
+    "stream_source": "25b9d33ccb2eb318f8e251d6378854e4ba259ce585f0c71f0d0b9dd2dbf5ac83",
+    "stream_binary": "99e82772bb66b603da82163e7807d98d97a657d6cb8004a2cf22fdb61fc15487",
+    "metal_plugin": "4927ff8a5242aca83ad2703100da4ad3adff3ed0b3c0c6ef12bda250e7f1b5f0"
+  }
+}

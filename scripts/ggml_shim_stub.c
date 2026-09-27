@@ -2887,6 +2887,25 @@ int32_t align_gpu_kv_write_slot(
         == ALIGN_GGML_OK ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 
+int32_t align_gpu_native_state_copy_mode(void *owner, int32_t mode) {
+    return owner != NULL && mode == 0 ? ALIGN_GPU_OK : ALIGN_GPU_UNSUPPORTED;
+}
+
+int32_t align_gpu_native_state_copy_enabled(void *owner) {
+    (void) owner;
+    return 0;
+}
+
+int32_t align_gpu_native_state_copy_register(void *owner, int32_t kind,
+        void *slots, int64_t source, int64_t destination) {
+    (void) owner; (void) kind; (void) slots; (void) source; (void) destination;
+    return ALIGN_GPU_UNSUPPORTED;
+}
+
+int32_t align_gpu_native_state_copy_finish(void *owner) {
+    return owner != NULL ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
+}
+
 int32_t align_gpu_kv_write_prefix(
         void *owner, int64_t index, int32_t kind, int32_t layout, int64_t position,
         int64_t width, void *slots, int64_t out, int64_t source) {

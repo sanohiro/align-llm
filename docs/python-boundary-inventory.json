@@ -3708,6 +3708,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/measure-metal-worker-footprint",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Independent paired macOS process footprint, RSS and construction timing screen for explicit resident Metal bundles with fixed native requests and output/count checks.",
+      "reachability": "Focused Darwin/Metal developer measurement only; launches explicit native product binaries but is never called by product code.",
+      "substitution": "Records process measurements and identities; does not implement or select shipping inference.",
+      "python_reason": "Paired external process measurement and macOS footprint collection remain test-side responsibilities.",
+      "target": "Retain as an independent Metal bundle qualification; product state and graph decisions belong to Align.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/measure-metal-worker-footprint --help; real 2B paired Metal campaign; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/measure-native-swiglu",
       "classification": "BENCHMARK_OR_MEASUREMENT",
       "behavior": "Independent alternating native SwiGLU and mapped-weight control/candidate/pinned-reference measurement; records all samples and exact text/count parity.",

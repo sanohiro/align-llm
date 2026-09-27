@@ -20,6 +20,7 @@
 #include <string.h>
 
 extern int32_t align_gpu_graph_compute(void *, int32_t, const void *, int64_t, void *);
+extern int32_t align_gpu_native_state_copy_finish(void *);
 extern int32_t align_gpu_kv_slot(void *, int64_t, void *, int64_t);
 extern int32_t align_ggml_slots_init(void *, int64_t);
 
@@ -60,6 +61,8 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
                 ",\"kind\":%d,\"status\":%d}\n", ordinal, kind, status);
         return status;
     }
+    require(align_gpu_native_state_copy_finish(owner) == 0,
+            "native state copy did not complete before diagnostic read");
     require(owner != NULL && value != NULL && kind >= 0 && kind <= 2, "invalid successful graph");
     require(ordinal < UINT64_MAX, "graph ordinal exhausted");
     captured_owner = owner;

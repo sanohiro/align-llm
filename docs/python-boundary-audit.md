@@ -61,6 +61,12 @@ Its optional `--native-control` compares two explicit native developer builds
 without changing the product interface. `--native-disabled` fixes both builds
 to the unfused path for host-only comparisons. It is never imported or launched by product execution.
 
+`scripts/measure-metal-worker-footprint` is `BENCHMARK_OR_MEASUREMENT`: it
+samples macOS process footprint and RSS for explicit resident Metal bundles
+after fixed native requests. It compares startup and memory observations but
+does not participate in inference, choose tokens or treat process footprint
+as total GPU memory.
+
 `scripts/check-native-captures` is `INDEPENDENT_ORACLE`: it verifies captured
 weights against GGUF offsets and compares paired F32 logits with the predeclared
 existing 0.01 absolute bound and identical greedy argmax. It never supplies

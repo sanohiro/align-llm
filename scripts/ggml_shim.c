@@ -50,6 +50,9 @@
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
+#if defined(__APPLE__)
+#include "native_metal_state_copy.h"
+#endif
 
 /* G1 linked-core observation. The executable owns immutable installed cores; the
  * plugin bundle is admitted only after Align verifies these actual loaded paths. */
@@ -1064,6 +1067,11 @@ struct align_gpu_device_state {
     int memory_planned;
     int memory_allocated;
     int synchronous_weight_upload;
+    int native_state_copy;
+    void *native_state_copy_context;
+    int native_state_copy_count[ALIGN_GPU_GRAPH_KINDS];
+    struct ggml_tensor *native_state_copy_sources[ALIGN_GPU_GRAPH_KINDS][64];
+    struct ggml_tensor *native_state_copy_destinations[ALIGN_GPU_GRAPH_KINDS][64];
     int64_t weights_expected;
     int64_t weights_created;
     int64_t weights_uploaded;
@@ -1573,6 +1581,11 @@ static void align_gpu_memory_release(struct align_gpu_device_state *state) {
     if (state == NULL) {
         return;
     }
+#if defined(__APPLE__)
+    if (state->native_state_copy_context != NULL) {
+        align_native_metal_copy_reset_views(state->native_state_copy_context);
+    }
+#endif
     if (state->workspace_allocator != NULL) {
         ggml_gallocr_free(state->workspace_allocator);
         state->workspace_allocator = NULL;
@@ -2542,6 +2555,64 @@ int32_t align_gpu_kv_write_slot(
         ? ALIGN_GPU_OK : ALIGN_GPU_CONFIG;
 }
 
+/* Align selects this once per Qwen3.5 session. A failed opt-in never silently
+ * falls back to a graph with different state publication semantics. */
+int32_t align_gpu_native_state_copy_mode(void *owner, int32_t mode) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || (mode != 0 && mode != 1) || state->weights_finished
+        || state->workspace_prepared) return ALIGN_GPU_CONFIG;
+    if (mode == 0) return state->native_state_copy ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+#if defined(__APPLE__)
+    ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(state->backend);
+    const char *name = buft == NULL ? NULL : ggml_backend_buft_name(buft);
+    if (state->native_state_copy || name == NULL || strncmp(name, "MTL", 3) != 0
+        || strstr(name, "Private") != NULL) return ALIGN_GPU_CONFIG;
+    ggml_backend_reg_t registry = ggml_backend_dev_backend_reg(state->device);
+    if (registry == NULL || ggml_backend_reg_dev_count(registry) != 1
+        || strcmp(ggml_backend_dev_name(state->device), "MTL0") != 0) {
+        return ALIGN_GPU_UNSUPPORTED;
+    }
+    state->native_state_copy_context = align_native_metal_copy_open(
+        ggml_backend_dev_description(state->device));
+    if (state->native_state_copy_context == NULL) return ALIGN_GPU_UNSUPPORTED;
+    state->native_state_copy = 1;
+    return ALIGN_GPU_OK;
+#else
+    return ALIGN_GPU_UNSUPPORTED;
+#endif
+}
+
+int32_t align_gpu_native_state_copy_enabled(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state != NULL && state->native_state_copy == 1 ? 1 : 0;
+}
+
+int32_t align_gpu_native_state_copy_register(void *owner, int32_t kind,
+        void *slots, int64_t source, int64_t destination) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *src = (struct ggml_tensor *) align_ggml_slot_load(slots, source);
+    struct ggml_tensor *dst = align_gpu_kv_at(state, destination);
+    int at;
+    if (state == NULL || !state->native_state_copy
+        || (kind != ALIGN_GPU_GRAPH_DECODE && kind != ALIGN_GPU_GRAPH_DECODE_ALT)
+        || state->graph_prepared[kind] || src == NULL || dst == NULL
+        || src->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32
+        || !ggml_is_contiguous(src) || !ggml_is_contiguous(dst)
+        || ggml_nbytes(src) != ggml_nbytes(dst)
+        || ggml_nbytes(src) < 1048576 || ggml_nbytes(src) / 4 > UINT32_MAX
+        || state->native_state_copy_count[kind] >= 64) return ALIGN_GPU_CONFIG;
+    for (at = 0; at < 4; ++at) {
+        if (src->ne[at] != dst->ne[at]) return ALIGN_GPU_CONFIG;
+    }
+    for (at = 0; at < state->native_state_copy_count[kind]; ++at) {
+        if (state->native_state_copy_destinations[kind][at] == dst) return ALIGN_GPU_CONFIG;
+    }
+    at = state->native_state_copy_count[kind]++;
+    state->native_state_copy_sources[kind][at] = src;
+    state->native_state_copy_destinations[kind][at] = dst;
+    return ALIGN_GPU_OK;
+}
+
 /* Prefill writes a fixed chunk and exposes a dependent resident prefix. */
 int32_t align_gpu_kv_write_prefix(
         void *owner, int64_t index, int32_t kind, int32_t layout, int64_t position,
@@ -3085,6 +3156,13 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
         return ALIGN_GPU_CONFIG;
     }
     align_gpu_synchronize(state);
+#if defined(__APPLE__)
+    if (state->native_state_copy_context != NULL
+        && !align_native_metal_copy_reset_views(state->native_state_copy_context)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
+#endif
     for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; ++kind) {
         if (state->graph_prepared[kind]) {
             align_gpu_workspace_context_reset(state, state->graph_contexts[kind]);
@@ -3227,6 +3305,14 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
     }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     align_gpu_synchronize(state);
+#if defined(__APPLE__)
+    if (state->native_state_copy_context != NULL
+        && !align_native_metal_copy_wait(state->native_state_copy_context)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
+#endif
+    state->native_state_copy_count[kind] = 0;
     if (kind == ALIGN_GPU_GRAPH_PREFILL) { state->prefill_rows_registered = 0; state->prefill_rows_valid = 0; }
     state->graph_prepared[kind] = 0;
     state->workspace_graphs[kind] = NULL;
@@ -3276,6 +3362,82 @@ static int align_gpu_count_model_node(struct align_gpu_device_state *state,
     return 1;
 }
 
+#if defined(__APPLE__)
+static int align_gpu_native_copy_extent(struct ggml_tensor *tensor,
+        void **base, size_t *capacity, uint64_t *offset) {
+    ggml_backend_buffer_t buffer;
+    const char *name;
+    void *start;
+    size_t size;
+    if (tensor == NULL || tensor->buffer == NULL || tensor->data == NULL
+        || tensor->type != GGML_TYPE_F32 || !ggml_is_contiguous(tensor)) return 0;
+    buffer = tensor->buffer;
+    name = ggml_backend_buft_name(ggml_backend_buffer_get_type(buffer));
+    if (name == NULL || strncmp(name, "MTL", 3) != 0
+        || strstr(name, "Private") != NULL) return 0;
+    start = ggml_backend_buffer_get_base(buffer);
+    size = ggml_backend_buffer_get_size(buffer);
+    if (start == NULL || (uintptr_t) tensor->data < (uintptr_t) start) return 0;
+    *offset = (uint64_t) ((uintptr_t) tensor->data - (uintptr_t) start);
+    if (*offset > size || ggml_nbytes(tensor) > size - (size_t) *offset) return 0;
+    *base = start;
+    *capacity = size;
+    return 1;
+}
+
+static int align_gpu_native_copy_commit(struct align_gpu_device_state *state, int kind) {
+    struct align_native_metal_copy copies[64];
+    void *source_base = NULL, *destination_base = NULL;
+    size_t source_size = 0, destination_size = 0;
+    int count = state->native_state_copy_count[kind];
+    int at;
+    if (count == 0) return 1;
+    if (!state->native_state_copy || state->native_state_copy_context == NULL) return 0;
+    // ggml_backend_graph_compute synchronizes before returning. The native
+    // queue must see the finished producer, and native run waits before parity
+    // can advance. Do not add a second wait here.
+    for (at = 0; at < count; ++at) {
+        struct ggml_tensor *src = state->native_state_copy_sources[kind][at];
+        struct ggml_tensor *dst = state->native_state_copy_destinations[kind][at];
+        void *src_base, *dst_base;
+        size_t src_size, dst_size, bytes;
+        uint64_t src_offset, dst_offset;
+        if (src == NULL || dst == NULL || ggml_nbytes(src) != ggml_nbytes(dst)
+            || !align_gpu_native_copy_extent(src, &src_base, &src_size, &src_offset)
+            || !align_gpu_native_copy_extent(dst, &dst_base, &dst_size, &dst_offset)) return 0;
+        if (source_base != NULL && (source_base != src_base || source_size != src_size)) return 0;
+        if (destination_base != NULL
+            && (destination_base != dst_base || destination_size != dst_size)) return 0;
+        source_base = src_base;
+        destination_base = dst_base;
+        source_size = src_size;
+        destination_size = dst_size;
+        bytes = ggml_nbytes(src);
+        if (source_base == destination_base
+            && src_offset < dst_offset + bytes && dst_offset < src_offset + bytes) return 0;
+        copies[at] = (struct align_native_metal_copy) {
+            src_offset, dst_offset, (uint32_t) (bytes / 4), 0
+        };
+    }
+    return align_native_metal_copy_submit(state->native_state_copy_context,
+        source_base, source_size, destination_base, destination_size,
+        copies, (size_t) count);
+}
+#endif
+
+int32_t align_gpu_native_state_copy_finish(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || state->workspace_failed) return ALIGN_GPU_CONFIG;
+#if defined(__APPLE__)
+    if (state->native_state_copy_context != NULL
+        && !align_native_metal_copy_wait(state->native_state_copy_context)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
+#endif
+    return ALIGN_GPU_OK;
+}
+
 int32_t align_gpu_graph_compute(
         void *owner, int32_t kind, const void *key, int64_t key_length, void *graph) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
@@ -3323,6 +3485,12 @@ int32_t align_gpu_graph_compute(
         state->workspace_failed = 1;
         return ALIGN_GPU_COMPUTE;
     }
+#if defined(__APPLE__)
+    if (!align_gpu_native_copy_commit(state, kind)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
+#endif
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     if (state->graph_current_execution_count[kind] > 0) {
         state->graph_reuse_count[kind] += 1;
@@ -3396,6 +3564,12 @@ void align_gpu_device_close(void *owner) {
     if (state->backend != NULL) {
         align_gpu_synchronize(state);
     }
+#if defined(__APPLE__)
+    if (state->native_state_copy_context != NULL) {
+        align_native_metal_copy_close(state->native_state_copy_context);
+        state->native_state_copy_context = NULL;
+    }
+#endif
     align_gpu_memory_release(state);
     if (state->backend != NULL) {
         ggml_backend_free(state->backend);

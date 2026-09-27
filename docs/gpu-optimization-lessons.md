@@ -96,14 +96,164 @@ untraced request gains were smaller. This is a reusable lesson: inspect the
 compiled generic kernel's **address arithmetic** and its actual layout
 predicate before assuming that memory bandwidth or buffer sharing is the
 whole bottleneck. Trace interval reductions are not a request speed estimate.
-The complete evidence and opt-in decision are in
+The copy identity follows from the F32 type, contiguous strides and element
+count; no M1 name or unified-memory capacity enters the kernel predicate.
+This makes the address simplification a portable Metal hypothesis, not a
+portable speed result. The 262,144-element threshold, compiler lowering,
+cache behavior and relative arithmetic/memory cost can change the benefit on
+another GPU generation or workload. The other generic copy and conversion
+kernels contain similar coordinate divisions, but they also do other work;
+profile their real connected cost before specializing them. The complete
+evidence and tested-host recommendation are in
 [`qwen35-metal-linear-copy-trial.md`](qwen35-metal-linear-copy-trial.md).
 
-The next copy question is whether the remaining strided convolution path or
-DeltaNet producer-to-resident boundary can be improved while preserving
-success-only publication. A layout-only reorder and a singleton-dispatch
-deletion have already failed connected benchmarks, so repeat them only with
-a new mechanism and measurable prediction.
+The current 262,144-element cutoff equals the observed 1 MiB F32 DeltaNet
+copy. It is a scope guard for that measured workload, not a measured
+break-even size: the retained trials do not sweep smaller contiguous lengths.
+For a new host or a broader specialization, first model the same-byte,
+same-dispatch choice as saved address work versus fixed path/selection cost;
+then measure paired GPU command and complete-request times over actual
+contiguous sizes on both sides of the proposed cutoff. Memory-bound and
+launch-bound cases can hide an instruction saving, so no universal element
+count follows from the model alone.
+
+### Independent shared-buffer command boundary (2026-09-27)
+
+The independent Metal state-copy trial reused the same shape/layout lesson
+without a ggml source patch. Align registered the 18 actual contiguous F32
+DeltaNet copies, borrowed their existing shared buffers, and let one native
+command publish the next resident state after the ggml producer completed.
+The first correct version waited immediately after native submission and lost
+all 15 unchanged-Align warm-request pairs. Its instrumented 18-copy command
+spent about 0.655 ms on the GPU but 5.498 ms in the immediate wait per decode
+step (medians of one 16-token request). A revised version cached the borrowed
+views, encoded one blit batch, removed a redundant ggml synchronize and waited
+after the independent CPU logits read/sampling work, before parity publication.
+Its corresponding final wait was about 0.658 ms. The initial async build won
+all 15 warm-request pairs; a subsequent build with a cleaner mode-`0` control
+won 14/15 against both unchanged Align and pinned llama.cpp, retaining one
+adverse 200/32 pair. The reviewed binary, which also rejects ambiguous Metal
+device identity, won 15/15 in a new same-binary campaign on this M1. All three
+lengths retained positive paired medians in both later campaigns.
+The [native-state report](qwen35-native-state-copy-trial.md) retains the exact
+condition-by-condition and adverse results. These four changes were applied
+together, so their separate speed contributions remain unmeasured.
+
+The transferable rule is to model the **dependency boundary** as well as the
+bytes and shader interval. Shared CPU/GPU memory made zero-copy buffer views
+possible, but did not remove command submission or ordering. Independent work
+can run while a native command is pending only when the data dependency permits
+it; the state publication still waits. The native queue boundary remains a
+candidate for removal by owning a larger decode segment. Another GPU, copy
+layout or model must remeasure the command scheduling and request result.
+
+### Counter diagnosis after the copy trial (2026-09-27)
+
+The same counter-enabled 200/32 traces also contain raw `gpu-counter-value`
+samples. Overlaying their timestamps on single-worker Shader Timeline intervals
+gives the following medians. Align's trial trace contains two requests and the
+pinned llama.cpp trace contains three. The table reports counter samples, not
+independent request repetitions or exact per-dispatch statistics.
+
+| Shader | Arm | Samples | Buffer Read Limiter | GPU read GB/s | F32 utilization | Compute occupancy |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| Q4_0 matrix-vector | Align | 17,288 | 100.0% | 49.2 | 10.4% | 20.4% |
+| Q4_0 matrix-vector | llama.cpp | 25,626 | 100.0% | 50.1 | 10.6% | 20.4% |
+| Q6_K matrix-vector | Align | 12,942 | 98.1% | 52.5 | 6.7% | 32.7% |
+| Q6_K matrix-vector | llama.cpp | 18,317 | 99.1% | 55.7 | 7.2% | 32.7% |
+| Q4_0 matrix-matrix | Align | 12,734 | 28.0% | 27.2 | 83.1% | 27.1% |
+| Q4_0 matrix-matrix | llama.cpp | 19,832 | 34.2% | 54.4 | 82.3% | 27.0% |
+
+Counter IDs and descriptions were checked against each trace's
+`gpu-counter-info`. Samples at either shader edge (10 microseconds) and samples
+overlapping another worker shader were excluded. The source trace, exports,
+local extraction script and compact summaries are retained under the resolved
+Git common directory at
+`diagnostics/q35-ingraph-greedy-2026-09-27/counter-trace-20260927/`.
+Raw `gpu-counter-value` XML can be regenerated with `xctrace export` from the
+retained `.trace`; it is not a checked-in benchmark artifact.
+
+These are whole-GPU time samples associated with a worker interval. Background
+GPU work, sampling overhead and overlapping commands limit attribution. The
+reference uses a different prefill microbatch, so its Q4_0 matrix-matrix read
+bandwidth is not a controlled kernel-efficiency comparison. Apple's
+[counter guidance](https://developer.apple.com/documentation/xcode/analyzing-apple-gpu-performance-using-a-visual-timeline)
+distinguishes limiter, utilization and bandwidth, and its
+[occupancy guidance](https://developer.apple.com/documentation/xcode/finding-your-metal-apps-gpu-occupancy)
+warns that low occupancy alone does not establish a bottleneck.
+
+Q4_0 and Q6_K decode matrix-vector work is strongly associated with buffer
+read pressure in *both* implementations. The trial's Q4_0 plus Q6_K
+matrix-vector Shader Timeline totals are about 651 ms per request, 61% of its
+worker shader sample total; the remaining F32 copy is about 5.6 ms per request.
+This points away from repeating the prior arithmetic-only native Q4_0 kernel
+or Q6_K one-to-one rewrite without a new way to reduce weight traffic or improve
+useful bytes per read. Q4_0 prefill matrix-matrix has a different signature:
+high F32 use and substantially lower read limiter. Its token-tile shape is a
+separate experiment; the earlier 128-to-512 chunk trial had mixed connected
+results and must not be generalized from these counters.
+
+A same-binary follow-up on the copy-specialized bundle compared prefill width
+128 with 256. It reduced prefill graph count for 200 and 330 input tokens.
+Synchronized prefill regressed in all five 200-token pairs and improved in all
+five 330-token pairs, but a separate uninstrumented whole-request campaign
+did not reproduce the 330-token lead. The no-op 64-token control also moved.
+The existing 64-by-32-token ggml matrix tile already reuses each dequantized
+weight tile across token columns; a wider session chunk alone is not evidence
+of another reuse opportunity. The 2B listed weight extent divided by observed
+one-token decode graph time is about 48 GB/s, close to the sampled Q4_0/Q6_K
+read bandwidth. This is a consistency check, not measured physical traffic or
+a lower bound. Full conditions and adverse pairs are in
+[`qwen35-prefill-counter-followup.md`](qwen35-prefill-counter-followup.md).
+
+The actual-weight Q4_0 layout screen has now run. Splitting unchanged Q4_0
+scale and packed values into two resident streams kept byte extent and output
+exact, but its 24-layer rotating-weight GPU intervals had only a +0.007 ms
+median with 3/5 wins over the original layout. Two- and eight-row SIMD group
+mappings lost to the pinned four-row mapping in GPU intervals. An initial
+same-buffer A/B was invalid: the second shader arm benefited from cache
+ordering. Separate byte-identical Metal buffers and rotation through 169.9 MB
+of real gate weights were needed before comparing row mappings. See
+[`qwen35-q4-layout-screen.md`](qwen35-q4-layout-screen.md).
+
+The contiguous-copy specialization also completed six view geometries and a
+five-pair process-footprint screen without a resolved memory difference. A
+separate direct comparison against the pre-adjacent Metal bundle won every
+2B and 0.8B request pair at 64/16, 200/32 and 330/64. The pinned llama.cpp
+comparison won 29/30 across both models; the 0.8B long case retained one
+-15.966 ms pair. That matters because the adjacent-range control itself was an
+experiment, not the ordinary bundle. The explicit faster profile is
+recommended for the measured M1 Qwen3.5 workload; total GPU/system memory and
+other hosts remain unmeasured. The remaining strided convolution copies total only
+1,327,104 bytes per decode token, compared with 18,874,368 contiguous DeltaNet
+copy bytes already specialized. A layout-only reorder and a singleton-dispatch
+deletion have already failed connected benchmarks, so repeat them only with a
+new mechanism and measurable prediction.
+
+A later actual-weight Q6_K output-head screen assigned four rather than two
+output rows per SIMD group. Full and tail logits were exact for three captured
+activations, but paired projection wall times changed by +0.003, -0.021 and
+-0.050 ms (ggml minus four-row median), with only 3/5, 2/5 and 2/5 wins. A
+checked read-only pass over the same 417 MB yielded 53.77 GB/s of listed bytes
+per GPU command interval and took longer than the projection. This is not a
+physical-bandwidth bound: its checksum/grid do different work. It makes a
+simple row-count change or contiguous reread an unconvincing next step. Q4_0
+has more aggregate decode time and its pinned kernel already reads adjacent
+blocks across lanes with four rows per SIMD group. A useful next experiment
+must name a different byte/layout/dependency mechanism and include conversion
+and resident-memory costs. See [`qwen35-q6-four-row-screen.md`](qwen35-q6-four-row-screen.md).
+
+For a larger change in work per weight read, [speculative
+decoding](https://proceedings.mlr.press/v202/leviathan23a.html) verifies several
+drafted tokens in one target pass and can preserve the target distribution.
+This is a hypothesis for batched weight reuse, not a measured 2B speedup.
+Qwen3.5's gated DeltaNet state makes acceptance-prefix publication and rollback
+part of correctness; a simple KV-length rewind is insufficient. The
+[TreeWY paper](https://arxiv.org/abs/2608.20961) addresses gated-DeltaNet
+speculative state handling at larger model scales, but does not establish that
+its costs work for this M1 2B workload. Any Align experiment needs an explicit
+state transaction, exact output/state owner, draft acceptance measurements and
+the combined target/draft memory and time budget before runtime admission.
 
 The earlier projection-pruning diagnostic changed output and is useful only as
 cost attribution. Its 3.7–8.0 ms graph differences cannot be adopted as an

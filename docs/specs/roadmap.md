@@ -22,6 +22,26 @@ align-runtimeは、重要な技術spikeと小さな実装を並行して進め�
 
 ## 2. Capability delivery model
 
+### Current GPU priority: selectable native execution (2026-09-27)
+
+The current user priority is GPU inference performance. The durable objective
+is an Align-selected native execution path that can coexist with the ggml path,
+preserves real-model correctness, and can be extended from the current Qwen3.5
+models to other Qwen sizes and Gemma where their semantics are implemented.
+The measured contiguous F32-copy ggml patch is a historical performance
+finding, not a required build or deployment route. The first [independent
+Metal state-copy seam](../qwen35-native-state-copy-trial.md) now runs in the
+real Qwen3.5 decode path behind an Align-owned opt-in, using the unmodified
+ggml bundle as producer and control. It passed actual-state/logit checks and
+improved 15/15 reviewed warm-request pairs against both the ordinary Align
+path and pinned llama.cpp on one M1, with positive medians at all tested
+lengths; startup remains slower. Keep the ordinary
+ggml path for comparison and rollback. Next, qualify native failures and
+another Metal device, then select a larger native decode segment that removes
+more of the ggml/native execution boundary. The active evidence and exact
+next action are in `HANDOFF.md`; the admission policy is in
+`gpu-runtime-performance.md`.
+
 ### Completed native FFN trial (2026-09-26)
 
 The native Q4_0 gate/up/SiLU specialization is connected to Align-built real
@@ -30,8 +50,10 @@ correctness pass. Local and paired real-request measurements do not establish
 a repeatable gain, so production remains on the reference path. The
 [result and reproduction](../native-swiglu-trial.md) retain all samples and
 comparison limits. The [four-sum and launch-size follow-up](../native-swiglu-followup.md) also
-completes without repeatable speedup. Next: measure/optimize the real Q6_K output
-projection, then test a tiled FFN including down and partial-output reduction. Other Qwen sizes and Gemma reuse operation/device seams only when
+completes without repeatable speedup. The historical follow-up proposed a real
+Q6_K output projection and a tiled FFN including down and partial-output
+reduction; subsequent Q6_K local screens are recorded in `HANDOFF.md`. Other
+Qwen sizes and Gemma reuse operation/device seams only when
 semantics match; full family coverage is not a prerequisite. See the trial
 ledger in `qwen35-text.md`. Serving and 2B adoption are complete.
 
