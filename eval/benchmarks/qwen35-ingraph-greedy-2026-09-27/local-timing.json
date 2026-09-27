@@ -1,0 +1,26 @@
+{
+  "description": "Captured real 2B row 0, reused graph, 5 warmups + 50 compute-and-4-byte-read timings per process, five alternating process pairs",
+  "samples_ms": [
+    {
+      "control": 0.791438,
+      "candidate": 0.272979
+    },
+    {
+      "candidate": 0.274292,
+      "control": 0.784146
+    },
+    {
+      "control": 0.785729,
+      "candidate": 0.280416
+    },
+    {
+      "candidate": 0.27252,
+      "control": 0.772188
+    },
+    {
+      "control": 0.777334,
+      "candidate": 0.278063
+    }
+  ],
+  "paired_control_minus_candidate_median_ms": 0.505313
+}

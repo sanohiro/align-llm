@@ -20,6 +20,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     "1111111111111111111111111111111111111111111111111111111111111111",
     1048576, 1048576) else { return Err(Error.Invalid) }
   refusal(owner, 0, 4, "CONFIG")?
+  refusal(owner, 513, 4, "CONFIG")?
   refusal(owner, 2, 3, "CONFIG")?
   if args[4] == "allocation" {
     refusal(owner, 2, 4, "ALLOCATION")?
@@ -30,6 +31,10 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       return Err(Error.Invalid)
     }
     if supported != (args[4] == "supported") { return Err(Error.Invalid) }
+    largest := ggml_ffi.gpu_attention_probe(owner, 512, 512, 128, 4, 2) else {
+      return Err(Error.Invalid)
+    }
+    if largest != (args[4] == "supported") { return Err(Error.Invalid) }
     unsupported := ggml_ffi.gpu_attention_probe(owner, 2, 256, 33, 4, 2) else {
       return Err(Error.Invalid)
     }

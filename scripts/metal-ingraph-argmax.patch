@@ -1,0 +1,141 @@
+diff --git a/ggml/src/ggml-metal/ggml-metal-ops.cpp b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+index 8311544b3..0ad9b760f 100644
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -4928,2 +4928,27 @@ int ggml_metal_op_argmax(ggml_metal_op_t ctx, int idx) {
+ 
++    if (op->src[0]->type == GGML_TYPE_F32 && ggml_is_contiguous(op->src[0]) &&
++        ggml_nrows(op->src[0]) == 1 && ne00 >= 8192) {
++        const uint32_t length = ne00;
++        const uint32_t groups = (length + 1023)/1024;
++        ggml_metal_buffer_id partial = ggml_metal_get_buffer_id(op);
++        partial.offs += ggml_nbytes(op);
++        auto first = ggml_metal_library_compile_pipeline(lib,
++            "align_argmax_partial", "align_argmax_partial", nullptr);
++        auto second = ggml_metal_library_compile_pipeline(lib,
++            "align_argmax_final", "align_argmax_final", nullptr);
++        GGML_ASSERT(first.pipeline && second.pipeline);
++        ggml_metal_encoder_set_pipeline(enc, first);
++        ggml_metal_encoder_set_bytes(enc, (void *)&length, sizeof(length), 0);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op->src[0]), 1);
++        ggml_metal_encoder_set_buffer(enc, partial, 2);
++        ggml_metal_encoder_dispatch_threadgroups(enc, groups, 1, 1, 256, 1, 1);
++        ggml_metal_op_concurrency_reset(ctx);
++        ggml_metal_encoder_set_pipeline(enc, second);
++        ggml_metal_encoder_set_bytes(enc, (void *)&groups, sizeof(groups), 0);
++        ggml_metal_encoder_set_buffer(enc, partial, 1);
++        ggml_metal_encoder_set_buffer(enc, ggml_metal_get_buffer_id(op), 2);
++        ggml_metal_encoder_dispatch_threadgroups(enc, 1, 1, 1, 256, 1, 1);
++        return 1;
++    }
++
+     ggml_metal_kargs_argmax args = {
+diff --git a/ggml/src/ggml-metal/ggml-metal.cpp b/ggml/src/ggml-metal/ggml-metal.cpp
+index 0e8d409e0..a39364886 100644
+--- a/ggml/src/ggml-metal/ggml-metal.cpp
++++ b/ggml/src/ggml-metal/ggml-metal.cpp
+@@ -234,2 +234,12 @@ static size_t ggml_backend_metal_buffer_type_get_alloc_size(ggml_backend_buffer_
+             } break;
++        case GGML_OP_ARGMAX:
++            {
++                // The single-row hierarchical reduction keeps its partials in
++                // the same output allocation until the producing graph ends.
++                const ggml_tensor * src = tensor->src[0];
++                if (src->type == GGML_TYPE_F32 && ggml_is_contiguous(src) &&
++                    ggml_nrows(src) == 1 && src->ne[0] >= 8192) {
++                    res += 12*((src->ne[0] + 1023)/1024);
++                }
++            } break;
+         case GGML_OP_TOP_K:
+@@ -951,2 +961,8 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
+ 
++// Queried by the Align shim before admitting the optional in-graph greedy path.
++// The marker says only that this backend contains the finite/first-index
++// hierarchical implementation; Align still owns graph and token policy.
++extern "C" int align_llm_metal_ingraph_argmax_v1(void);
++extern "C" int align_llm_metal_ingraph_argmax_v1(void) { return 1; }
++
+ GGML_BACKEND_DL_IMPL(ggml_backend_metal_reg)
+diff --git a/ggml/src/ggml-metal/ggml-metal.metal b/ggml/src/ggml-metal/ggml-metal.metal
+index 27f97b5e0..b1bda0f18 100644
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -3078,2 +3078,78 @@ kernel void kernel_argmax_f32(
+ 
++struct align_argmax_part { float value; uint index; uint invalid; };
++
++kernel void align_argmax_partial(
++        constant uint & length [[buffer(0)]],
++        device const float * src [[buffer(1)]],
++        device align_argmax_part * parts [[buffer(2)]],
++        uint group [[threadgroup_position_in_grid]],
++        uint tid [[thread_index_in_threadgroup]]) {
++    threadgroup float values[256];
++    threadgroup uint indices[256];
++    threadgroup uint invalids[256];
++    float best = -INFINITY;
++    uint index = 0xffffffffu;
++    uint invalid = 0;
++    for (uint j = group*1024 + tid; j < min(length, (group + 1)*1024); j += 256) {
++        float v = src[j];
++        if (!isfinite(v)) invalid = 1;
++        else if (v > best || (v == best && j < index)) { best = v; index = j; }
++    }
++    values[tid] = best;
++    indices[tid] = index;
++    invalids[tid] = invalid;
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    for (uint stride = 128; stride > 0; stride >>= 1) {
++        if (tid < stride) {
++            invalids[tid] |= invalids[tid + stride];
++            float other = values[tid + stride];
++            uint other_index = indices[tid + stride];
++            if (other > values[tid] || (other == values[tid] && other_index < indices[tid])) {
++                values[tid] = other;
++                indices[tid] = other_index;
++            }
++        }
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++    }
++    if (tid == 0) parts[group] = {values[0], indices[0], invalids[0]};
++}
++
++kernel void align_argmax_final(
++        constant uint & count [[buffer(0)]],
++        device const align_argmax_part * parts [[buffer(1)]],
++        device uint * result [[buffer(2)]],
++        uint tid [[thread_index_in_threadgroup]]) {
++    threadgroup float values[256];
++    threadgroup uint indices[256];
++    threadgroup uint invalids[256];
++    float best = -INFINITY;
++    uint index = 0xffffffffu;
++    uint invalid = 0;
++    for (uint j = tid; j < count; j += 256) {
++        align_argmax_part part = parts[j];
++        invalid |= part.invalid;
++        if (part.value > best || (part.value == best && part.index < index)) {
++            best = part.value;
++            index = part.index;
++        }
++    }
++    values[tid] = best;
++    indices[tid] = index;
++    invalids[tid] = invalid;
++    threadgroup_barrier(mem_flags::mem_threadgroup);
++    for (uint stride = 128; stride > 0; stride >>= 1) {
++        if (tid < stride) {
++            invalids[tid] |= invalids[tid + stride];
++            float other = values[tid + stride];
++            uint other_index = indices[tid + stride];
++            if (other > values[tid] || (other == values[tid] && other_index < indices[tid])) {
++                values[tid] = other;
++                indices[tid] = other_index;
++            }
++        }
++        threadgroup_barrier(mem_flags::mem_threadgroup);
++    }
++    if (tid == 0) result[0] = invalids[0] ? 0xffffffffu : indices[0];
++}
++
+ // F == 1 : norm (no fuse)

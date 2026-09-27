@@ -20,6 +20,30 @@ spec.loader.exec_module(module)
 metal = module.plan("metal")
 cuda = module.plan("cuda")
 
+for backend, extra in (("cuda", []), ("metal", ["--print-plan"])):
+    rejected = subprocess.run(
+        [sys.executable, str(path), "--backend", backend, "--adjacent-ranges", *extra],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert rejected.returncode != 0
+    assert b"--adjacent-ranges requires a Metal build" in rejected.stderr
+for extra in (("--adjacent-ranges",), ("--base-bundle", "/missing")):
+    rejected = subprocess.run(
+        [sys.executable, str(path), "--backend", "metal", *extra],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert rejected.returncode != 0
+    assert b"--adjacent-ranges requires --base-bundle" in rejected.stderr
+for backend, extra in (("cuda", ["--linear-copy"]),
+                       ("metal", ["--linear-copy"]),
+                       ("metal", ["--linear-copy", "--print-plan"])):
+    rejected = subprocess.run(
+        [sys.executable, str(path), "--backend", backend, *extra],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert rejected.returncode != 0
+    assert b"--linear-copy requires an adjacent-range Metal build" in rejected.stderr
+
 assert metal["ggml_commit"] == "bb4caa7540188872173c44d161602d9271386413"
 assert metal["target"] == {"os": "macos", "arch": "aarch64", "gpu_architectures": ["apple_m1"]}
 assert cuda["target"] == {"os": "linux", "arch": "x86_64", "gpu_architectures": ["sm_89"]}
@@ -53,6 +77,61 @@ assert len(cuda_flags) == len(set(cuda_flags))
 
 with tempfile.TemporaryDirectory(prefix="gpu-backend-recipe-smoke-") as raw_temporary:
     temporary = pathlib.Path(raw_temporary)
+    base_bundle = temporary / "base-bundle"
+    base_bundle.mkdir()
+    core_names = ("libggml-base.0.dylib", "libggml-base.dylib",
+                  "libggml.0.dylib", "libggml.dylib")
+    source_sha256 = "a" * 64
+    trial_flag = "-DALIGN_LLM_ADJACENT_RANGES_PATCH_SHA256=" + "b" * 64
+    linear_flag = "-DALIGN_LLM_LINEAR_COPY_PATCH_SHA256=" + "c" * 64
+    baseline_flags = ["-DCMAKE_BUILD_TYPE=Release"]
+    artifacts = [{"role": "backend_plugin", "path": "libggml-metal.so",
+                  "bytes": 1, "sha256": module.digest(b"p")}]
+    (base_bundle / "libggml-metal.so").write_bytes(b"p")
+    for name in core_names:
+        data = name.encode()
+        (base_bundle / name).write_bytes(data)
+        artifacts.append({"role": "shared_library", "path": name,
+                          "bytes": len(data), "sha256": module.digest(data)})
+    base_manifest = {
+        "schema_version": 1, "artifact_kind": "GPU_BACKEND_BUNDLE",
+        "bundle_id": module.ZERO_DIGEST, "backend": "metal",
+        "ggml": {"commit": module.GGML_COMMIT,
+                 "source_manifest_sha256": source_sha256, "version": module.GGML_COMMIT},
+        "target": module.TARGET["metal"], "toolchain": {"test": "same"},
+        "build_flags": baseline_flags, "artifacts": artifacts,
+    }
+    base_manifest["bundle_id"] = module.digest(module.canonical(base_manifest))
+    (base_bundle / "manifest.json").write_bytes(module.canonical(base_manifest))
+    selected_core = module.reusable_metal_core(
+        base_bundle, source_sha256, {"test": "same"},
+        baseline_flags + [trial_flag, linear_flag])
+    assert set(selected_core) == set(core_names)
+    (base_bundle / "libggml-metal.so").unlink()
+    try:
+        module.reusable_metal_core(
+            base_bundle, source_sha256, {"test": "same"}, baseline_flags + [trial_flag])
+    except module.RecipeError as error:
+        assert "artifact cannot be read" in str(error)
+    else:
+        raise AssertionError("missing base Metal plugin was accepted")
+    (base_bundle / "libggml-metal.so").write_bytes(b"x")
+    try:
+        module.reusable_metal_core(
+            base_bundle, source_sha256, {"test": "same"}, baseline_flags + [trial_flag])
+    except module.RecipeError as error:
+        assert "artifact bytes differ" in str(error)
+    else:
+        raise AssertionError("tampered base Metal plugin was accepted")
+    (base_bundle / "libggml-metal.so").write_bytes(b"p")
+    (base_bundle / core_names[0]).write_bytes(b"tampered")
+    try:
+        module.reusable_metal_core(
+            base_bundle, source_sha256, {"test": "same"}, baseline_flags + [trial_flag])
+    except module.RecipeError as error:
+        assert "artifact bytes differ" in str(error)
+    else:
+        raise AssertionError("tampered base core was accepted")
     driver = temporary / "driver"
     driver.write_text('#!/bin/sh\nprintf "%s\\n" "${0##*/}"\n')
     driver.chmod(0o755)

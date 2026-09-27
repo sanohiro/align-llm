@@ -4,11 +4,12 @@ set -euo pipefail
 
 # R4.5-EXTERNAL-BUFFER-SPIKE shim builder (`docs/specs/r4-5-external-buffer.md` section 3.2).
 #
-# One library, `libalign_ggml_shim`, built from one of two checked-in C files and nothing else:
+# One library, `libalign_ggml_shim`, built from one of two checked-in C files:
 #
 #   ALIGN_LLM_GGML_INCLUDE set -> scripts/ggml_shim.c      (compiled against that include tree)
 #   ALIGN_LLM_GGML_INCLUDE unset -> scripts/ggml_shim_stub.c  (ggml-free, links nothing)
 #
+# The Darwin real shim also links the checked-in native Metal state-copy module.
 # There is no third state and no probing of `/opt/homebrew`, because a build input that changes with
 # the contents of a directory is not reproducible.
 #
@@ -25,12 +26,15 @@ set -euo pipefail
 #   ALIGN_LLM_GGML_SHIM_DIR output directory; defaults to `build/lib` inside the work tree
 #   ALIGN_LLM_GGML_SHIM_STATIC `1` builds a static stub archive; it refuses real/forced modes
 #   CC                      C compiler; defaults to `cc`
+#   CXX                     C++/Objective-C++ compiler for the Darwin real shim; defaults to `c++`
 #   AR                      archive tool for static mode; defaults to `ar`
 #
 # **Toolchain assumption, stated rather than assumed.** A working `cc` on `PATH` is already a
 # prerequisite of this repository: `alignc` links every executable through it, so `make build` does
-# not work without one and neither does any hosted target. This script needs nothing beyond that —
-# a freestanding C compiler, `-shared`, and libc headers. `scripts/ggml_shim_stub.c` includes only
+# not work without one and neither does any hosted target. The stub needs only a
+# freestanding C compiler, `-shared`, and libc headers. The Darwin real shim also
+# needs a C++/Objective-C++ compiler and system Foundation/Metal frameworks.
+# `scripts/ggml_shim_stub.c` includes only
 # `<math.h>`, `<stddef.h>`, `<stdint.h>`, and `<string.h>` and links only libm;
 # `scripts/ggml_shim.c` additionally needs the ggml headers the
 # caller names, and is never built on a host that does not name them. Both files compile clean under
@@ -382,6 +386,19 @@ if [ "${static_mode}" = 1 ] && ! command -v "${archiver}" >/dev/null 2>&1; then
 fi
 
 mkdir -p "${out_dir}"
+native_objects=()
+if [ "${flavour}" = real ] && [ "${suffix}" = dylib ]; then
+  cxx_compiler="${CXX:-c++}"
+  if ! command -v "${cxx_compiler}" >/dev/null 2>&1; then
+    printf '%s\n' "build-ggml-shim: no C++ compiler (CXX=${cxx_compiler}) for native Metal" >&2
+    exit 1
+  fi
+  native_object="${out_dir}/align_native_metal_state_copy.o"
+  "${cxx_compiler}" -O2 -std=c++17 -fobjc-arc -fPIC -Wall -Wextra -Werror \
+    -c "${root_dir}/scripts/native_metal_state_copy.mm" -o "${native_object}"
+  native_objects+=("${native_object}")
+  link_flags+=("-framework" "Foundation" "-framework" "Metal" "-lc++")
+fi
 
 # `-ffp-contract=off` is a **correctness** flag here, not an optimisation preference
 # (`docs/specs/r5a-dense-layer-forward.md` section 6, correction C15). `a * b + c` may be
@@ -417,6 +434,7 @@ else
     -fPIC -shared -Wall -Wextra -Werror \
     "${include_flags[@]+"${include_flags[@]}"}" \
     -o "${library}" "${source_file}" \
+    "${native_objects[@]+"${native_objects[@]}"}" \
     "${name_flags[@]}" \
     "${link_flags[@]+"${link_flags[@]}"}"
 fi

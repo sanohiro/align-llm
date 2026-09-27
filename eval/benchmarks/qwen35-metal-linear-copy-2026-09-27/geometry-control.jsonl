@@ -1,0 +1,6 @@
+{"case":"below_threshold","elements":262143,"source_contiguous":true,"destination_contiguous":true,"checked_destination_elements":262143,"status":"PASS"}
+{"case":"at_threshold","elements":262144,"source_contiguous":true,"destination_contiguous":true,"checked_destination_elements":262144,"status":"PASS"}
+{"case":"contiguous_4d","elements":262144,"source_contiguous":true,"destination_contiguous":true,"checked_destination_elements":262144,"status":"PASS"}
+{"case":"offset_contiguous","elements":262144,"source_contiguous":true,"destination_contiguous":true,"checked_destination_elements":262272,"status":"PASS"}
+{"case":"strided_source","elements":262144,"source_contiguous":false,"destination_contiguous":true,"checked_destination_elements":262144,"status":"PASS"}
+{"case":"strided_destination","elements":262144,"source_contiguous":true,"destination_contiguous":false,"checked_destination_elements":524288,"status":"PASS"}

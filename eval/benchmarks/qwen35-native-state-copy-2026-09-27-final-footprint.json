@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "status": "PASS",
+  "host": "Darwin Metal",
+  "metric_scope": "process footprint, not system/GPU total",
+  "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+  "binary_sha256": "7c6a54a4fac25590eb69a2042dec465076578b5140011d794c8ea4e0191c88e2",
+  "prompt_ids_sha256": "a18c64cf986676700a342404bc46ae41f64aca3507a0824775efd80b1cd4f719",
+  "execution": {
+    "control": {
+      "sync_weight_upload": "0",
+      "prefill_chunk": "128",
+      "final_prefill_logits": "1",
+      "final_ffn_row": "0",
+      "mapped_weights": "0",
+      "shared_logits": "0",
+      "neon_greedy": "0",
+      "graph_greedy": "0",
+      "native_state_copy": "0"
+    },
+    "candidate": {
+      "sync_weight_upload": "0",
+      "prefill_chunk": "128",
+      "final_prefill_logits": "1",
+      "final_ffn_row": "0",
+      "mapped_weights": "0",
+      "shared_logits": "0",
+      "neon_greedy": "0",
+      "graph_greedy": "0",
+      "native_state_copy": "1"
+    }
+  },
+  "bundles": {
+    "control": "0a472538ef35e2722fb9488d677196081ab8f726eff825a4e7837ddade57814b",
+    "candidate": "0a472538ef35e2722fb9488d677196081ab8f726eff825a4e7837ddade57814b"
+  },
+  "pairs": [
+    {
+      "control": {
+        "startup_ns": 1061276542,
+        "ready": {
+          "physical_bytes": 144343880,
+          "physical_peak_bytes": 148095816,
+          "rss_bytes": 172802048
+        },
+        "after_three_requests": {
+          "physical_bytes": 152847368,
+          "physical_peak_bytes": 154420232,
+          "rss_bytes": 182173696
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      },
+      "candidate": {
+        "startup_ns": 989794792,
+        "ready": {
+          "physical_bytes": 144376648,
+          "physical_peak_bytes": 147391304,
+          "rss_bytes": 172802048
+        },
+        "after_three_requests": {
+          "physical_bytes": 152978440,
+          "physical_peak_bytes": 154993672,
+          "rss_bytes": 182239232
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      }
+    },
+    {
+      "candidate": {
+        "startup_ns": 979215000,
+        "ready": {
+          "physical_bytes": 144524104,
+          "physical_peak_bytes": 147227464,
+          "rss_bytes": 172949504
+        },
+        "after_three_requests": {
+          "physical_bytes": 153158664,
+          "physical_peak_bytes": 155190304,
+          "rss_bytes": 182419456
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      },
+      "control": {
+        "startup_ns": 1166390291,
+        "ready": {
+          "physical_bytes": 144474952,
+          "physical_peak_bytes": 146506568,
+          "rss_bytes": 172933120
+        },
+        "after_three_requests": {
+          "physical_bytes": 152978464,
+          "physical_peak_bytes": 154551328,
+          "rss_bytes": 182288384
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      }
+    },
+    {
+      "control": {
+        "startup_ns": 1032952750,
+        "ready": {
+          "physical_bytes": 145195872,
+          "physical_peak_bytes": 147211104,
+          "rss_bytes": 173637632
+        },
+        "after_three_requests": {
+          "physical_bytes": 153633824,
+          "physical_peak_bytes": 155223072,
+          "rss_bytes": 182943744
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      },
+      "candidate": {
+        "startup_ns": 987664833,
+        "ready": {
+          "physical_bytes": 144032608,
+          "physical_peak_bytes": 147964768,
+          "rss_bytes": 172441600
+        },
+        "after_three_requests": {
+          "physical_bytes": 152814624,
+          "physical_peak_bytes": 154829856,
+          "rss_bytes": 182059008
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      }
+    },
+    {
+      "candidate": {
+        "startup_ns": 988331750,
+        "ready": {
+          "physical_bytes": 144343880,
+          "physical_peak_bytes": 146391904,
+          "rss_bytes": 172769280
+        },
+        "after_three_requests": {
+          "physical_bytes": 153011232,
+          "physical_peak_bytes": 155042872,
+          "rss_bytes": 182255616
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      },
+      "control": {
+        "startup_ns": 986168000,
+        "ready": {
+          "physical_bytes": 144819040,
+          "physical_peak_bytes": 146834272,
+          "rss_bytes": 173260800
+        },
+        "after_three_requests": {
+          "physical_bytes": 153404448,
+          "physical_peak_bytes": 154993696,
+          "rss_bytes": 182714368
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      }
+    },
+    {
+      "control": {
+        "startup_ns": 992864417,
+        "ready": {
+          "physical_bytes": 144229168,
+          "physical_peak_bytes": 147096368,
+          "rss_bytes": 172703744
+        },
+        "after_three_requests": {
+          "physical_bytes": 152765448,
+          "physical_peak_bytes": 154338312,
+          "rss_bytes": 182091776
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      },
+      "candidate": {
+        "startup_ns": 1004917375,
+        "ready": {
+          "physical_bytes": 144261960,
+          "physical_peak_bytes": 146981728,
+          "rss_bytes": 172687360
+        },
+        "after_three_requests": {
+          "physical_bytes": 152880160,
+          "physical_peak_bytes": 154895416,
+          "rss_bytes": 182124544
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      }
+    }
+  ],
+  "paired_control_minus_candidate_median_bytes": {
+    "ready_physical_bytes": -32768,
+    "after_three_requests_physical_bytes": -114712,
+    "after_three_requests_physical_peak_bytes": -557104
+  },
+  "startup_control_minus_candidate_median_ns": 45287917
+}

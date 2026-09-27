@@ -1,5 +1,994 @@
 # Runtime foundations and GPU performance plan
 
+## Current inference optimization policy (2026-09-26)
+
+The objective is an Align-owned fast inference engine spanning Qwen and Gemma
+generations, sizes, and architectures. Qwen3.5-2B is the current real-model
+validation target, not a permanent architecture limit. Align owns model semantics,
+execution plans, specialization selection, memory policy, sessions, and generation.
+Device kernels and thin host/ABI connections may use Metal/CUDA/C/C++; Python stays
+in independent validation and developer tooling.
+
+There is no mandatory percentage improvement for starting an experiment, integrating
+it with a real model, or adopting it. The former 15% floor and fixed win-count
+admission rule are withdrawn, without substituting another universal percentage.
+Historical measurements and decisions remain historical evidence. An experiment
+needs a concrete hypothesis and test; trial integration needs credible local
+correctness and a reason to measure the real boundary; adoption needs demonstrated
+useful effect, correctness, uncertainty, workload coverage, regression, memory and
+maintenance assessment. Whole-request evidence is produced by trial integration;
+it is never a prerequisite for permitting that integration.
+
+GGML is one implementation option. Reuse, modify, fuse, or replace operations,
+buffer management, scheduling, or a whole execution path when supported by an
+experiment. Keep the established path for comparison and compatibility during
+migration. No permanent ggml dependency is required for new paths. Single-kernel
+losses do not establish a ceiling for independent backends.
+
+Keep model semantics, operation/fusion patterns, and device implementations
+separate. Select specializations by shape, quantization, activation, layout, token
+count, and device capability. Preserve architecture-specific normalization,
+attention, position representation and activation; Gemma is not a shape alias of
+Qwen. Extend existing Model IR only when a real consumer needs it.
+
+Predeclare numerical tolerances and cost ceilings. Keep exact compatibility
+owners; label rounding-changing trials explicitly. Compare unchanged Align,
+candidate Align, and pinned llama.cpp with identical weights, prompt IDs and
+actual generation work. Retain all alternating paired samples after warm-up;
+report local, connected, prefill, decode, whole-request, startup/load and memory
+separately. Do not infer request gains from isolated kernels or change tolerance
+after observing failures.
+
+This section supersedes historical percentage-based admission/shipping prose
+elsewhere in this repository. Historical receipts must not be rewritten.
+
+### Independent Metal recurrent-state copy trial (2026-09-27)
+
+The first selectable native execution seam replaces the 18 contiguous F32
+DeltaNet resident-state copy nodes per Qwen3.5 decode graph with one independent
+Metal batch dispatch. Align chooses the seam and retains the source tensors as
+graph outputs; ggml continues to compute their producers and the rest of the
+graph. After the producer graph completes, the native dispatch copies its
+outputs into the inactive resident plane. Only successful completion permits
+Align to publish the new parity. Prefill and ineligible strides retain the
+existing ggml copies. This trial does not require a ggml source patch and does
+not claim a complete ggml-free graph.
+
+| Contract | Definition |
+| --- | --- |
+| Selection | `ALIGN_LLM_NATIVE_STATE_COPY=1` opts a Qwen3.5 Metal session into the trial; absent or `0` retains the ordinary graph; any other value refuses session construction. Align snapshots the value once and includes it in decode topology identity. CPU, CUDA, unsupported storage, and ambiguous Metal device identity refuse mode `1`. The current borrowed-buffer bridge admits the pinned backend's sole `MTL0` and exactly one physical Metal device with a matching description; other configurations use mode `0`. |
+| Native boundary | The checked shim accepts only complete, contiguous F32 source/destination tensors with equal byte extents of at least 1 MiB and no overlap. It stores graph-local pairs without retaining a second tensor payload. A device-only module borrows the existing shared Metal backing allocation by public base/size accessors; it owns its Metal queue and one command buffer per decode step. No ggml source patch or model-specific size is used by the native copy. |
+| Ordering / failure | The synchronous ggml producer graph completes before the native command reads its outputs. The independent native command may overlap CPU logits readback and sampling, which do not consume the copied state. Align explicitly waits for its completion before advancing recurrent parity or returning a token. A graph, native dispatch, synchronization or resource failure leaves the session unhealthy and parity unpublished. Rebuild/invalidation drains pending native work and clears graph-local pairs before releasing workspace; close drains and releases the native context before the borrowed allocations. Retained sessions cannot share pending pairs. |
+| Correctness / rollback | Require bit-identical DeltaNet destination planes and full logits against the same binary with the mode off, plus the existing 2B/0.8B generation, repeated-request, failure-recovery and serving owners. Keep the ordinary graph as the immediate rollback. The native path may not waive or change a numerical tolerance. |
+| Measurement / ceiling | Compare the same saved Align binary with mode off/on on the same unpatched pinned ggml bundle, then the native candidate with pinned llama.cpp, using exact GGUF, pack, Model IR, prompt IDs and generated counts at 64/16, 200/32 and 330/64. Record local batch command interval, connected prefill/decode, whole warm request, startup, command count and memory, with two warmups and five alternating pairs. Build <=900 s, each campaign <=900 s and request <=180 s; at most one small descriptor buffer and one cached borrowed Metal view per backing allocation, with no duplicate resident plane. These are cost bounds, not a required percentage improvement. |
+
+Closure: configuration belongs to Qwen3.5 execution parsing and malformed-mode
+owner; graph success and topology reuse belong to the recurrent builder and
+decode generation owner; native buffer admission, command failure and cleanup
+belong to a focused device owner; exact state/logit parity and repeated requests
+belong to the real-model owners. The first local zero-copy shared-buffer probe
+passed on the measured M1 host; it proves the bridge's byte semantics only,
+not this integrated trial's speed or portability.
+
+| Closure case | Align owner | Shim/device owner | Evidence or deferral |
+| --- | --- | --- | --- |
+| Construction / malformed mode | `runtime_qwen35_execution.read`, `runtime_qwen35_generation.prepare` | `align_gpu_native_state_copy_mode` refuses unsupported devices/storage | Invalid mode `2` refused before ready; real and stub shim builds passed. |
+| Success / repeated use | `runtime_qwen35_recurrent.build_many`, generation and parity | Checked copy registration, borrowed views, one native command and finish | 16-token full logits/state equality, both-size generation owners, 0.8B serving owner, five-pair measurements. |
+| Failure / early exit | Session remains unhealthy until copy completion; parity advances only after finish | Command status is checked; close drains pending work | Invalid-request and early-exit generation owners passed. Forced native command failure remains a focused owner before default adoption. |
+| Rebuild / cleanup | Topology invalidation and session close | Wait/reset borrowed views before allocator release; reject ambiguous device identity at construction | Repeated-request generation and process-footprint screens passed; another Metal device remains unmeasured. |
+
+Integrated result: the first synchronous native version lost all 15 paired
+warm requests. The revised cached-view asynchronous blit version passed exact
+16-token 2B full-logit/state comparison, 2B/0.8B generation, 0.8B serving
+and invalid-mode refusal. After review repair, the same-binary unmodified-bundle
+campaign won 15/15 unchanged-Align and 15/15 pinned llama.cpp warm-request
+pairs on the measured M1, with control-minus-native paired medians +44.636,
++88.505 and +186.868 ms. The pre-repair campaign retained one -5.380 ms Align
+pair at 200/32; it remains in the record. Startup remained slower
+than llama.cpp. The actual decode graph omitted 18 copy nodes and added one
+independent blit command per step. The final process-footprint screen observed
+a small +0.109 MiB physical and +0.531 MiB peak increase for native mode,
+while the preceding screen had the opposite sign; total GPU/system memory
+remains unmeasured.
+Keep the route opt-in until focused native failure injection and another
+Metal-device qualification. Full conditions, phase limits, memory scope and
+receipts are in `docs/qwen35-native-state-copy-trial.md`.
+
+### Final-chunk logits trial (2026-09-26)
+
+Remove unused intermediate-prefill output work on the current 2B consumer. The
+earlier 0.8B state-only experiment in `qwen35-text.md` is historical, including its
+withdrawn percentage gate; it is not evidence for this implementation or model.
+
+| Contract | Definition |
+| --- | --- |
+| Input / owner | `runtime_qwen35_execution.read` snapshots `ALIGN_LLM_PREFILL_FINAL_LOGITS`: `1` default emits logits only for the final prompt chunk, `0` preserves all chunk outputs for comparison/compatibility; any other value returns `Error.Invalid` before allocation. Align generation owns selection in normal and streaming sessions. The initial trials explicitly set the flag; default adoption follows exact state/output qualification, unchanged peak device allocation and measured long-input request/TTFT gains, not a percentage gate. |
+| Graph / identity | `runtime_qwen35_model.build_tokens_output` accepts an explicit `emit_logits` boolean; false is admitted only for prefill. Existing `build_tokens` and decode callers retain full output. Every recurrent/KV commit remains an explicit graph root; their complete producer dependencies execute. A nonfinal chunk does not expand the final hidden tensor or vocabulary head, so the final layer's unused attention/FFN tail is not executed. Its logits slot is absent and must not be read. Output mode enters the prefill graph key. |
+| Ownership / failure | No new buffer, ABI, state owner or retained weight copy. Borrowed slots retain existing lifetime. Publish recurrent parity only after successful synchronized compute and, when requested, logits readback; errors retain existing unhealthy-session/reset behavior. Final and one-chunk requests always produce logits. |
+| Correctness | Existing exact generation and HTTP/SSE owners on 2B/0.8B, repeated short/long/short requests, 128/256/512 boundaries and one-token generation. Compare final-prefill/decode logits against the unchanged binary with the existing predeclared absolute bound 0.01 and identical argmax; report observed differences. Raw nonfinal baseline vectors remain retained. |
+| Measurement / ceiling | Same weights, chunk width, upload mode, native-FFN setting and prompt IDs; old/new plus pinned llama.cpp, two warmups and at least five alternating pairs. Record prefill, decode, whole request, startup, graph/readback counts and memory. Each campaign <=900 seconds, each request <=180 seconds; no extra retained device allocation is allowed. Adoption is an explicit assessment without a percentage floor. |
+| Formats / prerequisites | No product CLI, persisted format or model-IR change. Measurement tools record the explicit flag; the independent capture oracle aligns one final-prefill vector when enabled. Managed pinned compiler and existing Metal model kit are available. |
+
+Closure: parser malformed-input probes; model's existing state-commit roots
+and full producer dependencies; both generation loops and mode-aware graph keys;
+2B/0.8B generation/serving owners; captured vector/count checks and alternating
+worker/HTTP campaigns. Construction, cleanup, early exit and failure reuse the
+existing session owner, with no new allocation lifetime. Author consistency:
+output elision never controls state publication or removes a state producer.
+The initial isolated trial retained the final hidden root and removed only the
+head. Preserve its binary and measurements as `head_only`; the next bounded
+trial removes that unused root as well. Every layer still contributes its
+recurrent/KV state, including the final layer. Recheck all vectors and boundary
+requests before repeating the real-model measurement; do not reuse the earlier
+candidate's correctness or speed result for the revised graph.
+For the state-root trial, `trace-qwen35-state.c` independently records operation
+counts and hashes every retained KV/recurrent plane after successful synchronized
+compute. Supply the geometry-derived state count (84 on current 2B); require
+bit-identical full-plane hashes at matching graph steps across a 200/3 then 64/3
+retained session. The diagnostic uses a 1 MiB CPU read/hash buffer, adds no graph
+nodes and is never enabled for timing. It validates the next state index is
+absent and fails on missing planes; all state-write nodes must remain. Its C code
+uses only the existing thin ABI/backend read interface, with no production path.
+
+Local closure: same-width 128/256/512 logits are exact, 588 full-state hashes
+agree, and 2B/0.8B generation/serving owners pass. Adopt default `1` based on
+useful long-input HTTP/SSE and first-token gains, unchanged Metal allocation,
+small maintenance cost and explicit rollback. Preserve short-input noise,
+worker regressions and the absence of a llama.cpp whole-request win. Final
+default qualification is separate from explicit-flag timing artifacts; see
+`../final-prefill-q6-trial.md` and its complete raw receipt.
+
+### Final-layer single-row FFN trial (2026-09-26)
+
+The current Qwen3.5 final prompt chunk computes the final layer's FFN for all
+input rows, although this provider requests logits for only its last row. The
+pinned llama.cpp Qwen3.5 builder has an optional `inp_out_ids` selection before
+the last residual/FFN; `embeddings_nextn_masked` guards it and the measured
+ordinary context initializes that setting false. This is a concrete Align
+consumer hypothesis, not evidence of a performance gain.
+
+| Contract | Definition |
+| --- | --- |
+| Input / validation / owner | `runtime_qwen35_execution.read` snapshots `ALIGN_LLM_PREFILL_LAST_FFN_ROW`: `0` or absent uses the existing graph, `1` enables the trial, every other value returns `Error.Invalid` before weight allocation. Existing upload/chunk/final-logits inputs retain their order and behavior; the new validation follows them. Align generation owns the per-session choice in both normal and streaming paths. |
+| Selection / meaning | Only the final prompt prefill graph with `count > 1` and requested logits selects the final token row of **both** the final layer input residual and its completed attention output. Existing attention/recurrent builders still expand every persistent-state producer. The final FFN consumes those one-row views; the output head views row zero of its one-row result. Earlier layers, nonfinal chunks, one-row prefill and decode retain their graphs. Reject an ineligible request at the model builder. The optimization is specific to Qwen3.5's current semantic graph; other model families require their own analysis. |
+| Graph / allocation | The actual one-row selection enters the 64-hex SHA256 graph key. A view creates graph metadata but no extra retained device tensor; the current full-row path remains selectable. No new ABI, model IR, weight layout, persistent format, Python product path or session state owner. View span is bounded by the existing strict F32 `op_view_2d` ABI. |
+| Correctness | Before timing, compare actual 2B full-vocabulary final-prefill and decode logits with the flag off/on at equal chunk width, using the existing predeclared absolute limit 0.01 and identical argmax. Preserve raw vectors and observed maxima. Verify exact generated output against pinned llama.cpp on 2B and 0.8B, plus normal/streaming repeated and boundary requests. Hash all resident state planes at corresponding graph steps; the optimization must not alter state. A different FFN matrix shape may change floating-point reduction order; report it instead of relabeling an unexplained output mismatch. |
+| Measurement / decision | Real unchanged 2B GGUF/pack, prompt IDs, generated counts, upload 0, chunk 128, native FFN 0, final-logits 1. Compare old Align, trial Align and pinned llama.cpp in at least five alternating worker pairs; independently compare the same candidate binary OFF/ON in five HTTP and SSE pairs per case after two warmup pairs. Record prefill, decode, whole request, first-token time, startup, graph operations, memory and adverse pairs. Each campaign <=900 seconds and request <=180 seconds. No percentage floor; default adoption requires useful real-request evidence and acceptable correctness, regression, resource and maintenance costs. |
+
+Closure: configuration construction/malformed input belongs to execution parsing
+and invalid-session probes; graph formation/success belongs to model row selection
+and same-width full-logit/state checks; normal/streaming and repeated requests
+belong to generation/serving owners. Early exit, failure and cleanup use the
+existing session owner; no new allocation lifetime exists. The author consistency
+check is that both row views are selected after state-producing attention work,
+that only the final layer receives them, and that full-row rollback remains a
+genuine same-model control. Performance and adoption will be recorded in a new
+trial report and raw receipt, not inferred from this plan.
+
+Local closure: the implementation and existing 2B/0.8B owners pass. At equal
+chunk width, 71,516,160 full-logit floats stay within the predeclared 0.01
+absolute bound with identical argmax; all 588 full resident-state plane records
+match. One actual Q4_0 FFN path selects a matrix-vector Metal kernel, but the
+five-pair whole-request HTTP/SSE results are mixed, including adverse cases and
+timing movement in the one-row no-op control. Retain the mode as an opt-in
+experiment, default `0`, and keep full-row comparison. This decision weighs
+small connected gains, variability, unchanged memory report, numerical rounding
+and maintenance cost without a percentage floor. See
+`../final-ffn-row-trial.md` and its complete raw receipt.
+
+### Actual Q6_K projection probe (2026-09-26)
+
+Independent native Metal experiment, outside production inference: capture the
+real final normalized activation and logits for the tied Q6_K output matrix,
+then compare pinned ggml with a native implementation using paired aligned
+16-bit quant loads. Preserve Q6_K bytes, lane/reduction order, F32 outputs and
+the original 64-thread work mapping. The 210-byte quant block stride permits
+2-byte, not arbitrary 4-byte, alignment. The compiler may already combine loads;
+a speed benefit is a hypothesis.
+
+The C diagnostic capture owns files only and marks the activation output before
+graph allocation so its lifetime survives compute. Capture is never enabled in
+performance runs. The standalone Objective-C++ probe owns its buffers/queue and
+reads exact recorded weights/activations; it is not a product execution path or
+an alternative inference engine. Check all vocabulary outputs for at least one
+prefill and two decode activations, with the existing absolute bound 0.01 and
+identical greedy argmax, before timing. Include a row-tail shape using a subset
+of the same real weights. All values must be finite. No post-measurement tolerance
+change or weight conversion is permitted.
+
+Ceilings: bounded build <=900 seconds; each measurement campaign <=900 seconds,
+five alternating pairs, warmups and synchronized equal invocation counts; at most
+two full weight allocations and existing local probe output/input buffers.
+Record wall and GPU times where supported, source/artifact hashes, exact inputs
+and all samples. CPU/CUDA are deferred; this is a local Metal experiment, not a
+whole-model speed claim. Locally promising results may justify selectable graph
+integration with real request verification; a local loss rejects this load
+strategy only. Root coordinates GPU use to prevent competing measurements.
+
+Local closure: all three real activation/full-vocabulary and row-tail checks
+are exact, but every five-pair improvement range crosses zero in traced and
+untraced campaigns. Do not integrate this paired-load kernel. Retain the
+independent probe and all samples; next attribution/mapping hypotheses are in
+`../final-prefill-q6-trial.md`. This result imposes no general backend restriction.
+The subsequent real-model decode diagnostic found matching Q6_K and other major
+Metal kernel launch signatures in Align and pinned llama.cpp; its deliberately
+pruned graph bounds connected projection cost but is not an inference path. See
+`../qwen35-decode-attribution.md`. The mapped-weight experiment below tested
+the storage hypothesis; its real-model result is in `../mapped-weight-trial.md`.
+
+### Q6_K four-row mapping screen (2026-09-27)
+
+The retained actual-weight Q6_K output projection is one of the largest decode
+shaders. The pinned kernel and the prior paired-load probe assign two output
+rows per SIMD group. Screen four rows per SIMD group using the same Q6_K bytes,
+F32 activation, per-row arithmetic, 64-thread group and output format. This
+halves the output-row group count and can reuse the input fragment, but reads
+the same weight bytes and may worsen register pressure or occupancy. The
+prior two-row source and ggml graph remain the controls; this is a local probe
+outside production inference, not an adoption or general-backend claim.
+
+Build ceiling 900 seconds and measurement ceiling 900 seconds. Use the three
+captured 2B prefill/decode activations, the full 248,320-row output and a
+257-row tail; before timing require finite full-row values within the existing
+predeclared 0.01 absolute bound and identical first-index argmax. Keep twelve
+warmups, five alternating pairs of twenty synchronized operations per arm,
+all samples, the unchanged Q6_K weights and at most the existing two weight
+buffers. A local gain only permits a reversible real-model trial with full
+logit/state/generation and request checks; a local loss rejects this mapping,
+not other GPU layouts or independent backends.
+
+If the four-row mapping has no local gain, measure a read-only ceiling on the
+same 417,177,600 captured Q6_K bytes. A Metal shader reads every 32-bit word
+contiguously, reduces it to a checked checksum and writes only group sums; it
+does not dequantize or produce logits. This isolates attainable contiguous
+read throughput as a diagnostic comparison, not a candidate inference path.
+Use one Metal weight buffer, twelve warmups and five batches of twenty
+synchronized GPU-timed reads; build and measurement each remain <=900 seconds.
+Check the complete GPU checksum against a CPU sum before timing. Compare its
+effective bytes/time with the real Q6_K projection and the trace counter,
+without calling the difference an achievable kernel speedup.
+
+Local closure: the three captured full and tail projections matched the
+pinned ggml output exactly. Five paired local comparisons per activation
+showed no repeatable four-row gain; the separately checked contiguous read
+was slower than the projection and is not a bandwidth roof. Withdraw this
+mapping without a runtime trial. Preserve the actual-output oracle and the
+ggml path; see `../qwen35-q6-four-row-screen.md` and its complete receipts.
+The next bounded Q4_0 screen must change weight layout or bytes, include the
+one-time conversion and resident-memory costs, and qualify actual weights
+before any real-model integration.
+
+### Q4_0 split-scale resident layout screen (2026-09-27)
+
+The current Q4_0 block is 18 bytes: one F16 scale followed by 16 packed
+quant bytes. Screen a lossless resident layout with all F16 scales contiguous
+and all 16-byte quant payloads contiguous, preserving each original block's
+position and every F32 input. The proposed Metal decode vector kernel can
+read aligned quant payloads while retaining the pinned four-row/SIMD work
+distribution and Q4_0 dot arithmetic. This is an independent local probe, not
+a new GGUF, persisted pack, production backend, or model-name gate.
+
+The existing capture owner must first record one actual 2B decode request's
+FFN weights and activations, and `check-native-captures weights` must verify
+all captured weight bytes against the source GGUF. Screen actual layer-23 gate
+`[2048,6144]` and down `[6144,2048]` Q4_0 projections, using their captured
+input and gated activation respectively. Before timing require all finite
+outputs within the predeclared `0.005 + 0.0005*abs(ggml)` bound against a
+pinned ggml graph; the down graph must also match the captured output under
+that same bound. Record conversion time, input/output/weight extents and hashes,
+resident bytes, Metal pipeline geometry, twelve warmups and five alternating
+pairs of twenty synchronized operations per arm, including all adverse pairs.
+Build and each campaign <=900 seconds; at most one original and one converted
+Metal weight allocation per tensor. A local gain only permits a reversible
+real-model connection with logits/state and whole-request qualification. A
+local loss rejects this layout, not another transfer mechanism.
+
+The first same-layer screen is cache-sensitive: a 7 MB tensor repeatedly
+invoked alone is not the real 24-layer decode working set. Repeat a lossless
+raw/split comparison rotating through all 24 captured gate matrices and their
+actual activation vectors, with exact ggml output checks for each layer. Keep
+the same three-arm local result and conversion cost visible; judge the layout
+by paired raw-versus-split GPU and wall times in the rotated working set.
+
+If split layout does not give a consistent gain, screen the existing Q4_0
+layout at two and eight versus four output rows per SIMD group on the same rotating
+working set. This changes register pressure and the number of independent
+groups while retaining all bytes, four-row ggml/native controls, dot arithmetic,
+input, and output. Require exact local outputs before timing, then twelve
+warmups and five alternating pairs of twenty operations for each arm. It is a
+separate occupancy/parallelism hypothesis, not a claim that low occupancy
+alone is a fault. Use separate byte-identical source-weight buffers per arm
+while rotating layers; sharing one buffer gave the second arm an order-dependent
+cache advantage in an initial invalid comparison. Build and measurement each
+remain <=900 seconds.
+
+**Result.** All 72 captured FFN weights matched the GGUF byte for byte. The
+lossless split and two/eight-row probes matched all 24 gate outputs exactly;
+layer-23 down also matched its captured output. Splitting the 24 gate matrices
+kept the same 169,869,312 total resident weight bytes but took 40.75 ms of
+local CPU conversion. Its rotated raw-minus-split GPU median was +0.007 ms
+with only 3/5 wins. Separate-buffer two/eight-row probes lost to four rows in
+GPU intervals, with 0/5, 0/5 and 1/5 candidate wins across the three screens.
+No Q4_0 candidate was connected to the real-model runtime, so no whole-request
+gain is claimed. Conditions, exact comparisons and receipts are in
+[`qwen35-q4-layout-screen.md`](../qwen35-q4-layout-screen.md).
+
+### Mapped Alignpack weight trial (2026-09-26)
+
+This is an opt-in Qwen3.5 Metal resident-session experiment. The existing upload
+path remains the comparison and fallback. The local 2B pack has 64-byte member
+alignment, is 1,621,209,088 bytes, and can be wrapped as a read-only shared
+Metal buffer on the M1. This feasibility check does not establish a speed gain.
+
+| Contract | Definition |
+| --- | --- |
+| Selection / owner | `runtime_qwen35_execution.read` accepts `ALIGN_LLM_MAPPED_WEIGHTS=0` (default) or `1`; all other values fail before allocation. `runtime_qwen35_generation.prepare` selects the path after bounded pack validation and plan construction. CPU/CUDA and other models retain their existing path. No public CLI, persisted format or cache schema changes. |
+| ABI / lifetime | `align_gpu_mapped_weights_open(owner, path, length)` opens and maps the actual pack after admission and before allocation, accepting the same absolute or relative pack path as the existing provider. The descriptor closes after mmap; the shim owns the mapping until the GPU owner is synchronized and released. `align_gpu_weight_add_mapped(..., pack_offset, nbytes)` places a validated tensor in that buffer; it never uploads a copy. The Align plan owns every offset, shape, order and admission decision. Native code only opens, wraps, bounds-checks and places storage. |
+| Identity / mutation | The existing `runtime_pack_identity.verify_file_bounded` remains the semantic admission step. The thin map opener checks regular file, exact size and current path; the current loader also does not pin or hash every payload byte against concurrent mutation. This opt-in trial assumes a stable local pack during construction and inference; mapped-file truncation is a known process fault. Production adoption requires a same-descriptor validation or immutable-pack contract. |
+| Budget / cleanup | Admission charges the full mapped file extent as weights, not the sum of tensor bytes. There is one mapping, one backend buffer, no second weight allocation and no upload. The descriptor closes immediately after mmap; failure at any later prefix leaves ordinary owner cleanup responsible for buffer free before unmap. Existing graph, KV, input and session state remain owned as before. |
+| Performance cost ceiling | One admitted file mapping and one Metal buffer replace one owned weight buffer; no extra full-weight allocation. Build and owner preparation are bounded to 3,600 s per attempt, each alternating campaign to 900 s, and each real request to 180 s. The final report distinguishes any runtime or memory gain from construction and page-fault cost. |
+| Correctness / measurement | Compare byte identity of placed tensors, 2B/0.8B generation, repeated requests, logits and recurrent state at the predeclared existing bounds. Then alternate old/new/pinned-llama runs using the same weights, tokens and options. Record load, first request, warm prefill/decode, whole request and physical memory. Small or negative changes are reported as measured; there is no percentage gate. |
+
+| Closure case | Owner / verification |
+| --- | --- |
+| Valid construction and requests | `runtime_qwen35_generation`, `runtime_qwen_load`, `runtime_weights`, `ggml_ffi`, real shim; focused 2B and 0.8B generation and HTTP/SSE owners. |
+| Invalid option, alignment, extent and file | Parser refusal; shim returns CONFIG/UNSUPPORTED/ALLOCATION before tensor placement; focused mapped-weight owner and real-model negative probes. |
+| Partial placement, graph fault and early release | Owner destruction synchronizes GPU, frees backend buffer, then unmaps; the file descriptor is already closed. Focused native owner and existing device cleanup owner. |
+| Model bytes and state | Full tensor bytes must equal the validated pack slices; existing logit, state and repeated-request captures compare against default-off. |
+| Measurement / fallback | Default-off baseline and opt-in candidate share a binary and backend bundle; record all alternating samples and memory observations. |
+
+Local closure: the opt-in path passed 2B/0.8B generation and 2B serving owners,
+with 744,960 exact 2B logit values and 258 exact state records. Five-pair worker
+and HTTP/SSE campaigns show isolated startup improvement but no stable warm
+request or decode gain. Keep default off. A same-descriptor or immutable-pack
+contract and physical-memory evidence are prerequisites for production use;
+the trial result does not impose a percentage floor on another candidate.
+The independent reader compared all 321 members against each source GGUF
+(1,621,089,536 bytes for 2B; 822,246,656 bytes for 0.8B); the direct
+pack-offset pointer placement is checked in the shim. Full GPU-weight readback,
+an isolated load-only clock and whole-system physical-memory attribution remain
+explicitly deferred while the mode is experimental and default-off.
+
+### Single-token Qwen3.5 attention layout trial (2026-09-27)
+
+The actual 2B Metal decode trace contains a `permute` plus `contiguous` copy for
+each full-attention K and V projection. With one token, a contiguous
+`[head_dim, kv_heads, 1]` projection has the same element order as
+`[head_dim, 1, kv_heads]`. The Qwen3.5 builder may select a metadata-only reshape
+for K after RoPE and V after projection at `count == 1`; multi-token prefill keeps
+the existing permute and copy. The shim must reject a noncontiguous reshape
+input rather than assume layout. No ABI, retained buffer, state owner, model IR,
+format, or public configuration changes. The previous binary is the rollback
+control; ggml still runs the remaining graph and compute kernels.
+
+Before timing, compare actual 2B final-prefill and decode logits against the
+unchanged binary at the existing predeclared absolute bound 0.01 and identical
+argmax, plus exact resident-state hashes and generated output. Include repeated
+requests and 0.8B owner qualification. The operation change should preserve
+element order exactly; any numerical difference needs investigation. Then run
+at least five alternating old/new/pinned-llama real 200/32 requests with the
+same GGUF, pack, prompt IDs and options, plus a shorter and longer condition;
+report graph dispatch counts, prefill, decode, complete request, load and memory.
+The campaign ceiling is 900 seconds, request ceiling 180 seconds, and no extra
+retained device allocation is allowed. Adoption depends on measured real effect,
+regressions and maintenance cost without a percentage floor. Build failure,
+noncontiguous source, or owner failure reverts this trial before timing.
+
+Local closure: the implementation passed 2B/0.8B generation owners; three 2B
+full-vocabulary captures were bit-identical and 336 resident-state hashes
+matched. Metal decode dispatches fell from 663 to 651, but five-pair worker and
+HTTP/SSE measurements found no repeatable request or decode gain. The trial
+code was removed; its patch and raw observations remain in local diagnostics.
+This rejects the singleton-copy change as a speed optimization on this host,
+not a general claim about fusion or an independent backend.
+
+### Qwen3.5 recurrent parity placement trial (2026-09-27)
+
+The current 2B decode graph writes 18 convolution and 18 DeltaNet state tensors
+per token. A counter-enabled trace sampled `kernel_cpy_f32_f32` for about
+99 ms per Align request versus 35 ms per pinned llama.cpp request after
+normalizing two and three identical 200/32 requests respectively. These are
+sampled, instrumented shader intervals, not isolated copy clocks or a speedup
+prediction. Both paths dispatch the same 36 large state copies and use shared
+Metal buffers. An independent binding trace found that Align's inactive state
+destinations span about 38 MB because parity is interleaved by layer, while the
+reference's single state buffer spans about 20 MB. The previous 2B trial that
+removed 12 small K/V materializations did not improve requests. Test state
+placement next without weakening success-only publication.
+
+| Trial contract | Boundary |
+| --- | --- |
+| Selection and rollback | A separately built candidate changes only Qwen3.5 recurrent resident index and allocation order. The unchanged binary and bundle remain the control; no new CLI, environment flag, persisted format, Model IR, or ggml scheduler change. Align retains both parity planes and flips the active index only after a complete successful graph. |
+| Placement | Keep the six attention layers' K/V members first. Group all recurrent convolution/DeltaNet tensors of parity zero, then all of parity one, each in layer order. The shape selected for each index must match `recurrent_index`; total resident allocation and tensor types remain unchanged. The existing ggml copy operation and fallback graph remain. |
+| Correctness | The geometry owner checks the complete 84-index bijection and both parity directions. Real 2B and 0.8B generation owners cover reset, failed input recovery and early exit. The 2B full-logit and resident-state oracle must match the unchanged binary exactly before speed interpretation. No numerical tolerance is widened. |
+| Measurement | Capture one diagnostic copy-binding census to confirm the destination span, then run at least five alternating control/candidate/pinned-llama pairs at 64/16, 200/32 and 330/64 with the same GGUF, pack, prompt IDs and generation settings. Separate prefill, decode, request and construction. Record every adverse pair and memory allocation. Profiled clocks cannot replace the untraced paired request result. |
+| Cost ceiling and decision | Preparation and owners: 2,700 seconds; paired campaign: 1,500 seconds; one request: 180 seconds. Keep the trial only if correctness holds and the connected gain survives variability, workload and memory/maintenance assessment. No percentage or win-count floor applies. If the copy sample gap remains after placement, investigate the shared state copy's dependency and memory access pattern rather than attributing it to parity order. |
+
+Construction maps `runtime_qwen35_state.recurrent_index` to
+`runtime_qwen35_load.add_resident` and its geometry smoke. Success maps
+`read_index`, `write_index` and `finish` to exact state/logit and generation
+owners. Invalid geometry and malformed requests retain their existing refusal;
+failure and early exit retain inactive-state isolation and session cleanup in
+the real generation owner. The trial adds no new allocation owner or cleanup
+path. CPU/CUDA and Gemma performance remain unmeasured, and Qwen/Gemma model
+semantics are unchanged.
+
+**Result and decision.** The parity-major candidate compiled and its geometry
+owner passed. On the real 2B Q4_0 model, three complete 248,320-element logit
+rows and 336 semantic resident-state hashes matched the unchanged binary
+byte for byte; both the 2B and 0.8B generation owners matched pinned llama.cpp
+on three prompt lengths and six retained requests, including invalid-input
+recovery. The independent binding census confirmed the final decode's 36 large
+state-copy destination offsets now span 19,152,896 bytes between first and
+last starts, versus 38,305,792 before; the reference span is 19,152,896.
+The resident Metal buffer remained 68,714,496 bytes with both parity planes.
+The copy dispatch count and launch shapes did not change.
+
+The Apple M1 16 GiB worker ran five alternating control/candidate/pinned-llama
+pairs per case after two warm requests per process. Both Align arms used the
+same 2B GGUF, alignpack, prompt IDs, generation settings, adjacent-range
+bundle and execution flags. Control binary SHA256 was
+`b62a2d5d7e88dee85b4f3f672b4b4dca15a74d24fc5e89df5791cf277c6a0450`;
+candidate was
+`7173db47ce0e78ae371fecd2737125dea3cb96108cf51a3babd94b0b8bdfd99e`.
+The paired delta is control minus candidate, so positive favors the trial.
+The wall run had no phase interposer; the separate phase run's graph clocks
+include synchronization and are not shader-only timings.
+The complete portable paired receipts, including all prompt IDs and adverse
+samples, are [`wall.json`](../../eval/benchmarks/qwen35-parity-placement-2026-09-27/wall.json)
+and [`phase.json`](../../eval/benchmarks/qwen35-parity-placement-2026-09-27/phase.json).
+
+| Input / output | Untraced request paired median (ms), trial wins | Control / trial / llama request medians (ms) | Instrumented prefill / decode paired medians (ms) |
+| --- | ---: | ---: | ---: |
+| 64 / 16 | +0.397, 3/5 | 565.808 / 567.419 / 555.915 | -0.170 / -5.224 |
+| 200 / 32 | -3.195, 2/5 | 1290.215 / 1291.643 / 1255.368 | -1.207 / +2.605 |
+| 330 / 64 | -18.414, 1/5 | 2428.006 / 2440.918 / 2379.613 | +1.089 / +1.557 |
+
+The untraced paired ranges were -6.820 to +4.563, -11.984 to +4.746,
+and -55.334 to +14.071 ms in table order. The phase run's 330/64 request
+paired median was +4.674 ms, but that direction did not survive the untraced
+run. Construction-to-ready varied widely: untraced paired startup medians were
++126.899, -8.625, and -27.923 ms, with individual differences as large as
+-430.666/+350.061 ms; OS file-cache state was uncontrolled. Pinned llama.cpp
+was faster than both Align binaries at every untraced request median. No
+isolated physical-memory measurement was made; the unchanged resident buffer
+length is the memory fact supported by the binding census.
+
+**Withdraw the parity placement change.** Its intended layout was achieved and
+correctness held, but the untraced connected requests did not improve
+repeatably, and the long case regressed. The original Align source and binary
+were restored. The exact rejected source patch, two binaries, copy-binding
+logs, complete worker receipts and owner logs remain under the Git common
+directory's
+`diagnostics/q35-ingraph-greedy-2026-09-27/counter-trace-20260927/`.
+The next GPU hypothesis is that the recurrent producer's separate workspace
+output and resident `CPY` form a material execution boundary. Inspect the
+DeltaNet output/state write and dependency timeline, then test an opt-in direct
+resident-state write or a larger fused operation while preserving success-only
+publication and the ggml fallback. The placement result alone cannot establish
+the benefit of that fusion.
+
+### Contiguous F32 Metal copy specialization trial (2026-09-27)
+
+The actual Qwen3.5-2B final decode graph contains 36 large F32 state-copy
+nodes. An independent graph census found 18 convolution copies of 73,728
+bytes with noncontiguous sources and 18 DeltaNet copies of 1,048,576 bytes
+with contiguous source and destination (18,874,368 bytes per decode step).
+Pinned ggml's generic `kernel_cpy_f32_f32` calculates a destination multidimensional
+coordinate with integer divisions for each row. Test whether a linear-index
+path for exactly contiguous, equal-type copies improves the connected graph.
+The strided copies and every other type/layout retain the generic kernel.
+
+| Trial contract | Boundary |
+| --- | --- |
+| Selection and rollback | An opt-in, digest-identified pinned ggml Metal backend patch selects only F32-to-F32 copies with at least 262,144 elements and contiguous source and destination. The unchanged adjacent-range bundle and Align binary remain the control. No model-name gate, Align CLI/API change, Python product path, precision change or extra state allocation. |
+| Correctness | Test representative contiguous/strided local tensors first, then exact 2B full logits and all resident-state hashes, 2B/0.8B generation owners including failure recovery, and same-model output against pinned llama.cpp. Never assume a fast copy is numerically safe solely because types match. |
+| Measurement | Count specialized dispatches in the actual decode graph. Compare local actual-state copy, synchronized prefill/decode, untraced complete requests and construction, with at least five alternating control/trial/reference pairs at 64/16, 200/32 and 330/64. Retain adverse samples and inspect changed buffer ownership, barriers and synchronization. |
+| Cost ceiling | Preparation, build and owners <=2,700 seconds; paired campaign <=1,500 seconds; one request <=180 seconds. Assess reproducibility, workload, memory and maintenance rather than a fixed improvement percentage. Withdraw the patch if the connected cost does not improve defensibly. |
+
+The developer recipe CLI adds `--linear-copy` (default off). It requires
+`--backend metal --adjacent-ranges --base-bundle PATH`; CUDA, plan-only mode,
+and missing prerequisites refuse before build. The new output path must not
+exist. The recipe owns patch application and output staging. A successful
+bundle retains `metal-linear-copy.patch`, binds its SHA256 through
+`-DALIGN_LLM_LINEAR_COPY_PATCH_SHA256` in the existing schema-1 manifest and
+bundle identity, and reuses only the verified byte-identical shared ggml core
+from the base. The Metal plugin is rebuilt. No product CLI, state owner,
+persisted model format or inference cache key changes. Parser errors exit 2;
+recipe validation errors exit 1. Source-pinned, toolchain, base artifact,
+patch-application and output-existence validation precede publication of a
+new bundle. The old bundle and generic copy path are the rollback.
+
+| Closure condition | Implementation | Evidence owner |
+| --- | --- | --- |
+| Construction / success | `gpu_backend_recipe.py` applies the patch and retains its digest and new plugin; Metal copy kernel checks type, minimum element count and both physical strides before linear indexing | `scripts/run-gpu-backend-recipe-smoke`, real bundle manifest, 2B exact logit/state comparison |
+| Malformed input / failure / early exit | CLI prerequisite and base-bundle checks refuse; a failed build leaves no published output; inference keeps existing failure and parity publication paths | `scripts/run-gpu-backend-recipe-smoke`, 2B/0.8B `scripts/run-qwen35-generation-smoke` |
+| Cleanup / repeated session | Recipe staging is temporary; successful generation reuses the existing session state without an extra allocation or copy owner | Bundle inspection and both generation owners |
+
+CPU/CUDA and Gemma remain unmeasured for this trial. The Metal kernel
+specialization is independent of model name; architecture-specific semantics
+remain in the existing model definitions.
+
+**Result and decision.** The pinned 2B final decode binding census confirmed
+18 eligible contiguous DeltaNet copies (18,874,368 bytes per token) and 18
+ineligible strided convolution sources; buffer ownership, storage mode,
+dispatch count and launch shapes did not change. Three actual 2B full-logit
+rows and 336 resident-state hashes were bit-identical to the control. The
+2B/0.8B generation owners passed on the discovery, measured recipe and clean
+final bundles, including retained requests and failure recovery. The
+predeclared standalone copy owner passed six full-destination F32 bit
+comparisons against its CPU oracle on both control and clean final bundles:
+below/at threshold, contiguous four-dimensional and offset views, and
+strided source/destination views. This is a focused set, not proof for every
+possible view geometry.
+
+On the Apple M1 16 GiB host, two independent five-pair 2B untraced campaigns
+at 64/16, 200/32 and 330/64 won all 30 control comparisons. The measured
+recipe bundle's paired control-minus-trial request medians were
++52.866, +99.577 and +193.448 ms; its arm medians were also shorter than
+pinned llama.cpp's at each condition. The second Qwen size, 0.8B, won 14/15
+control pairs; the short case retained one -11.338 ms trial regression.
+The separate 2B phase campaign showed most of the gain in decode, and a
+counter-enabled trace reduced summed F32 copy Shader Timeline samples from
+199.922 to 11.228 ms for two matched requests. Trace samples are attribution,
+not marginal request savings. A direct same-binary comparison with the
+pre-adjacent Metal bundle won all 15 uninstrumented 2B pairs and all 15
+paired comparisons with pinned llama.cpp at the three named lengths. Its
+base-minus-final request medians were +55.011, +111.526 and +224.990 ms.
+Five alternating 200/32 process-footprint pairs found after-three-request
+control/final arm medians of 145.345/145.392 MiB and peak arm medians of
+146.860/146.892 MiB; this is process attribution, not total GPU/system memory.
+The second-size 0.8B direct-baseline campaign also won all 15 Align pairs;
+its pinned llama.cpp comparison won 14/15, retaining one -15.966 ms 330/64
+pair. Its base-minus-final paired request medians were +60.626, +110.062 and
++230.010 ms. The previous 0.8B short regression against the adjacent-range
+control remains in the earlier receipt.
+Startup remains mixed. The patch adds no allocation or copy owner, and the
+common shared-buffer bindings remain. Recommend the explicit copy-specialized
+bundle for the measured Apple M1 Qwen3.5 local profile, with the ordinary
+bundle as rollback; other hosts and architectures remain unadmitted. The exact
+conditions, all samples, binary comparison and decision are in
+[`qwen35-metal-linear-copy-trial.md`](../qwen35-metal-linear-copy-trial.md)
+and its linked receipts. Do not infer a universal speed floor or Gemma/CUDA
+support from this host.
+
+The predeclared local geometry owner uses the same pinned Metal bundle family.
+It compares the control and specialized bundle against a CPU-computed F32 byte
+oracle for contiguous copies immediately below and at the 262,144-element
+boundary, a four-dimensional contiguous view, a nonzero-offset contiguous
+view, a large strided source, and a large strided destination. Check untouched
+destination sentinel elements as well as copied elements. The focused fixture
+has a 900-second build/run ceiling and no inference-mode change. Its passing
+result narrows the remaining decision to physical memory, startup and host
+scope; it does not alone establish those.
+
+The following memory screen uses the same saved 2B binary, prompt IDs,
+resident options and 200/32 request in each arm. After one untimed process
+per arm, run five alternating control/final-bundle pairs. Record
+construction-to-ready time and macOS `footprint` current/peak bytes plus
+process RSS both at ready and after three identical requests. Compare paired
+distributions; do not count `footprint` as total system or GPU physical memory.
+The five-pair campaign has a 900-second ceiling. Neither startup nor memory
+needs to improve for adoption, but a defensible regression must be assessed.
+
+Before recommending the combined bundle for the tested host, also compare it
+with the pre-adjacent Metal bundle, using the same saved Align binary and
+disabled in-graph greedy path. The adjacent-range arm is a valid copy-specific
+control but is not the ordinary pre-adjacent baseline. Repeat the existing
+five-pair uninstrumented 64/16, 200/32 and 330/64 worker protocol against the
+pinned llama.cpp executable; retain all output/count checks and adverse
+samples. This additional campaign has a 1,500-second ceiling.
+For a recommendation that includes Qwen3.5-0.8B, repeat that direct
+pre-adjacent/final/reference protocol with its own GGUF, pack and Model IR.
+Keep the earlier adverse 0.8B short pair visible and assess the new direct
+baseline separately; one 0.8B campaign has the same 1,500-second ceiling.
+
+### GPU greedy readback trial (2026-09-27)
+
+Current Qwen3.5 greedy generation reads 248,320 F32 logits (993,280 bytes) to
+the host after every graph and scans them in Align. Test whether a device
+argmax followed by a four-byte readback reduces the actual request boundary.
+The existing ggml Metal `ARGMAX` kernel is a local experiment: it selects the
+highest index among equal maxima, whereas Align's CPU greedy selects the lowest,
+and it does not report nonfinite values in the same way. It therefore cannot be
+treated as strict compatibility or adopted by default without a semantics fix.
+
+| Contract | Definition |
+| --- | --- |
+| Selection / owner | `ALIGN_LLM_GPU_GREEDY=0` or absent keeps full-logit readback and Align's existing greedy scan. `1` opts into the Qwen3.5 Metal trial; other values fail before allocation. Align owns mode selection, graph output, token selection, and the generation loop in normal and streaming sessions. CPU/CUDA and other model families are not admitted to this trial. |
+| Graph / ABI | A thin checked `op_argmax` shim wraps `ggml_argmax` only for one contiguous F32 vocabulary row and exposes one I32 scalar slot. The Qwen3.5 builder expands either that scalar or the existing logits output, including every state root. The mode enters all graph keys. The graph compute and memory allocator remain ggml; no separate C/C++ generation engine is added. |
+| Readback / lifetime | In mode `1`, Align reads exactly four bytes, checks the decoded index against `n_vocab`, and owns the returned token. Mode `0` retains the full F32 readback and finite-value checks. The scalar output lives through synchronized graph compute/readback; failures leave the existing unhealthy-session cleanup. No persisted or exchanged format changes. |
+| Correctness | Before timing, compare exact greedy tokens on real 2B and 0.8B short/chunked/wider prompts, retained repeated and streaming requests, plus full resident-state hashes. Capture baseline full logits separately and confirm all compared vectors are finite and their maximum is unique. The trial remains explicitly non-strict for untested ties/nonfinite values. Do not relax the CPU path's existing rules. |
+| Measurement / ceiling | Same GGUF, pack, backend bundle, prompt IDs and generation counts. Five alternating old/new/pinned-llama worker pairs and same-binary HTTP/SSE pairs at 64/16, 200/32 and 330/64 after two warmups. Report GPU graph/readback count, prefill, decode, whole request, startup and memory. Campaign <=900 s, request <=180 s; mode `1` may add one four-byte graph output but no retained full-vocabulary host buffer. No percentage floor. |
+
+Closure: parser and unsupported-backend refusal own construction/malformed
+cases; model graph and shim own shape, output lifetime and failure; normal and
+streaming generation own token range and state publication; 2B/0.8B owners,
+capture/state oracle and alternating measurements own success and regression.
+Session destruction and early exit retain existing cleanup. A speed gain only
+justifies further work on lowest-index tie and nonfinite behavior; it does not
+promote this provisional kernel to strict production use.
+
+Local closure: 2B/0.8B generation owners passed and 336 state hashes matched;
+three baseline full-logit vectors were finite with unique maxima. The four-byte
+readback was observed, but the existing Metal argmax added decode time: 200/32
+worker decode median 878.776 to 890.079 ms, and four of five whole-request
+worker pairs slowed. HTTP/SSE was mixed to adverse, including five of five
+slower 330/64 HTTP pairs. The trial code was removed; raw evidence and the
+replayable patch remain in local diagnostics. A single-threadgroup reduction
+over the 248,320-element row is the next kernel hypothesis, not a shipping
+result. The shared-output experiment below tests a different boundary.
+
+### Shared Metal logits view trial (2026-09-27)
+
+An actual synchronized 2B output probe found the logits tensor in a `MTL0`
+shared buffer; its host pointer matched all 993,280 bytes returned by the
+ordinary readback. Test a borrowed view of that exact output so Align's existing
+finite-checking, lowest-index-tie greedy implementation scans the same F32
+values without a second full-vector copy. This is restricted to a Metal shared
+buffer and is not a general backend assumption.
+
+| Contract | Definition |
+| --- | --- |
+| Selection / owner | `ALIGN_LLM_SHARED_LOGITS=0` or absent keeps the current copied readback; `1` selects the Qwen3.5 trial once per session; other values fail before allocation. Align owns the choice and the greedy scan in normal and streaming generation. Other model providers retain their current paths. |
+| Thin ABI / borrow | `align_gpu_slot_shared_view` returns a pointer only for an output node in a successfully executed graph, exactly one contiguous F32 vocabulary row, the expected byte extent, and a Metal shared buffer whose pointer lies within its checked allocation. It refuses private/other buffers. `ggml_ffi` creates a resource-tied borrowed `slice<u8>` from the pointer; the view is consumed immediately before graph reset, reuse, or device mutation. No C sampling or token logic. |
+| Lifetime / failure | Existing synchronized `runtime_execution.compute` remains mandatory before the view. The graph output and its owner stay live during Align's scan. The view cannot escape the read-choice call. Unsupported storage or malformed extent fails the opt-in session and uses existing unhealthy-session cleanup; mode `0` remains the rollback. No new retained device allocation, format, IR or graph identity change. |
+| Correctness | Before timing, compare real 2B/0.8B normal/streaming/repeated requests with pinned llama.cpp and old Align; 2B full-logit F32 bytes and all resident state hashes must be exact. Check invalid flag and unsupported/private buffer refusal. The CPU greedy function and its tolerance/finite/tie rules are unchanged. |
+| Measurement / ceiling | Same GGUF, pack, backend bundle, prompt IDs and output lengths; two warmups and at least five alternating pairs on 64/16, 200/32 and 330/64, with pinned llama worker and same-binary HTTP/SSE. Report copied bytes, prefill, decode, whole request, startup and memory. One campaign <=900 s and one request <=180 s. No percentage floor; adoption weighs actual benefit, regressions and the added borrow contract. |
+
+Closure: parser and shared-buffer refusal cover construction/malformed cases;
+the shim's executed-node and bounds checks cover success/failure and stale
+views; `ggml_ffi` confines the borrow to the device owner; both generation
+loops consume it before state advance; existing request cleanup handles early
+exit and failure. The full-logit oracle, state oracle and retained-session owners
+cover exactness and cross-request separation. CPU/CUDA and Gemma require their
+own storage/semantic admission before this mode can be reused.
+
+Local result: three full 2B output vectors and 336 state-plane hashes matched
+the old binary exactly; the opt-in view made zero full-logit `tensor_get` calls.
+The 2B/0.8B generation and 2B HTTP/SSE owners passed. Five-pair worker request
+medians at 64/16, 200/32 and 330/64 changed 574.549→572.263,
+1292.508→1288.627 and 2426.843→2426.037 ms, but only three of five pairs
+improved in each condition. SSE slowed in the first two conditions. Pinned
+llama.cpp remained faster in all worker request medians. Retain the opt-in mode
+for bounded follow-up; do not enable it by default or claim a request speedup.
+See `docs/qwen35-shared-logits-trial.md` and its complete receipts. Removing a
+copy does not prove that the same cold shared-memory scan is cheaper; the next
+performance candidate must address a larger measured part of graph execution.
+Review found and repaired intermediate-prefill greedy scanning when the
+full-logits mode spans chunks. The copied mode retains its earlier intermediate
+readback, while only final-chunk logits are sampled in both modes; the 200/16
+same-binary HTTP/SSE and longer real generation owners pass after repair.
+
+### Hierarchical Metal greedy screen (2026-09-27)
+
+The pinned Metal `kernel_argmax_f32` dispatches one threadgroup for a
+248,320-value Qwen3.5 output row and assigns each thread roughly 970 serial
+values. It also selects the highest index on ties and does not match Align's
+nonfinite refusal. Test a two-stage native Metal reduction over real captured
+2B logits before adding another runtime path. Stage one reduces disjoint row
+tiles; stage two reduces the tile results. Both carry a nonfinite flag and
+select the lowest index among equal finite maxima. No model name or fixed
+vocabulary count enters the kernel; row length and launch geometry are inputs.
+
+The independent diagnostic may use Objective-C++ to create Metal buffers and
+command buffers, but it must not become a product generation path. Compare
+the exact same real F32 output against Align's first-index finite greedy rule,
+including tied maxima, NaN and infinity refusal before timing. For each arm,
+a GPU blit writes a fresh shared result buffer to approximate a graph-produced
+output. The control synchronizes then scans that buffer on CPU. The candidate
+blits, dispatches both reductions in the same command buffer, synchronizes,
+then reads one I32 result. Report GPU-only and synchronized wall intervals
+separately; this is a boundary screen, not a connected request benchmark.
+
+At most two 993,280-byte logit buffers and one tile buffer; no weights or
+inference state allocation. Build <=900 seconds, campaign <=900 seconds,
+100 warmup and 100 alternating measured iterations per actual vector, with
+every sample retained and no percentage floor. A local loss ends this kernel
+strategy. A local win only warrants a selectable real-model integration with
+the old ggml graph/readback path intact, exact logits/state and alternating
+prefill/decode/request measurements; it is not a production adoption result.
+
+Local screen: all three actual 2B vectors, first-index ties, NaN and infinity
+cases passed. With GPU production and both reductions in one command buffer,
+the paired median wall reductions were 0.230–0.283 ms over CPU scanning, with
+96–97 of 100 pairs faster. With an extra post-synchronization command buffer,
+the reduction was only 0.071–0.103 ms, with 90–94 of 100 pairs faster.
+Measured GPU execution increased by about 0.10 ms; the gain comes from moving
+the scan off the CPU critical path. Raw samples and source are retained in
+local diagnostics. These are screening numbers, not an inference speedup.
+
+### Post-sync hierarchical greedy real-model trial (2026-09-27)
+
+The local screen justifies one selectable real-model integration, including
+its extra command buffer. It does not justify replacing ggml graph execution
+or skipping graph synchronization. The current output is shared Metal memory;
+the pinned Metal plugin exposes the backing `MTLBuffer` and offset through
+`ggml_metal_buffer_get_id`. A narrow Metal helper may use that exact buffer,
+without copying or rewrapping its pointer, to dispatch the two reductions
+after `runtime_execution.compute` has synchronized. The ordinary full-logit
+readback and Align greedy remain the default and rollback.
+
+| Contract | Definition |
+| --- | --- |
+| Selection / ownership | `ALIGN_LLM_HIER_GREEDY=0` or absent uses the existing copied readback; `1` selects this Qwen3.5 session experiment. `ALIGN_LLM_HIER_GREEDY_LIBRARY` supplies an absolute path to the trial Metal helper only in mode `1`; invalid flags or missing/relative paths refuse before session allocation. Align owns the mode, token, normal/streaming generation loop and session lifetime. This mode and shared-CPU-logits mode cannot both be selected. |
+| Thin ABI | `align_gpu_slot_hier_greedy` accepts the GPU owner, completed graph output slot, exact expected F32 row bytes and helper path; it checks executed-node identity, contiguous extent, shared Metal buffer and bounds as the borrowed-view trial does. It passes the actual ggml Metal buffer handle/offset to the helper. The helper contains only Metal device/queue/pipelines, two reduction dispatches, bounded scratch and synchronous four-byte result; no model/weight/prompt/tokenizer or generation logic. |
+| Lifetime / failure | One helper instance per `GpuDevice` is created lazily and reused across requests, then destroyed before the device and ggml plugin unload. The graph output and backing MTL buffer remain live through helper completion. A failed load, wrong backend/storage/extent, kernel error, nonfinite value or out-of-range index refuses the opt-in request; no silent fallback or partial state publication. Existing unhealthy-session cleanup remains. No persisted format or graph key change. |
+| Semantics / evidence | The helper must select the lowest index among equal finite maxima and reject every NaN/infinity. Compare actual 2B/0.8B generation and SSE output with pinned llama.cpp and the old binary, exact 2B full logits and resident state, repeated requests, and malformed flag/path refusal. The helper does not alter any F32 model computation. |
+| Measurement / ceiling | Same 2B GGUF, pack, geometry, backend bundle, token IDs and generated counts. At least five alternating control/candidate/pinned-llama worker pairs and same-binary HTTP/SSE pairs at 64/16, 200/32 and 330/64; two warmups. Report standalone, connected decode/prefill, startup, request and memory, including the new command-buffer boundary. One build <=900 s, one campaign <=900 s, request <=180 s; <=16 KiB scratch plus pipeline/queue state, no extra full-logit allocation. Decide with observed variability and maintenance cost, without a percentage floor. |
+
+Closure: Align configuration handles construction and invalid settings;
+the shim validates graph/state/storage before helper use; the Metal helper owns
+pipeline setup, per-device scratch, completion and error; normal/streaming
+generation own token publication; device close owns cleanup on success, early
+exit and failure. Real-model owners and paired receipts own correctness and
+performance. CPU/CUDA and Gemma remain outside this Metal trial pending their
+own semantic and storage admission.
+
+Trial closure: the integrated helper passed 2B/0.8B generation, 2B HTTP/SSE,
+336 exact state-plane hashes and zero full-logit `tensor_get` calls. Its extra
+post-sync command buffer won the local real-row screen by 0.071–0.103 ms,
+but five-pair worker and same-binary HTTP/SSE results were mixed or adverse.
+The integration was withdrawn; the default path is unchanged. See
+`docs/qwen35-hierarchical-greedy-trial.md` and its raw receipts. This result
+tests that boundary only; it does not rule out an in-graph reduction.
+
+### In-graph hierarchical greedy trial (2026-09-27)
+
+The post-sync Metal reduction passed real-row semantics but added a command
+buffer and a wait. Test the same two-stage reduction as an opt-in ggml Metal
+`ARGMAX` implementation in the command buffer that produces the logits. Align
+selects the graph and token and retains the existing full-logit graph as the
+control. The specialization is selected by contiguous F32 row shape, with
+ordinary ggml behavior for other shapes and backends. The temporary partial
+buffer belongs to the graph output allocation, so it lives through both
+dispatches without a separate queue or host copy. The kernel must choose the
+first maximum and return an invalid sentinel for any nonfinite input; Align
+checks the four-byte result before publishing state.
+
+Cost ceiling: one additional graph node, two Metal dispatches, at most
+12 bytes per 1,024 logits of graph scratch, no extra full-row allocation,
+one build attempt within 3,600 seconds and one alternating real-model campaign
+within 900 seconds. Compare captured real rows and tie/nonfinite cases before
+timing; then compare exact real 2B/0.8B tokens and resident state, worker and
+HTTP/SSE requests, prefill, decode, load, and pinned llama.cpp. Use multiple
+alternating samples at 64/16, 200/32, and 330/64. A local result is an
+integration screen, not a production adoption criterion; observed variability,
+memory, regressions and maintenance decide whether the opt-in should remain.
+
+Closure: configuration rejects malformed/unsupported modes before allocation;
+the Align graph builder and shim validate contiguous F32 shape and mode-specific
+graph keys; ggml allocates scratch with the output; both Metal stages run in
+the producing graph; generation validates the result in ordinary and streaming
+paths; failed requests retain existing unhealthy-session cleanup. Existing
+full-logit captures serve as the unchanged numeric oracle because the new
+node consumes the same projection without changing its arithmetic.
+Before weight allocation, the Qwen3.5 session asks the thin shim whether the
+selected Metal plugin exports the `align_llm_metal_ingraph_argmax_v1` marker.
+Mode `1` refuses an unpatched bundle or a vocabulary shorter than 8,192;
+absent/`0` keeps the old graph. The threshold matches the backend's
+hierarchical dispatch admission, so the opt-in cannot silently use the older
+tie behavior.
+The build recipe's `--ingraph-argmax` Metal-only option applies and retains
+`scripts/metal-ingraph-argmax.patch` separately from `--native-swiglu`; each
+patch digest enters the bundle build flags. Neither option changes persisted
+model or session formats. Qualification and timing use the patched bundle
+identity recorded with each receipt.
+
+After the single-mode comparison, test the already implemented synchronous
+weight upload and final-layer FFN-row options together with graph greedy against
+the exact prechange Align binary and the fixed llama.cpp reference. Keep the
+128-token prefill chunk, GGUF, quantization, prompt IDs and generated counts
+equal. Report each of startup, prefill, decode and whole request from five
+alternating pairs at the three representative lengths; finish each campaign
+within 900 seconds. The earlier independent trials supply hypotheses, not an
+assumption that their gains add. Retain the graph-only arm to distinguish the
+new operation from existing options.
+
+### Q6_K producer-side partial-maximum screen (2026-09-27)
+
+The in-graph reduction removes host logit readback but adds two GPU dispatches;
+its final-binary 330/64 graph phase is slower even where request wall time
+improves. Screen a distinct fused producer epilogue: the actual Q6_K output
+projection emits the best finite value and first index for each small output
+tile, then one compact reduction selects the token. This is a local screen
+before any runtime integration. The comparison is the current patched ggml
+Q6_K projection followed by hierarchical argmax, using the same captured 2B
+weights and final-prefill/decode activations. The fused arm must not omit work,
+change quantization, suppress an invalid value, or use a separate command
+buffer between projection and final reduction.
+
+Cost ceiling: retain the existing Q6_K row arithmetic and 64-thread mapping
+for this first screen; at most 12 bytes per four vocabulary rows of partial
+storage plus four output bytes; no full-logit output in the fused arm; only a
+four-byte result readback after synchronization in the timed operation. Qualify
+all three captured activations and a
+257-row tail against the existing full-logit oracle, requiring the exact
+first-index greedy token and finite-input validity before timing. Use twelve
+warmups and five alternating pairs with twenty synchronized operations per
+arm and activation; finish the local screen within 900 seconds. The existing
+full-logit ggml path remains the rollback. Only a reproducible connected local
+advantage justifies an opt-in real-model integration; adoption still depends
+on real 2B/0.8B output/state/serving and whole-request results, without a
+fixed percentage floor. A local loss rejects this mapping, not producer-side
+fusion in general.
+
+Result: the captured 2B full and 257-row tail tokens, first-index tie and
+nonfinite refusal passed. Five paired local wall medians for the three actual
+activations were -0.011, -0.048 and +0.021 ms (ggml minus fused), with 2/5,
+1/5 and 5/5 fused wins. Instrumented GPU intervals were also mixed. This
+specific four-row mapping is withdrawn before real-model integration; the
+complete local record is in `docs/qwen35-q6-fused-top-screen.md`. Continue
+GPU work on a larger FFN or graph boundary. No fixed improvement floor was
+applied.
+
+### Metal graph barrier census (2026-09-27)
+
+The same pinned Qwen3.5-2B model and 200-input/two-output request produced
+613 identical major dispatch signatures in Align and llama.cpp, yet Align's
+decode GPU interval was longer. Count Metal buffer barriers in the existing
+independent dispatch trace, across the final complete decode graph in each
+engine. This is an execution-order diagnostic, not a benchmark. Keep the
+existing prompt, weight, ggml revision, and output verification; do not change
+either inference graph or skip a barrier. Build only the diagnostic interposer,
+run the existing attribution owner once, and finish within 600 seconds. A
+barrier-count difference nominates a correctness-preserving scheduling probe;
+equal counts redirect attention to placement, data layout or GPU work cost.
+Either outcome is recorded without assigning shader time from the count.
+
+The first census found 469 Align versus 393 pinned llama.cpp barriers in the
+final decode graph, while the matching major dispatch census remains 613.
+The pinned Metal range predicate treats `[p0,p1)` and an adjacent range
+starting at `p1` as overlapping (`p1 >= other.p0`). A diagnostic patch may
+change only that comparison to `p1 > other.p0`, retaining all genuinely
+overlapping dependency barriers. Build a separate bundle with the same pinned
+source, Metal flags and in-graph argmax patch, plus this one-line change; keep
+the existing bundle as rollback. Cost ceiling: 900 seconds for build and local
+checks, 900 seconds for real 2B output/state and five alternating worker pairs
+at 200/32 and 330/64. Require unchanged exact output and state before retaining
+the candidate; record barrier counts, prefill, decode, whole-request wall,
+and adverse samples.
+The comparison tests whether boundary false positives matter on this model,
+without assuming a gain from the count difference or setting a percentage
+floor. If useful, integrate as an explicit pinned Metal patch after verification.
+
+The diagnostic bundle reduced the 2B decode barrier count from 469 to 399
+without changing 663 dispatches. The real 200/3 request matched all 744,960
+captured logits and 336 retained-state hashes exactly. A phase-instrumented
+five-pair campaign improved request wall by paired medians 6.107, 14.614 and
+17.971 ms at 64/16, 200/32 and 330/64, with 4/5, 5/5 and 5/5 wins. A separate
+untraced campaign gave -2.114, +2.630 and +14.176 ms, with 2/5, 4/5 and 5/5
+wins. Both retain adverse samples and pinned llama.cpp remains faster. These
+results justify a reproducible opt-in build, not a default performance claim.
+
+| Contract field | Opt-in adjacent-range bundle |
+| --- | --- |
+| Public developer surface | `gpu_backend_recipe.py --adjacent-ranges --base-bundle BASE/bundle` is false by default and valid only with `--backend metal` in a build invocation. It may combine with `--ingraph-argmax`; CUDA, `--print-plan`, a missing base bundle, or `--base-bundle` without `--adjacent-ranges` fail validation. No inference CLI or request format changes. |
+| Build and owner | `scripts/gpu_backend_recipe.py` applies `scripts/metal-adjacent-ranges.patch` to the private pinned source after any independent Metal patches; the new flag digest enters `build_flags`, and the exact patch is retained next to the immutable bundle. The base bundle must match source, target, toolchain and all nontrial flags, and all five of its artifacts must match its manifest; its verified core dylib bytes are copied into the trial bundle. Only the Metal plugin changes, so the same Align binary can compare both bundles under its loaded-core identity check. The existing default bundle remains selectable. |
+| Result, errors and cleanup | Successful build produces the existing schema-1 bundle/source snapshot with a distinct content identity. Missing/unapplicable patch or build failure aborts the private staging operation and leaves no published bundle. No new persistent schema, model cache or runtime allocation. |
+| Validation order and prerequisites | Require Metal, a real build invocation and a base bundle, then the pinned clean ggml source and existing toolchain checks; apply the patch, build, verify the base manifest and all five artifacts, hash staged artifacts and publish atomically. The runtime continues to verify the selected bundle and loaded core libraries before session allocation. |
+| Acceptance and metric | Recipe smoke, strict Python boundary, real 2B generation and full-logit/state equality; compare same-binary control/candidate bundles and pinned llama.cpp on 64/16, 200/32 and 330/64 with five alternating pairs. Report prefill, decode, request, startup and all reversals, without a percentage floor. CPU/CUDA porting is deferred because this patch is in the Metal scheduler; Gemma would reuse the patch only after its own model admission and correctness checks. |
+
+Local closure: the formatted patch's final bundle passes 2B/0.8B generation,
+744,960 exact 2B logits and 336 exact state hashes. Its Metal executable text,
+embedded shader and four core libraries match the measured recipe bundle;
+only embedded temporary source-path strings differ. Five final untraced
+330/64 pairs give +12.966 ms median with four wins, a -134.671 ms reversal
+and a +586.905 ms control outlier; shorter cases and startup are mixed.
+Pinned llama.cpp remains faster in the stable comparisons. Retain the patch
+as an opt-in build, not the default. The report and complete receipts are in
+`../qwen35-metal-adjacent-range-trial.md` and `../../eval/benchmarks/`.
+
+### Shared Metal row SIMD greedy trial (2026-09-27)
+
+The previous borrowed-row path proves the real Qwen3.5 output is shared Metal
+memory and removes an unnecessary full-row readback, but its scalar Align scan
+did not yield a repeatable request gain. A bounded independent screen over
+three actual 2B output rows found that an AArch64 NEON finite/argmax scan,
+after an equivalent GPU blit and synchronization, saves about 0.25 ms per row
+in 96–98 of 100 alternating pairs. The next candidate replaces only that
+numeric scan. Align still selects the mode, validates model/session policy,
+owns greedy generation, state and cleanup; the C shim contains a bounded
+device-storage admission and SIMD numeric kernel. It does not add a second
+inference engine or change F32 graph math.
+
+| Contract | Definition |
+| --- | --- |
+| Input / selection | `ALIGN_LLM_NEON_GREEDY=0` or absent uses the existing copied output and Align greedy; `1` selects the experimental shared-row SIMD scan for the Qwen3.5 session. Invalid values refuse before weights are allocated. It cannot be combined with `ALIGN_LLM_SHARED_LOGITS=1`; both modes and rollback remain explicit. Normal and streaming generation use one Align-owned choice function. |
+| ABI / admission | A new `ggml_ffi` thin call accepts the completed output slot and expected F32 row bytes. Reuse the existing checked shared-view admission: exact output node, contiguous one-row F32, shared `MTL` buffer, correct bounds and completed graph. The AArch64 NEON kernel reads the borrowed pointer immediately and returns only one index; no copied row, new Metal command buffer, temporary GPU buffer or wait. Unsupported architecture/storage refuses the opt-in request. |
+| Numeric semantics | Before performance timing, actual 2B F32 rows and constructed first-index ties, NaN and infinities must agree with the unchanged Align finite greedy rule. For every finite row select the lowest index of its maximum. Return nonfinite as a distinct error; never silently choose a token. The graph, logits, recurrent/KV state and F32 operation order are unchanged. |
+| Lifecycle / regression | No retained pointer or new per-owner allocation. Repeated normal and SSE requests, early disconnect, model close and invalid configuration must preserve cleanup. Confirm 2B/0.8B generation against pinned llama.cpp, exact 2B state-plane hashes, and default/shared-mode regression. |
+| Measurement / ceiling | Same 2B GGUF, pack, IR, backend, prompt IDs, actual token counts and generation settings. Compare old Align, trial Align and pinned llama.cpp in at least five alternating worker pairs, and same-binary OFF/ON HTTP/SSE after two warmups at 64/16, 200/32 and 330/64. Also compare the scalar shared-row mode with SIMD locally to attribute the scan change. Record startup, prefill, decode, request and TTFT, including adverse pairs. One build <=900 s, campaign <=900 s, request <=180 s. No new device allocation, at most one 4-byte Align scratch instead of a full row, and no fixed percentage floor. |
+
+Closure map before coding: Align config owns construction and malformed input;
+`ggml_ffi`/shim own ABI validation and supported-host admission; the numeric
+kernel owns finite/tie correctness; generation owns normal/SSE publication;
+the existing session owner handles failure, early exit and cleanup. The old
+copied path is the exact rollback. CPU/CUDA and Gemma remain separately admitted
+by their semantic graph and storage contracts; a Qwen-specific model name must
+not enter the kernel.
+
+Trial closure: the opt-in NEON path passed 2B/0.8B generation, 2B HTTP/SSE,
+336 exact state-plane hashes, malformed-mode refusal, odd-length local numeric
+checks and zero full-logit `tensor_get` calls. The local real-row scan improved
+by about 0.25 ms in 96–98/100 pairs. Connected worker, same-binary copied-path
+HTTP/SSE and same-binary scalar-shared HTTP/SSE results were mixed: some
+200/32 pairs improved, while 330/64 SSE regressed. Pinned llama.cpp stayed
+faster on all worker request medians. Keep `ALIGN_LLM_NEON_GREEDY=0` by default
+and retain `1` for bounded follow-up; do not claim production adoption or a
+competitive win. See `docs/qwen35-neon-greedy-trial.md` and its complete raw
+receipts. A larger output-projection consumer is the next hypothesis.
+
+### Metal private-storage screening (2026-09-27)
+
+Hypothesis: on the M1, private ggml Metal storage could lower warm decode GPU
+time despite identical Q6_K projection dispatches. This is a reversible backend
+allocation experiment using the pinned ggml `GGML_METAL_SHARED_BUFFERS_DISABLE`
+switch, not a model or precision change. The independent measurement caller may
+select it per explicit arm before device creation; the production default and
+Align session contract do not change. Compare identical binary, pack, geometry,
+bundle and request text with shared/private storage, preserve all output/count
+checks and compare against pinned llama.cpp. Scope is one local Q6_K real-row
+screen and up to three real-model workloads with five alternating pairs each;
+each process has two warmup requests and the third is measured, with a 180-second
+request timeout. The campaign budget is 900 seconds. Record startup, prefill,
+decode, whole request and all negative samples. Private storage may add input
+and output blits and memory pressure; a local projection win is insufficient for
+adoption. No production mode is added unless connected correctness, memory and
+request evidence justify it.
+
+### Controlled upload and prefill trial (2026-09-26)
+
+Hypotheses: synchronous tensor upload removes the Metal shared-buffer staging,
+blit and per-chunk wait; larger prefill batches reduce graph boundaries. Measure
+these independently before combining. Neither changes weights, tokenizer or math
+semantics; batch reduction order may change rounding, so exact generation owners
+and the existing 0.01 absolute logit bound remain required.
+
+| Contract | Definition |
+| --- | --- |
+| Inputs / owner | `runtime_qwen35_execution.read` reads `ALIGN_LLM_SYNC_WEIGHT_UPLOAD` (`0` default, `1` opt-in) and `ALIGN_LLM_PREFILL_CHUNK` (`128` default, `256` or `512`) once per Qwen3.5 session before allocation. Other strings fail with `Error.Invalid`; no persisted format changes. |
+| ABI | `align_gpu_weight_upload_mode(void *owner, int32_t mode)` accepts 0/1 after memory allocation and before weights begin, outside shape planning. Invalid owner/order/mode returns CONFIG without mutation. Align owns selection; real/stub shims own transfer mechanics. |
+| Transfer / lifetime | Mode 1 calls synchronous `ggml_backend_tensor_set` directly on the borrowed chunk. The current Metal shared allocation copies directly; private backends use their synchronous implementation. No borrowed pointer survives return. Mode 0 retains staging + async set + wait. Select after one backend synchronization; all upload bounds, failure injection and counters stay. No mmap or ownership transfer. |
+| Memory / ceiling | Existing staging remains allocated and budgeted. One scalar upload mode; one scalar session batch width; at most 512 input rows and the existing device/workspace budget. No additional retained weight copy. Each experiment at most 900 seconds; each request at most 180 seconds; five alternating pairs with all samples retained. |
+| Batching / identity | Graph builders reference the shared attention maximum 512; the thin ABI validates the same bound. Actual count, geometry and graph kind already enter graph identity. Token/position/mask buffers match the selected session width. Decode and per-request reset remain unchanged. |
+| Results / assessment | Report construction-to-ready, first request and warm request, prefill/decode and traced upload boundaries. OS cache is uncontrolled; do not call a first process disk-cold. Compare upload-only, batch-only and optional combined arms against old Align and pinned llama.cpp. Defaults remain legacy until evidence and review. |
+
+| Closure | Implementation and acceptance |
+| --- | --- |
+| Configuration / malformed / no mutation | Execution parser and real/stub mode setters; focused C upload owner covers invalid modes, lifecycle order and independent owners; real session invalid-environment probes cover parser refusal. |
+| Upload construction / success / failure | `ggml_ffi`, `runtime_weights`, generation prepare and both shims; `run-gpu-weight-upload-smoke` checks multi-chunk payload, bounds, transfer failure, unchanged staging in direct mode, legacy copy and counters. Existing device owner covers resource cleanup. |
+| Batch construction / bounds / state | Generation and model/attention/recurrent/FFN builders; `run-gpu-attention-policy-smoke` tests 512 admission, 513 refusal and allocation faults; generation and HTTP/SSE owners on 2B/0.8B, plus repeated requests across a 512-token boundary. Invalid/early exits use existing Session resource cleanup; no new external allocation owner. |
+| Real success / regression / cleanup | `run-qwen35-generation-smoke`, `run-openai-serving-smoke`, controlled measurement callers and existing logit oracle. Retained requests cover reset and recovery. No new schema, cache migration or process concurrency policy. |
+
+Local closure: all named owners and paired campaigns completed; see
+`../shared-upload-prefill-trial.md` and its raw receipt. Keep defaults unchanged:
+startup improves, warm inference is inconclusive and memory accounting remains
+a follow-up. A later same-binary 128/256 test on the copy-specialized 2B bundle
+found input-dependent prefill changes without a reproduced uninstrumented
+whole-request gain; see `../qwen35-prefill-counter-followup.md`. No universal
+improvement floor is applied.
+
+Author consistency pass: the synchronous setter borrows bytes only until return;
+shared versus private memory is selected by the backend, never inferred from a
+host pointer or model name. The batch cap controls admission and allocation alike.
+
+Current measurement output changes (independent tooling, not runtime formats):
+`measure-cuda-optimization` reports schema 3, `quality_passed`, `faster_pairs`,
+`decision=ASSESSMENT_REQUIRED` and a regression warning; successful quality and
+complete measurements may produce PASS without an adoption verdict.
+`run-gpu-session-measurement` reports schema 3 and `decision=assessment_required` for complete
+quality-valid pairs, preserving `invalid_quality` refusal. `run-prefix-ttft`
+reports schema 2, a null `shipping_floor_ppm` and `ASSESSMENT_REQUIRED`, retaining its
+separate jackknife uncertainty result. The resident decode owners retain latency
+and correctness/resource checks but remove latency-floor failures. Old receipts
+keep their original fields/verdicts. The focused aggregation owners are
+`python3 scripts/measure-cuda-optimization --self-test-portable` (policy, aggregation
+and parser fixtures on any host; the existing full `--self-test` retains live Linux
+process/host owners) and
+`python3 scripts/run-gpu-session-measurement-smoke`.
+
+
 Current request (2026-09-14): investigate and design CUDA optimization enablement, without
 implementation. [CUDA enablement](cuda-optimization-enablement.md) records the current ON/OFF
 inventory, the missing Q/K/V optimizer opt-in and tensor names, the CUDA F16 prefill limitation,
@@ -36,7 +1025,7 @@ That is a new diagnostic subject, not a byte-identical historical replay.
 | Cost ceiling | Build preparation at most 900 seconds; diagnostic execution at most 600 seconds, each request at most 120 seconds. Sample only the owned process, at 1 ms for at most 60 seconds. No competing candidate/baseline GPU arms. |
 | Results / errors | Preserve manifested build/source/compiler/library identities, exact command and requests, complete responses, worker log and profiler output outside Git. Nonzero worker/profiler exit, timeout or invalid response is recorded as incomplete diagnosis; no performance decision. Keep startup separate from request observations. |
 | Ownership / cleanup | The existing serial client owns worker pipes, bounded frames, deadlines and process-group cleanup. The diagnostic caller owns and waits for the sampler, including cancellation. No product allocation or ownership change. |
-| Evidence / acceptance | Require all four responses to pass the existing integer-sequence and 128-token quality checks before using the run to choose a follow-on. Profiler samples locate host stacks; they do not measure kernel duration or CUDA capture/replay. A new runtime/coding comparison must use its own precommitted paired protocol and unchanged 15% floor. |
+| Evidence / acceptance | Require all four responses to pass the existing integer-sequence and 128-token quality checks before using the run to choose a follow-on. Profiler samples locate host stacks; they do not measure kernel duration or CUDA capture/replay. A new runtime/coding comparison uses its predeclared paired protocol and the current adoption assessment, without a percentage floor. |
 | Closure | Construction and early failure use the existing session client's cleanup. Successful execution retains all four responses. Failure retains the completed prefix and fault. Source/input identities are checked before and after execution. No cache/schema migration applies because this step changes no product code. |
 
 Source candidates at `ad94eb5`: `runtime_generation.execute_session` hashes topology identities,
@@ -76,7 +1065,7 @@ not an assumption that changing a storage type is harmless.
 | Owner modules | `runtime_attention`, `runtime_generation`, `runtime_kv` as needed, `ggml_ffi`, real/stub native shim; existing OLMoE builder consumes the typed prefix views. No new Align primitive or Python product execution. |
 | Local acceptance | `run-gpu-attention-policy-smoke` extended with real F16 prefill/decode/padding and negative owners; `run-gpu-session-reuse-smoke` for existing decomposed/Qwen paths; managed real session build and `run-gpu-session-independent` unchanged full Metal sequence; existing host-capacity owner. Retain native real-precision observations rather than treating the deterministic stub as F16 math evidence. |
 | Cost / measurement | Before timing, use a clean manifested build of unchanged `ad94eb5` as the local control and manifest the candidate. Both pass the shipping build verifier; additionally bind control checkout/commit/clean state and full source closure, equal managed pin/compiler, bundle and non-shim libraries before/after timing. The original diagnostic build is superseded after review identified its insufficient dirty-source authentication. Five alternating pairs, each fresh session executing the fixed four section 6.1 requests; require all output-quality checks and pairwise exact outputs/counts. Same model, kit, limits and host, no profiling during timing. Record startup separately and request wall/internal clocks separately. Build/owner preparation ceiling 3600 s per attempt; local paired experiment ceiling 2400 s. |
-| Shipping interpretation | Local intervention target: at least 15% median paired request-wall reduction and four of five pairs faster for a declared case, with every pair retained. This does not claim superiority to llama.cpp or G6 completion. A competitive claim requires its separately declared contemporary baseline and coding wall-time gate. A failed local target remains NOT_MET and leads to the next material hypothesis. |
+| Shipping interpretation | Historical O1 receipt target: at least 15% median paired request-wall reduction and four of five pairs faster for a declared case, with every pair retained. This preserves the original `NOT_MET`/`MET` record, not a current admission rule. For any new integration or adoption, use the current inference optimization policy above: assess quality, paired variability, workload, regression, memory and maintenance without a fixed percentage or win-count floor. A competitive claim still needs a contemporary llama.cpp baseline and the relevant coding metric. |
 
 | Closure cell | Implementation / exact evidence |
 | --- | --- |
@@ -106,7 +1095,7 @@ member or OLMoE expert piece. The accepted repair is limited to the two existing
 | Observer / owner tests | A test-only actual-`pread` observer is tied to the two existing Qwen/OLMoE loader smokes. It checks requested capacities and payload offsets against `min(staging_bytes, remaining)`, records returned counts, and exercises short-read/EOF/error refusal. It is not a generic I/O instrumentation framework; exact output/count equality belongs to the native session owner. |
 | Performance cost ceiling | Reuse the O1 manifested-build discipline: 3,600 s for build/owner preparation per attempt and 900 s for the five-pair alternating startup experiment, with the existing 120 s native-session request deadline. No cache flush, profiler, async upload, mmap prototype or competing GPU arm. |
 | Matched measurement | Use the clean accepted O1 runtime as control and the committed capped-read candidate as the other native Align session, with the same host, model kit, native framed-client options, placement and greedy request settings. Record readiness/startup and first-request/request clocks separately; require fixed exact output/count equality for every pair. |
-| Interpretation | The OLMoE acceptance is at least 15% median per-pair fractional startup reduction with at least four of five candidate-faster pairs. Qwen is a guardrail and must stay within a 5% median regression. This evidence does not claim a llama.cpp comparison, CUDA result, whole-session speedup or time-to-passing-patch improvement. |
+| Interpretation | The completed capped-read campaign retained its historical 15% startup target and four-of-five count for its recorded verdict, with Qwen's historical 5% regression guardrail. Those are not current admission or shipping floors. A new decision uses the policy above and reports exact quality, startup and request distributions, regression and memory effects. This evidence does not claim a llama.cpp comparison, CUDA result, whole-session speedup or time-to-passing-patch improvement. |
 
 | Closure cell | Implementation / exact evidence |
 | --- | --- |
@@ -454,17 +1443,15 @@ selection, but then its quality and end-to-end effect must be evaluated for both
 the two GPU arms so they do not contend for the same memory/compute during a pair. Include cold
 setup in cold results and amortize warm setup over the declared task sequence for both arms.
 
-The first material-win floor is at least 15% lower paired latency (150,000 ppm); this is a floor,
-not the ambition or a reason to stop improving. A 2x runtime speedup is a stretch objective on a
-named constrained profile, not a forecast. A campaign must separately fix its runtime metric
-(prefill, decode at specified context, or full fixed-output request) and aggregation before tuning.
-Passing only prefill does not claim faster decode, and warm prefix reuse does not claim a faster
-uncached kernel. G6 separately targets at least 15% lower median paired time to a passing patch,
-with no reduction in task success under the same caps. Its implementation ledger must fix the
-multi-task corpus, repeated paired schedule and uncertainty/robustness rule before measurement;
-a noisy or single-task result cannot establish a material win. Failed or timed-out attempts remain
-in the outcome and quality denominator rather than being dropped to improve latency. Runtime and
-coding outcomes cannot compensate for one another or be collapsed into an ambiguous overall PASS.
+Each campaign fixes its runtime metric (prefill, decode at a specified context,
+or full fixed-output request) and aggregation before tuning. Adoption follows
+the current policy above with no fixed percentage floor. Passing only prefill
+does not claim faster decode; warm prefix reuse does not claim a faster uncached
+kernel. G6 separately evaluates paired time to a passing patch without reducing
+task success under the same caps. Its ledger fixes the multi-task corpus, repeated
+paired schedule and uncertainty rule before measurement. Failed/timed-out attempts
+remain in the outcome denominator. Runtime and coding outcomes cannot compensate
+for one another or collapse into an ambiguous overall PASS.
 
 A capacity campaign precommits its model/quantization/context ladder, RAM/VRAM/storage ceilings,
 minimum accepted-token throughput, maximum first-token/request latency and quality criteria.
@@ -507,7 +1494,7 @@ is the prepared final CUDA correctness/measurement handoff, before subsequent op
 | Runtime quality / comparison | A response must contain only whitespace-separated ascending integers starting at 1, at least 16 complete integers, and exactly 128 completion tokens. A trailing incomplete integer may be removed only when it is a prefix of the next expected integer. Failure, early EOS, timeout or count mismatch stays in the denominator and prevents a material-win decision for that model/case. This synthetic fixed-output workload diagnoses runtime latency; it is not coding quality. |
 | Coding lifecycle | A separate fresh session/server per arm runs the existing `python-inclusive-range` task, original prompt, strict patch extractor and actual validator, with at most 8 attempts and the same actual-feedback repair prompt. Qwen is greedy; OLMoE temperature 0.3 uses seeds 1..8 with top-k 40, top-p 0.95, min-p 0.05, then temperature, with repetition penalties disabled. Each implementation retains its shipped RNG; equal seed numbers do not promise identical samples. Maximum 128 output tokens. The validator's known-good control runs before timed portfolios. Include worker/server startup, generation, retries and actual validation in time to a passing patch. Every failed attempt remains recorded. |
 | Ordered paired repetitions | Models in order Qwen, OLMoE. Five repetitions per model; system order is `[candidate,same,current]`, `[same,current,candidate]`, `[current,candidate,same]`, `[current,same,candidate]`, `[candidate,current,same]`. Each arm completes its runtime sequence and coding portfolio before release. GPU arms never overlap. No other benchmark, compiler or qualification runs during timing. |
-| Metrics / decision | Report every raw latency and count; median paired percentage reduction `(reference-candidate)/reference` separately for each model, runtime case and reference. A named runtime case clears the material floor only if all ten responses pass quality, median paired reduction is at least 15%, and at least four of five pairs are faster. No averaging across models/cases hides a regression. Coding reports successes/attempts and paired times, but this single-task campaign cannot establish G6's multi-task material-win gate. |
+| Metrics / decision | This frozen §6.1 campaign recorded every raw latency and count and the median paired percentage reduction `(reference-candidate)/reference` separately for each model, runtime case and reference. Its historical `met` verdict required all ten responses to pass quality, at least 15% median paired reduction, and four of five faster pairs. Preserve that verdict only as a past measurement; new experiments and adoption use the current policy above without a fixed improvement or win-count floor. Do not average across models/cases to hide a regression. Coding reports successes/attempts and paired times; this single-task campaign cannot establish broad coding competitiveness. |
 | Bounds / failures | Entire campaign at most 7200 seconds, each construction/request at most 300 seconds, baseline health requests at most 2 seconds, normal cleanup 10 seconds then TERM/KILL and reap. Retain at most 16 MiB of logs per arm; a larger log fails the arm rather than yielding valid timing evidence. Malformed admission creates no output. SIGINT/SIGTERM tear down owned workers and retain a failure receipt. After execution starts, publish available records and explicit failure on an ordinary exception; never turn missing rows into PASS. No automatic retuning or rerun replaces a negative result. |
 | Evidence / schema | Receipt fields: schema_version=1, artifact_kind=GPU_SESSION_MEASUREMENT, status=PASS or FAIL (execution completeness), decision=measured or incomplete, identities, policy, arms, comparisons, failure, elapsed_ns. Runtime comparison decisions are met, not_met or invalid_quality independently of execution completeness. The campaign requires a clean committed source and records/rechecks its executable-source closure and plan digest. Paths are local execution inputs; hashes and frozen revisions identify the measured artifacts. This is an inspectable campaign receipt, not G1's relocated tensor-replay format. |
 | Closure / owner tests | `run-gpu-session-measurement-smoke` covers model/identity admission, fixed order/counts, integer-quality boundaries, paired aggregation with failed/missing rows, HTTP response validation and bounded process cleanup. Real Metal is the named platform/performance owner; final CUDA uses the same campaign after its correctness owners pass. |
@@ -536,9 +1523,9 @@ Run the complete comparison and publish negative/quality-limited outcomes withou
 | Inputs / references / limits | Exactly §6.1 models, original GGUFs, two unmodified upstream revisions, resource ceilings, prompts, sampler, quality rule, four ordered runtime cases, eight-attempt coding portfolio and five paired system orders. Thirty serial arms, at most 7200 seconds total and 300 seconds per request/construction; no competing GPU or compiler work. |
 | Runtime metric | Reported internal processing latency, excluding model request/response transport and service construction. Candidate: existing worker `elapsed_ns`, starting after its complete request frame is read and ending before response serialization/transport. References: unmodified server response `timings.prompt_ms + timings.predicted_ms`, converted to nanoseconds. Preserve raw timings and token counts. All components must be finite, nonnegative numbers; total must be positive. Missing/invalid clocks invalidate the campaign, never fall back to caller wall time. |
 | Metric limits | Candidate includes request decoding/tokenization and CPU sampling; llama.cpp's slot clocks cover prompt processing and generation but exclude HTTP handling and some preparation. These are producer-reported internal service clocks, not identical instruction boundaries or pure GPU kernel timings. The asymmetry can penalize the candidate; report it with every conclusion. Do not claim end-to-end request latency or transport-normalized exact parity. No subtraction of estimated network latency is permitted. |
-| Cold / warm | Keep the §6.1 sequence; `cold-short` is the first request in a fresh ready service, with empty KV state. Its internal latency excludes model loading/startup. Record construction-to-ready wall time separately as operational context, never combine it into the internal comparison or material-floor decision. |
+| Cold / warm | Keep the §6.1 sequence; `cold-short` is the first request in a fresh ready service, with empty KV state. Its internal latency excludes model loading/startup. Record construction-to-ready wall time separately as operational context, never combine it into the internal request comparison. |
 | Coding metric | Retain every attempt and actual native validation. Report success counts, attempts and `processing_to_passing_patch_ns`: sum of each attempt's internal generation time plus the existing native validator's measured wall time through the first passing patch. This includes validation process/filesystem work, excludes model transport, service startup and caller orchestration, and is not wall time to a passing patch. Failed portfolios keep null latency; no successful-only average hides failures. Use the native validator, whose known-good control must pass. |
-| Decisions | §6.1 paired runtime rule unchanged: all five pairs pass quality, median paired reduction at least 15%, at least four pairs faster. Runtime decisions are independent of coding success. Coding pair reductions exist only when both portfolios pass; report a median only when all five pairs exist. A measured negative or incomparable result completes this experiment; it does not qualify failed quality or claim G6 success. |
+| Decisions | This frozen §6.2 campaign reused §6.1's historical quality and 15%/four-of-five `met` classification in its receipt; that classification is preserved as historical evidence and is not a rule for new adoption. Current decisions follow the policy above, retaining all pairs and assessing variability and regressions. Runtime results are independent of coding success. Coding pair reductions exist only when both portfolios pass; report a median only when all five pairs exist. A measured negative or incomparable result completes this experiment; it does not qualify failed quality or claim G6 success. |
 | Identity / validation order | Admit profile and CUDA backend, bind the selected candidate and both baselines, require clean campaign source, then capture host/plan/validator identities before any arm. Record `policy.campaign` and `policy.timing_basis`. No new runtime API, allocator, cache format or network endpoint; all such ownership remains with §6.1. |
 
 | Closure | Implementation / acceptance |
@@ -570,7 +1557,7 @@ retune or replacement of §6.2, whose nomination, receipt and published result s
 | Owner / CLI / receipt | The §6.1 command with `--campaign cuda-current`; schema 2 `GPU_SESSION_MEASUREMENT`, distinguished from §6.2 only by `policy.campaign`. `--campaign cuda-final` and `--campaign original` are unchanged. Fresh external output directory, whose parent exists and whose leaf does not; identity rechecks, failure retention and cleanup exactly as §6.1. |
 | Candidate / nomination | New driver constant `CUDA_CURRENT_CANDIDATE = d4438e313c59a71a11d0a65ed1735425a0e014e8`, selected through `NOMINATION[args.campaign]`. `CUDA_CANDIDATE` is not edited, and `688232c` ancestry is retained transitively because `d4438e3` descends from it. The nomination pins the `d4438e3` source closure, not a branch head: it admits a build whose `src/`, `.align-revision` and `scripts/ggml_shim.c` bytes equal `d4438e3`. The measured candidate was `83c53f0`, the pre-rebase commit of `agent/parity-minor-batch` that carried exactly that closure; it is unreachable from the merging head, and its closure is byte-equal to the reachable `d4438e3` and to `origin/main` `2cfbae0`, which is what keeps the receipt readable from this branch. This branch's later source commits are **not** covered by this campaign: `e3a86ee` (C1, `scripts/ggml_shim.c`) and `6704913` (C2, `src/decode_step.align`, `src/model_forward.align`, `src/moe_layer_forward.align`, `src/moe_model_forward.align`) both leave the `d4438e3` closure, so the driver refuses them and the recorded result says nothing about them. A further run against a later head is a new campaign needing its own nomination constant and its own paragraph here. Build it with `scripts/build-gpu-independent-candidate PINNED_GGML KIT_PROFILE OUT --session`; `verify_build` already refuses a dirty build. |
 | Protocol / references / limits | Exactly §6.1 and §6.2: both retained unmodified `llama-server` baselines (same-ggml `bb4caa7540188872173c44d161602d9271386413` with F32 K/V, current `304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3` with F16 K/V), original Q4_K_M Qwen and OLMoE, the `cuda-kit-28a6fe3` profile's single resident/prefetch-off CUDA option, 1-GiB host and 6,000,000,000-byte GPU ceilings, context 2304, batch 2048, microbatch 128, four baseline CPU threads, Flash Attention on, no startup warmup or context shifting, the fixed system/short/long requests, 128 output tokens, the four ordered runtime cases, the eight-attempt native-validated coding portfolio, and five paired repetitions in the fixed rotated system order over 30 serial arms. |
-| Runtime metric / decision | §6.2's request-level producer internal clocks unchanged: candidate worker `elapsed_ns`, baselines `timings.prompt_ms + timings.predicted_ms`. Missing or invalid clocks invalidate the campaign and never fall back to caller wall time. A named model/case/reference clears the material floor only when all ten responses pass the fixed-output quality rule, the median paired reduction `(reference-candidate)/reference` is at least 15%, and at least four of five pairs are faster. Construction-to-ready wall time is recorded as operational context only. Coding reports successes, attempts and `processing_to_passing_patch_ns`, with null latency for failed portfolios. |
+| Runtime metric / decision | §6.2's request-level producer internal clocks remain: candidate worker `elapsed_ns`, baselines `timings.prompt_ms + timings.predicted_ms`. Missing or invalid clocks invalidate the campaign and never fall back to caller wall time. The frozen §6.3 receipt kept the historical 15%/four-of-five `met` classification with all ten responses passing quality; it remains historical only. Any new decision follows the current policy above without a fixed improvement threshold. Construction-to-ready wall time is operational context. Coding reports successes, attempts and `processing_to_passing_patch_ns`, with null latency for failed portfolios. |
 | Cost ceiling | As §6.2: at most 7200 seconds for the whole campaign and 300 seconds per construction or request. §6.2's 30 arms took 517.206 seconds; the capped-read loader removes most of OLMoE's former construction time, so this campaign is expected to finish well inside the same ceiling. One run only; a negative or incomparable result completes it. |
 | Host quiet | `run-gpu-session-measurement` records host and GPU inventory but has **no** foreign-load admission of its own; unlike `measure-cuda-optimization`, it cannot refuse a busy host. "No other benchmark, compiler or qualification runs during timing" therefore remains an operator obligation evidenced outside the receipt. Prefer a plain terminal with no agent session. If a Claude Code session is present it is the only permitted background process: its idle load of 0.14–0.35 cores stays below the 0.5-core busy threshold of the shared-host constraint but exceeded the external observer's 0.1-core rule that invalidated the P1 and P2 receipts, so the result note records its presence, and no other benchmark, build, compiler or qualification runs during timing. |
 | Evidence binding | The receipt binds `identities.candidate` (build manifest with `source_commit`, `source_dirty` and the full source closure), `identities.campaign_commit`, `identities.campaign_source`, `plan_sha256`, both baseline `cmake_cache_sha256`/executable digests, the profile digest and the host snapshot, and rechecks all of them after the last arm. The driver enforces `merge-base --is-ancestor` plus byte equality for `src/`, `.align-revision` and `scripts/ggml_shim.c` at the nomination; it does not enforce `candidate.source_commit == campaign_commit`, so a reader confirms from the receipt that both name the campaign head. |

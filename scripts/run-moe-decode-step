@@ -1130,7 +1130,6 @@ if not resident_leg:
 
 # Section 3.7, committed before implementation and restated here rather than recomputed.
 CEILING_PPM = 276000
-FLOOR_PPM = 150000
 COMMITTED_BASELINE_NS = 3630000000
 MISS_PPM = CEILING_PPM // 2
 FIXED_PROMPT = 1
@@ -1224,18 +1223,16 @@ baseline_drift_ppm = int(round(abs(stream_worst - COMMITTED_BASELINE_NS) * 10000
                                / COMMITTED_BASELINE_NS))
 if spread_ppm > CEILING_PPM:
     verdict = "INDETERMINATE"
-elif result_ppm >= FLOOR_PPM:
-    verdict = "MET"
 else:
-    verdict = "BELOW FLOOR"
+    verdict = "ASSESSMENT_REQUIRED"
 print("moe decode step qualification: MRD baseline  the committed baseline is %d ns (3.63 s, "
       "item 32 section 12.3) and this session reproduced %d ns worst-of-3 (runs %r); drift "
       "%d ppm"
       % (COMMITTED_BASELINE_NS, stream_worst, stream_ns, baseline_drift_ppm))
-print("moe decode step qualification: MRD floor  baseline (streamed, this session, worst of 3) "
+print("moe decode step qualification: MRD measurement  baseline (streamed, this session, worst of 3) "
       "%d ns, dense (worst of 3) %d ns, runs %r; removed %d ns = %d ppm of the fixed task "
-      "against a %d ppm floor: %s"
-      % (stream_worst, dense_worst, dense_ns, removed_ns, result_ppm, FLOOR_PPM, verdict))
+      "requiring workload assessment: %s"
+      % (stream_worst, dense_worst, dense_ns, removed_ns, result_ppm, verdict))
 print("moe decode step qualification: MRD spread  the streamed leg's own spread at the fixed "
       "task is %d ppm against the %d ppm ceiling; the pre-committed INDETERMINATE rule %s"
       % (spread_ppm, CEILING_PPM,

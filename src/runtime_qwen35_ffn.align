@@ -1,6 +1,8 @@
 module runtime_qwen35_ffn
 
+import std.env
 import ggml_ffi
+import runtime_attention
 import runtime_qwen35_geometry
 import runtime_qwen35_roles
 
@@ -24,7 +26,7 @@ pub fn build_many(
 ) -> Result<(), Error> {
   if !runtime_qwen35_geometry.valid_layer_pattern(g)
     || layer < 0 || layer >= g.n_layer
-    || count < 1 || count > 128
+    || count < 1 || count > runtime_attention.MAX_PREFILL
     || ggml_ffi.handle_absent(ctx)
     || ggml_ffi.slot_ne(slots, INPUT, 0) != g.n_embd
     || ggml_ffi.slot_ne(slots, INPUT, 1) != count
@@ -51,8 +53,22 @@ pub fn build_many(
   ggml_ffi.op_mul(ctx, slots, 76, 75, 70, "q35_post_attention_weight") else {
     return Err(Error.Invalid)
   }
-  ggml_ffi.op_mul_mat(ctx, slots, 77, 71, 76, "q35_ffn_gate") else {
-    return Err(Error.Invalid)
+  mut native_swiglu := false
+  match env.get("ALIGN_LLM_NATIVE_SWIGLU") {
+    Some(value) => {
+      if value == "1" { native_swiglu = true
+      } else if value != "0" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
+  if native_swiglu {
+    ggml_ffi.op_native_swiglu_gate(ctx, slots, 77, 71, 76, "native_swiglu_gate") else {
+      return Err(Error.Invalid)
+    }
+  } else {
+    ggml_ffi.op_mul_mat(ctx, slots, 77, 71, 76, "q35_ffn_gate") else {
+      return Err(Error.Invalid)
+    }
   }
   ggml_ffi.op_mul_mat(ctx, slots, 79, 72, 76, "q35_ffn_up") else {
     return Err(Error.Invalid)

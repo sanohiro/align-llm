@@ -268,6 +268,10 @@ scripts/gpu_backend_recipe.py --backend metal --source LLAMA_CPP --output NEW_DI
 scripts/gpu_backend_recipe.py --backend cuda --source LLAMA_CPP --output NEW_DIRECTORY
 ```
 
+The optional Metal argmax trial adds `--ingraph-argmax` and retains its
+separate patch and digest in the bundle. It may be combined with the existing
+`--native-swiglu` trial; neither flag is part of the ordinary build.
+
 The Metal tuple is macOS/AArch64/Apple M1. The CUDA tuple is Linux/x86_64/SM89. The recipes disable
 the CPU backend and ambient CPU libraries, build dynamic backends, use only relative loader rpaths,
 and fix CUDA graph and Flash Attention compilation on. The recipe resolves Git, CMake, Ninja and

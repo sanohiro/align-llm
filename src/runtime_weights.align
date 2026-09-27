@@ -30,6 +30,11 @@ pub fn allocation_bytes(
   Err(_) => Err(Error.Invalid),
 }
 
+pub fn upload_mode(borrow owner: ggml_ffi.GpuDevice, synchronous: bool) -> Result<(), Error> {
+  ggml_ffi.gpu_weight_upload_mode(owner, synchronous) else { return Err(Error.Invalid) }
+  return Ok(())
+}
+
 pub fn begin(borrow owner: ggml_ffi.GpuDevice, tensor_count: i64) -> Result<(), Error> {
   ggml_ffi.gpu_weights_begin(owner, tensor_count) else {
     return Err(Error.Invalid)
@@ -46,6 +51,16 @@ match ggml_ffi.gpu_weight_add(
   shape.ne1,
   shape.ne2,
   shape.ne3,
+) {
+  Ok(index) => Ok(index),
+  Err(_) => Err(Error.Invalid),
+}
+
+pub fn add_mapped(borrow owner: ggml_ffi.GpuDevice, shape: Shape,
+  pack_offset: i64, nbytes: i64) -> Result<i64, Error> =
+match ggml_ffi.gpu_weight_add_mapped(
+  owner, shape.ggml_type, shape.n_dims, shape.ne0, shape.ne1, shape.ne2, shape.ne3,
+  pack_offset, nbytes,
 ) {
   Ok(index) => Ok(index),
   Err(_) => Err(Error.Invalid),

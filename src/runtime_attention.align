@@ -3,9 +3,11 @@ module runtime_attention
 import ggml_ffi
 import runtime_inputs
 
+pub MAX_PREFILL := 512
+
 pub fn select(borrow owner: ggml_ffi.GpuDevice, prompt: i64, chunk: i64, capacity: i64,
   context: i64, head_dim: i64, heads: i64, kv_heads: i64) -> Result<(), Error> {
-  if prompt < 1 || chunk < 1 || chunk > 128 || capacity < prompt || capacity > context {
+  if prompt < 1 || chunk < 1 || chunk > MAX_PREFILL || capacity < prompt || capacity > context {
     return Err(Error.Invalid)
   }
   mut position := 0

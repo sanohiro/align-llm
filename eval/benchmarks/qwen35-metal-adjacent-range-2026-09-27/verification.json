@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "METAL_ADJACENT_RANGE_VERIFICATION",
+  "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+  "ggml_commit": "bb4caa7540188872173c44d161602d9271386413",
+  "align_sha256": "b62a2d5d7e88dee85b4f3f672b4b4dca15a74d24fc5e89df5791cf277c6a0450",
+  "reference_sha256": "f384a6a64603479cf5c675ba587aeafbd64a500c3129a0afdcd271dcf532717d",
+  "control_bundle_id": "8ae9b7ac9429d393c48f93f54bbe36417f2c0dd788937f307965c5e20b447965",
+  "final_decode_graph": {
+    "control_dispatches": 663,
+    "control_buffer_barriers": 469,
+    "candidate_dispatches": 663,
+    "candidate_buffer_barriers": 399,
+    "llama_dispatches": 682,
+    "llama_buffer_barriers": 393
+  },
+  "logits": {
+    "vectors": 3,
+    "values": 744960,
+    "bytes_per_vector": 993280,
+    "exact": true,
+    "concatenated_sha256": "f72be0715c449767483804045abcdbde98fe2a738c4feee2bebab8aa5438c563"
+  },
+  "state": {
+    "plane_records": 336,
+    "exact": true,
+    "canonical_records_sha256": "40d0fff8d8422775d6781ec5974e9f16911e08577f88b7402e6f381d24f307b6"
+  },
+  "generation": {
+    "qwen35_2b_owner": "PASS",
+    "qwen35_0_8b_owner": "PASS",
+    "three_cases_and_six_retained_requests_per_model": true
+  },
+  "limits": "Barrier counts are diagnostic API-call counts, not shader duration. No current CPU/CUDA/Gemma qualification.",
+  "measured_recipe_bundle_id": "ef88bfced485790dc8e1ffb478ec3d1de2f5c280e181eb16446df604cc1c114a",
+  "final_bundle_id": "a414d11a2fc9bd437550e35666c3115bf7253d0fecbce1b8069d58871e508527",
+  "measured_patch_sha256": "5ef5bcea8f78d4a66e7fe2643a4b7a99e4e5d22722eaddcebfc0d588da6c7bf3",
+  "final_patch_sha256": "f636d7573dcc746cf9b05893f21c72b9fdd65a35276e86f34d62cbcaec550cf3",
+  "final_exact_logits_and_state": true
+}

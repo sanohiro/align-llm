@@ -1,0 +1,7 @@
+diff --git a/ggml/src/ggml-metal/ggml-metal-common.cpp b/ggml/src/ggml-metal/ggml-metal-common.cpp
+--- a/ggml/src/ggml-metal/ggml-metal-common.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-common.cpp
+@@ -138,2 +138,2 @@
+-        if (mr.p0 < cmp.p1 && mr.p1 >= cmp.p0) {
++        if (mr.p0 < cmp.p1 && mr.p1 > cmp.p0) {
+             if (mrs->debug > 2) {

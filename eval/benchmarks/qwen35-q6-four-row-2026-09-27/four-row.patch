@@ -1,0 +1,62 @@
+--- a/scripts/bench-metal-q6-projection.mm
++++ b/scripts/bench-metal-q6-projection.mm
+@@ -50,7 +50,7 @@
+ using namespace metal;
+ struct Q6Block { uchar ql[128]; uchar qh[64]; char scales[16]; half d; };
+ static_assert(sizeof(Q6Block) == 210, "unexpected Q6_K block layout");
+-kernel void q6_pair_load(
++kernel void q6_four_row(
+     device const Q6Block *weights [[buffer(0)]],
+     device const float *input [[buffer(1)]],
+     device float *output [[buffer(2)]],
+@@ -59,12 +59,12 @@
+     uint group [[threadgroup_position_in_grid]],
+     ushort lane [[thread_index_in_simdgroup]],
+     ushort simd [[simdgroup_index_in_threadgroup]]) {
+-    const uint first_row = (group * 2 + simd) * 2;
++    const uint first_row = (group * 2 + simd) * 4;
+     if (first_row >= rows) return;
+     const uint blocks = width / 256;
+     const ushort tid = lane / 2, ix = lane % 2;
+     const ushort ip = tid / 8, l0 = 4 * (tid % 8), is = 8 * ip + l0 / 16;
+-    float sum[2] = {0.0f, 0.0f};
++    float sum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
+     for (uint block = ix; block < blocks; block += 2) {
+         float yl[16];
+         device const float *y = input + block * 256 + 128 * ip + l0;
+@@ -72,7 +72,7 @@
+             yl[4*l + 0] = y[l]; yl[4*l + 1] = y[l + 32];
+             yl[4*l + 2] = y[l + 64]; yl[4*l + 3] = y[l + 96];
+         }
+-        for (ushort row = 0; row < 2; ++row) {
++        for (ushort row = 0; row < 4; ++row) {
+             if (first_row + row >= rows) continue;
+             device const Q6Block &q = weights[(first_row + row) * blocks + block];
+             // All addresses are at least 2-byte aligned, including odd blocks.
+@@ -97,7 +97,7 @@
+                               sums[2] * q.scales[is+4] + sums[3] * q.scales[is+6]);
+         }
+     }
+-    for (ushort row = 0; row < 2; ++row) {
++    for (ushort row = 0; row < 4; ++row) {
+         float value = simd_sum(sum[row]);
+         if (lane == 0 && first_row + row < rows) output[first_row + row] = value;
+     }
+@@ -350,7 +350,7 @@
+         if (!library) std::fprintf(stderr, "Metal compile: %s\n", error.localizedDescription.UTF8String);
+         require(library != nil, "native kernel compilation failed");
+         id<MTLComputePipelineState> pipeline = [metal newComputePipelineStateWithFunction:
+-            [library newFunctionWithName:@"q6_pair_load"] error:&error];
++            [library newFunctionWithName:@"q6_four_row"] error:&error];
+         require(pipeline != nil && pipeline.threadExecutionWidth == 32 && pipeline.maxTotalThreadsPerThreadgroup >= 64,
+                 "native pipeline geometry unavailable");
+         id<MTLComputePipelineState> top_pipeline = nil, finish_pipeline = nil;
+@@ -412,7 +412,7 @@
+                 [encoder setBuffer:fused_top ? parts : my offset:0 atIndex:2];
+                 [encoder setBytes:&width length:sizeof(width) atIndex:3];
+                 [encoder setBytes:&active_rows length:sizeof(active_rows) atIndex:4];
+-                [encoder dispatchThreadgroups:MTLSizeMake((active_rows + 3) / 4, 1, 1)
++                [encoder dispatchThreadgroups:MTLSizeMake((active_rows + (fused_top ? 3 : 7)) / (fused_top ? 4 : 8), 1, 1)
+                          threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+                 if (fused_top) {
+                     uint32_t groups = (active_rows + 3) / 4;

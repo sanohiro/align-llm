@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Verify source bytes or paired F32 diagnostic captures; never a product path."""
+import argparse
+from array import array
+import json
+import math
+from pathlib import Path
+import sys
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    sub=parser.add_subparsers(dest='mode',required=True)
+    weights=sub.add_parser('weights')
+    weights.add_argument('gguf',type=Path);weights.add_argument('geometry',type=Path);weights.add_argument('capture',type=Path)
+    logits=sub.add_parser('logits')
+    logits.add_argument('control',type=Path);logits.add_argument('candidate',type=Path)
+    logits.add_argument('--requests', nargs='+', help='explicit prompt:completion counts in capture order')
+    logits.add_argument('--control-chunk', type=int, choices=(128,256,512))
+    logits.add_argument('--candidate-chunk', type=int, choices=(128,256,512))
+    logits.add_argument('--control-final-only', action='store_true', help='control captures only final-prefill and decode outputs')
+    logits.add_argument('--candidate-final-only', action='store_true', help='candidate captures only final-prefill and decode outputs')
+    args=parser.parse_args()
+    if args.mode=='weights':
+        geometry=json.loads(args.geometry.read_text())
+        count=0
+        with args.gguf.open('rb') as source:
+            for block in geometry['blocks']:
+                if block['kind']!='MlpBlock':continue
+                for t in block['tensors']:
+                    role=t['role'].removeprefix('ffn_')
+                    if role not in ('gate','up','down'):raise ValueError('unexpected FFN role')
+                    actual=(args.capture/f"{block['layer']:02d}-{role}.bin").read_bytes()
+                    source.seek(t['absolute_offset']);expected=source.read(t['nbytes'])
+                    if len(actual)!=t['nbytes'] or actual!=expected:raise ValueError('weight capture mismatch')
+                    count+=1
+        if count==0:raise ValueError('no FFN weights')
+        print(f'GGUF weight bytes PASS: {count} tensors')
+        return
+    control_names=sorted(p.name for p in args.control.glob('*.bin'))
+    candidate_names=sorted(p.name for p in args.candidate.glob('*.bin'))
+    configured=(args.requests is not None, args.control_chunk is not None, args.candidate_chunk is not None)
+    if any(configured) and not all(configured):
+        raise ValueError('request alignment requires counts and both chunk widths')
+    if (args.control_final_only or args.candidate_final_only) and not all(configured):
+        raise ValueError('final-only capture alignment requires explicit requests and chunk widths')
+    excluded=[0,0]
+    if args.requests:
+        requests=[tuple(map(int, value.split(':'))) for value in args.requests]
+        if any(len(row)!=2 or not 1<=row[0]<=2048 or not 1<=row[1]<=4096 for row in requests):
+            raise ValueError('invalid request counts')
+        selected=[]
+        for names,chunk,final_only in ((control_names,args.control_chunk,args.control_final_only),(candidate_names,args.candidate_chunk,args.candidate_final_only)):
+            offset=0; chosen=[]
+            for prompt,steps in requests:
+                prefills=1 if final_only else (prompt+chunk-1)//chunk
+                chosen.extend(range(offset+prefills-1,offset+prefills+steps-1))
+                offset+=prefills+steps-1
+            if names!=[f'{i:04d}.bin' for i in range(offset)]:
+                raise ValueError('raw capture count/order differs from declared requests')
+            selected.append([names[i] for i in chosen])
+        excluded=[len(control_names)-len(selected[0]),len(candidate_names)-len(selected[1])]
+        pairs=list(zip(*selected))
+    else:
+        if not control_names or control_names!=candidate_names:
+            raise ValueError('missing or differing capture sets')
+        pairs=list(zip(control_names,candidate_names))
+    maximum=0.;total=0.;elements=0
+    for name,candidate_name in pairs:
+        a=array('f');b=array('f')
+        a.frombytes((args.control/name).read_bytes());b.frombytes((args.candidate/candidate_name).read_bytes())
+        if sys.byteorder!='little':a.byteswap();b.byteswap()
+        if not a or len(a)!=len(b):raise ValueError('capture extent mismatch')
+        ai=bi=0
+        for i,(x,y) in enumerate(zip(a,b)):
+            delta=abs(x-y)
+            if not math.isfinite(x) or not math.isfinite(y) or delta>0.01:
+                raise ValueError(f'logit bound/nonfinite failure: {name} at {i}: {x} vs {y}')
+            maximum=max(maximum,delta);total+=delta;elements+=1
+            if x>a[ai]:ai=i
+            if y>b[bi]:bi=i
+        if ai!=bi:raise ValueError(f'greedy argmax mismatch: {name}: {ai} vs {bi}')
+    print(json.dumps(dict(status='PASS',vectors=len(pairs),excluded_nonfinal_prefill=excluded,requests=args.requests,control_chunk=args.control_chunk,candidate_chunk=args.candidate_chunk,control_final_only=args.control_final_only,candidate_final_only=args.candidate_final_only,elements=elements,max_abs=maximum,mean_abs=total/elements,tolerance_abs=0.01,greedy_argmax='identical')))
+
+if __name__=='__main__':main()

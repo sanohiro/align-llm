@@ -66,14 +66,14 @@ def main():
  for repeat in range(5):
   for system,latency in [('candidate',80),('same',100)]:
    arms.append(dict(model='qwen2',repeat=repeat,system=system,status='PASS',runtime=[dict(case='case',quality=True,elapsed_ns=latency)]))
- assert m.comparison(arms,'qwen2','case','same')['decision']=='met'
+ assert m.comparison(arms,'qwen2','case','same')['decision']=='assessment_required'
  assert m.comparison(arms[:-1],'qwen2','case','same')['decision']=='invalid_quality'
  assert m.comparison(arms+[arms[0]],'qwen2','case','same')['decision']=='invalid_quality'
  arms[0]['runtime'][0]['quality']=False
  assert m.comparison(arms,'qwen2','case','same')['decision']=='invalid_quality'
  arms[0]['runtime'][0].update(quality=True,elapsed_ns=120)
  arms[2]['runtime'][0]['elapsed_ns']=120
- assert m.comparison(arms,'qwen2','case','same')['decision']=='not_met'
+ assert m.comparison(arms,'qwen2','case','same')['decision']=='assessment_required'
  rejected(lambda:m.decode_response(b'{"x":1,"x":2}'))
  rejected(lambda:m.decode_response(b'{"x":NaN}'))
  request=dict(system='',user='hello',max_tokens=128,temperature=0.0,seed=None)
@@ -147,7 +147,7 @@ def main():
   for arm in arms:
    arm['runtime'][0].update(quality=True,elapsed_ns=80 if arm['system']=='candidate' else 100)
    arm['coding']=dict(passed=False,processing_to_passing_patch_ns=None,attempts=[{}]*8)
-  assert m.comparison(arms,'qwen2','case','same')['decision']=='met'
+  assert m.comparison(arms,'qwen2','case','same')['decision']=='assessment_required'
   source=work/'source'
   subprocess.run(['git','init','-q',str(source)],check=True)
   subprocess.run(['git','-C',str(source),'-c','user.name=Fixture','-c','user.email=fixture@example.invalid',

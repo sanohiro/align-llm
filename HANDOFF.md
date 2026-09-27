@@ -2,6 +2,627 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Active independent Metal state-copy capability (2026-09-27)
+
+Branch `agent/native-metal-ffn-integration`; `fc9ffa7417` introduced the
+initial native copy seam. The user requires an Align-owned
+independent GPU execution path, with ggml retained only as a selectable
+fallback/temporary producer. Do not promote the ggml F32 source patch as the
+operating goal. The current opt-in `ALIGN_LLM_NATIVE_STATE_COPY=1` replaces 18
+contiguous decode DeltaNet copy nodes with one independent Metal blit command
+over borrowed ggml shared allocations. Align controls selection, state parity,
+generation and the completion dependency. The ordinary unmodified ggml graph
+is mode `0` and rollback. This is one native execution seam, not a completed
+independent model backend.
+
+Latest M1 2B generation passed after the device-identity review repair;
+2B/0.8B generation and 0.8B serving passed before that narrow repair. The 2B 16-token
+comparison has exact 1,344 state-plane hashes and 16 full-logit hashes.
+Invalid mode refuses construction. Five alternating, same-binary,
+same-**unmodified**-bundle 2B warm-request pairs at 64/16, 200/32 and 330/64
+favor the reviewed native route in 15/15 pairs: control-minus-native paired
+medians +44.636, +88.505 and +186.868 ms. It also wins 15/15 pinned llama.cpp
+request pairs. The pre-review build retained one -5.380 ms Align and -8.367 ms
+reference pair at 200/32; both receipts are kept.
+Prefill graph differences are within about 1 ms; decode producer graph gains
+are +51.364, +102.889 and +200.932 ms but exclude native completion. M1
+startup remains about 1.0 s versus llama.cpp about 0.45-0.46 s. The earlier
+process-footprint screen observed native +0.109 MiB physical and +0.531 MiB
+peak after three requests, while the preceding screen had the opposite sign;
+total GPU/system memory is unmeasured. The first synchronous native version
+lost every pair;
+its retained receipt and the revised version's evidence are in
+`docs/qwen35-native-state-copy-trial.md`.
+
+Strict Python boundary, real/stub shim builds, `make fmt`, owner checks and one
+fresh native-code review completed. Two P2 findings were repaired: admit only
+the sole selected `MTL0` matching the physical device, and reject mislabeled
+state-copy controls in the paired measurement tool. Next actions, in order:
+add a focused native command-failure owner before considering default adoption;
+qualify another Metal device and then test a larger native decode segment.
+Keep the route
+opt-in until that owner and another Metal-device qualification are available.
+CPU/CUDA Qwen3.5 and Gemma semantic admission remain deferred in
+`docs/backend-parity.md`. Keep model weights, binaries, raw traces and source
+builds outside Git; checked-in benchmark JSON and the report are intentional.
+
+## GPU-only optimization priority (2026-09-27)
+
+Branch `agent/native-metal-ffn-integration`, current HEAD `fc9ffa7417`. The user directs
+current work toward GPU inference performance; HTTP transport optimization is
+deferred until GPU options are adequately tested. The adjacent-range Metal
+scheduling patch remains default-off with no repeatable competitive request
+win; see `docs/qwen35-metal-adjacent-range-trial.md`.
+
+The 2026-09-27 counter-enabled Metal System Trace has Shader Timeline enabled.
+On matched Qwen3.5-2B 200/32 work it sampled F32 copies at about 99 ms per
+Align request and 35 ms per pinned llama.cpp request; Q4_0 and Q6_K matvec
+samples per request were close. These are diagnostic attributions, not saved
+time. Independent bindings show both use shared Metal buffers and the same
+state-copy launch shapes. See `docs/qwen35-decode-attribution.md` and
+`docs/gpu-optimization-lessons.md`.
+
+The parity-major recurrent-state placement trial cut the last decode's
+36-copy destination start span from 38,305,792 to 19,152,896 bytes, matching
+the reference span. Its actual 2B full logits and semantic state hashes were
+exact; 2B/0.8B generation owners passed. Five-pair untraced request medians
+were +0.397, -3.195 and -18.414 ms at 64/16, 200/32 and 330/64, control
+minus trial. Separate phase clocks did not establish a repeatable gain.
+The source and root `main` were restored; the exact trial patch, binaries,
+owner logs, copy census and complete receipts remain under the resolved Git
+common directory's `diagnostics/q35-ingraph-greedy-2026-09-27/counter-trace-20260927/`.
+The result and cost ceiling are in `docs/specs/gpu-runtime-performance.md`.
+
+The next large contiguous-copy Metal specialization, built through the
+checked-in `--linear-copy` recipe, won all 30 2B control comparisons across
+two five-pair 64/16, 200/32 and 330/64 campaigns. The measured recipe
+bundle's paired control-minus-trial medians were +52.866, +99.577 and
++193.448 ms, and its
+warm request arm medians beat pinned llama.cpp at each length. The real 0.8B
+campaign won 14/15 comparisons and retained one -11.338 ms short-case pair.
+The 2B actual logits and resident state were byte-identical; both sizes'
+generation owners passed. The actual graph has 18 eligible contiguous 1 MiB
+DeltaNet copies and 18 ineligible strided convolution sources per decode token.
+The summed F32 copy Shader Timeline samples fell from 199.922 to 11.228 ms
+over two matching instrumented requests, an attribution result rather than
+an isolated marginal saving. Startup remains mixed. A clean checked-in-patch bundle was rebuilt after removing
+whitespace from patch context; its executable and embedded Metal library are
+byte-identical to the measured bundle, and both model generation owners pass.
+The ordinary backend bundle remains the rollback. A six-case copy view owner
+passed bit-exactly on control and clean bundles. A five-pair process-footprint
+screen found effectively unchanged after-three-request values; the paired
+physical-peak difference median was +0.062 MiB (control minus clean), but it
+does not measure total GPU/system memory. A direct same-binary pre-adjacent
+bundle versus clean campaign won all 15 2B pairs and all 15 pinned llama.cpp
+pairs, with base-minus-clean request medians +55.011, +111.526 and +224.990 ms
+at the three lengths. A matching 0.8B direct campaign won all 15 Align pairs
+and 14/15 pinned-reference pairs; one 330/64 reference pair was faster by
+15.966 ms. Its base-minus-clean paired medians were +60.626, +110.062 and
++230.010 ms. The explicit clean bundle is recommended for local
+Qwen3.5 inference on the measured M1 host; no universal default is claimed.
+Conditions and receipts are in `docs/qwen35-metal-linear-copy-trial.md`.
+
+Follow-up raw GPU counters from the retained 200/32 traces show the Q4_0 and
+Q6_K decode matrix-vector shaders at 100%/98% median Buffer Read Limiter and
+49.2/52.5 GB/s median GPU read bandwidth in the trial; pinned llama.cpp is
+100%/99% and 50.1/55.7 GB/s. These are whole-GPU, instrumented samples
+associated with shader intervals, not exact dispatch clocks. Q4_0 prefill
+matrix-matrix instead shows 83% median F32 utilization. The measured trial's
+Q4_0 plus Q6_K matrix-vector sample total is about 61% of worker shader time;
+remaining F32 copy is about 0.5%. The two arms have different prefill chunk
+sizes, so their matrix-matrix bandwidth is not a direct efficiency comparison.
+Source traces, extraction and caveats are in `docs/gpu-optimization-lessons.md`.
+The largest candidate shader gap is about 44 ms near a graph boundary; no
+per-token dispatch stall is established by that one gap.
+
+A same-saved-binary, same-linear-copy-bundle 128/256 prefill-width follow-up
+completed two five-pair three-arm campaigns against pinned llama.cpp. All
+actual prompt/output counts and generated outputs matched. Width 256 removes
+one prefill graph at 200 and 330 tokens. Synchronized prefill paired medians
+were -3.163 ms (0/5 wins) at 200/32 and +4.892 ms (5/5) at 330/64;
+uninstrumented whole-request paired medians were -2.609 ms (2/5) and
+-9.812 ms (1/5), with substantial host variation. Width 128 stays default.
+The pinned Metal Q4_0 matrix kernel already uses a 64-by-32 tile with
+threadgroup weight staging and SIMD-group multiplication; width 256 alone is
+not a new weight-reuse mechanism. The listed 2B tensor extent divided by
+decode graph time is about 48 GB/s, consistent with separate 49-52 GB/s
+matvec GPU read samples but not a physical-byte measurement. See
+`docs/qwen35-prefill-counter-followup.md` and its complete receipts.
+
+A new actual-weight Q6_K output-head screen assigned four rather than two
+rows per SIMD group. Three captured full/tail output vectors were exact against
+both capture and ggml. Five paired local comparisons per activation produced
+ggml-minus-four-row medians +0.003, -0.021 and -0.050 ms, with 3/5, 2/5 and
+2/5 wins. A checksum-verified contiguous read of the same 417 MB took 7.758 ms
+median GPU command time (53.77 GB/s listed bytes), slower than the Q6_K
+projection; this is not a bandwidth roof. No runtime integration or complete
+request claim follows from this local loss. Source patch and complete receipts
+are in `docs/qwen35-q6-four-row-screen.md`.
+
+The real first-decode Q4_0 screen captured all 24 FFN gate weights and
+activations, verified all 72 FFN weights against the GGUF, and compared a
+lossless split-scale layout plus two/eight-row SIMD mappings against the pinned
+four-row layout. The split layout had no stable 24-layer gain; both row changes
+lost the GPU interval comparison after independent A/B weight buffers removed
+an order-dependent cache artifact. No real-model integration followed. See
+`docs/qwen35-q4-layout-screen.md` and its complete receipts.
+
+Latest local verification: `scripts/run-gpu-backend-recipe-smoke` PASS;
+`python3 scripts/check-python-boundary --strict` PASS; clean pinned-source
+`git apply --check` PASS; 2B and 0.8B `scripts/run-qwen35-generation-smoke`
+PASS on the clean bundle; copy geometry owner PASS on both bundles; 2B direct
+baseline/reference campaign PASS; process-memory screen PASS; 0.8B direct
+baseline/reference campaign PASS. One fresh
+`codex review --uncommitted` of the candidate found no actionable issue;
+the later changes only add this 0.8B campaign and align its records. A prior
+hosted
+`scripts/pre-pr` stamp for owner test `gpu-backend-recipe` at exact
+`fc9ffa7417` is PASS. Its earlier independent review found no actionable
+correctness regression;
+the separately found patch-context whitespace was repaired, the bundle was
+rebuilt and its executable sections compared before these final checks.
+
+The current fast F32-copy bundle is a measured ggml Metal specialization,
+not completion of the requested selectable independent Metal path. The native
+SwiGLU opt-in replaces one operation inside ggml's encoder; it is also not an
+independent execution path. Preserve both as measured options while pursuing
+Align-selected native execution with the existing ggml path as fallback. Do
+not treat the copy win or the earlier native FFN request result as a reason to
+drop that goal. The next GPU action is to choose a concrete decode weight-reuse,
+traffic, or fusion seam for a selectable native trial, then verify actual-model
+correctness and connected request cost before considering adoption.
+The tested Q4_0 split/row-count variants are withdrawn; do not repeat them
+without a new mechanism. Do not repeat the 128/256 chunk
+switch as a proxy for a new prefill kernel. The remaining strided convolution
+copy is about 1.3 MiB per decode token, so a copy-only rewrite is lower
+priority after the contiguous fix. Preserve success-only state publication.
+Avoid repeating the rejected singleton K/V copy, parity placement and
+arithmetic-only native matvec trials without a new mechanism.
+CPU/CUDA/Gemma admission remains deferred in `docs/backend-parity.md`.
+Intentional uncommitted files at this diagnostic checkpoint are the updated
+performance plan, parity register, lessons, local-chat recipe, Python boundary
+classification, copy geometry/footprint developer owners, Q4_0/Q6_K/prefill
+reports and their checked-in benchmark receipts. Diagnostic binaries and
+large raw captures stay under Git's common directory and are not committed.
+No new runtime code, PR or merge is claimed.
+
+## Qwen3.5 in-graph Metal greedy trial (2026-09-27)
+
+Branch `agent/native-metal-ffn-integration`, exact prechange head `9dae952a`;
+the implementation/evidence checkpoint is this branch's HEAD. The local opt-in
+`ALIGN_LLM_GRAPH_GREEDY=1` candidate is implemented against a
+separate pinned ggml Metal patch and a marker-checked Align graph. The old
+full-logit graph is the default and rollback. Real 2B/0.8B generation, 2B
+serving, 336 exact resident-state hashes, captured-row tie/nonfinite cases,
+invalid-mode refusal, stub/real shim builds and Python boundary checks pass.
+The 200/3 boundary trace changes three full-row gets (2,979,840 bytes) to
+three scalar gets (12 bytes) with the same 1,377 total command buffers.
+
+Five alternating local captured-row pairs reduce synchronized argmax by a
+median 0.505 ms. Final repaired-binary same-binary 2B worker paired request
+changes are −1.644, +1.691 and +5.035 ms at 64/16, 200/32, 330/64; long
+worker wins 4/5. Final HTTP/SSE long paired gains are +13.916/+5.769 ms, but
+HTTP has one −70.021 ms pair; pinned llama.cpp remains faster at every worker
+median. The pre-repair worker's +21.843 ms long gain did not reproduce. The
+pre-repair combined existing sync-upload/final-FFN-row arm improves warm-start
+construction by about 0.5 s under the measured cache conditions but also
+remains slower than llama.cpp for warm requests. Keep graph greedy default-off.
+The exact conditions, adverse samples, raw receipts and next hypothesis are in
+`docs/qwen35-ingraph-greedy-trial.md`.
+
+One fresh host-native review covered the full candidate and found two valid
+issues: early short-vocabulary refusal and bundle-bound patch identity. Both
+were repaired; the final 2B/0.8B generation and 2B serving owners, exact
+short-vocabulary pre-upload refusal, patch-tamper refusal, stub owner, strict
+Python boundary and final-binary worker/HTTP campaigns pass. The review and
+repair diagnostics are in the Git common directory. Next: for further speed work,
+screen a Q6_K output projection that emits partial maxima directly in its
+producing graph against captured real weights and activations; admit it to the
+real model only if the exact full-logit/state oracle survives. Do not repeat
+the one-to-one Q6_K mapping or post-sync GPU argmax. CPU/CUDA Qwen3.5 and Gemma
+semantic admission remain deferred in the backend parity register. No PR,
+preflight or merge is claimed for this local trial.
+
+## Qwen3.5 Metal private-storage screen (2026-09-27)
+
+Branch `agent/native-metal-ffn-integration`, starting from NEON checkpoint
+`1ad16a24`. This local screen is complete. The pinned ggml all-private buffer
+switch passed the captured real Q6_K projection oracle and the same-binary 2B
+worker output/count checks, but did not improve the local projection across
+three activations. Five alternating worker pairs at 64/16, 200/32 and 330/64
+gave paired shared-minus-private request medians -16.351, -35.645 and
+-81.652 ms; private won 0/5, 2/5 and 2/5. Pinned llama.cpp remained faster
+on every candidate request median. The graph-external residual grew in every
+pair, consistent with pinned ggml's private input-setter blit and completion
+wait. Keep shared storage as default; no product buffer mode was added. Read
+`docs/qwen35-private-metal-trial.md` and the checked-in raw receipts for the
+conditions and uncertainty. Strict Python boundary, invalid-setting refusal,
+measurement completion and diff checks passed. No cross-backend claim.
+
+Next: screen an in-graph Q6_K projection plus partial-top-token consumer with
+actual captured weights/activations, preserving the exact full-logit/state
+oracle. It must reuse the producing command boundary; the post-sync GPU argmax
+and one-to-one Q6_K mapping have already lost. If the bounded local screen
+does not show a connected advantage, redirect to a larger fused recurrent/FFN
+layout. No PR/preflight/merge is claimed for this checkpoint.
+
+## Qwen3.5 shared-row greedy follow-up (2026-09-27)
+
+Branch `agent/native-metal-ffn-integration`, based on shared-logits checkpoint
+`32ad975e`; implementation/evidence checkpoint `6d552f4b`. The NEON experiment
+is complete as a local default-off trial.
+The hierarchical GPU argmax integration passed real correctness but lost its
+connected speed case because each token required a second Metal command buffer;
+its runtime code was withdrawn. `docs/qwen35-hierarchical-greedy-trial.md`
+retains the decision, source patch and complete receipts.
+
+The new default-off `ALIGN_LLM_NEON_GREEDY=1` path uses the same validated
+shared F32 output row, but runs a bounded AArch64 NEON finite/first-index
+argmax scan without another GPU queue or full-row copy. Align still controls
+model, session and generation; ggml still controls graph computation. The
+local actual-row screen won 96–98/100 pairs by about 0.25 ms. Real 2B/0.8B
+generation, 2B serving, 336 exact state hashes, invalid flag refusal, odd
+lengths and real/stub shim builds pass. Five-pair 2B worker and two same-binary
+HTTP/SSE campaigns are complete. Worker paired request medians improve by
+1.167, 0.074 and 21.514 ms at 64/16, 200/32 and 330/64, but HTTP/SSE and
+the scalar-shared comparison have adverse conditions; pinned llama.cpp is
+faster on all worker medians. Keep this mode default-off. Read
+`docs/qwen35-neon-greedy-trial.md` and the checked-in raw receipts for exact
+conditions, phase clocks and limits. No cross-backend speed claim is made.
+
+Verification: managed Align per-unit check and `gmake fmt`; real and stub shim
+builds; real 2B/0.8B generation and 2B serving owners; 336 exact state-plane
+hashes; invalid-flag and odd-shape checks; strict Python boundary; measurement
+config owner; three complete benchmark receipts; and staged whitespace check
+pass. One host-native `codex review --uncommitted` covered the complete
+candidate and returned CLEAN, findings none. Its local envelope and log are
+retained under the Git common directory. The only post-review repair changed
+diagnostic artifact packaging and its link, with no runtime behavior change.
+
+Next: for further speed work, first screen a fused
+Q6_K output projection plus partial-top-token consumer using captured real
+weights/activations and an in-graph execution boundary; retain the full-logit
+oracle and existing ggml path. Do not repeat the prior one-to-one Q6_K kernel
+mapping or post-sync GPU argmax. CPU/CUDA Qwen3.5 and Gemma graph admission
+remain deferred in the backend parity register. No PR/preflight/merge is
+claimed at this checkpoint; publication of the completed local experiment is
+separate from the next optimization trial.
+
+## Qwen3.5 shared-logits boundary trial (2026-09-27)
+
+Branch `agent/native-metal-ffn-integration`, old-binary control `57fd7a6b`,
+implementation/evidence checkpoint `9b9bf9bb`. The committed default-off
+`ALIGN_LLM_SHARED_LOGITS=1` trial found that the real 2B output resides in a
+shared Metal buffer; the Align-owned
+greedy scan can borrow it through a checked thin ABI after synchronized graph
+compute. The 993,280-byte copied readback disappears. Three real full-logit
+vectors and 336 state-plane hashes match the old binary exactly; 2B/0.8B
+generation, 2B HTTP/SSE and generic generation owners pass. Five alternating
+2B worker and HTTP/SSE pairs across 64/16, 200/32 and 330/64 have mixed
+results; no repeatable request gain and pinned llama.cpp remains faster. Keep
+the mode default-off. `docs/qwen35-shared-logits-trial.md` and the checked-in
+receipts contain the comparison. The singleton K/V copy elimination and ggml
+GPU argmax trials also passed local correctness but lost their real-request
+speed tests; their code was removed and their closures are in
+`docs/specs/gpu-runtime-performance.md`. Raw diagnostic patches/logs remain
+untracked under the resolved Git common directory. The checkpoint has not
+been published or merged. One host-native comprehensive `codex review
+--uncommitted` found a valid intermediate-prefill scan regression. It was
+repaired without changing the trial approach. Real-shim build, 2B generation
+with full prefill logits, same-binary 200/16 HTTP/SSE and strict Python
+boundary checks pass after repair; the complete review log is in local
+diagnostics. Request 123 records the non-blocking Align borrowed-view return
+gap.
+
+Next: complete the local checkpoint and choose a larger unit of GPU work. The
+paired-load Q6_K projection probe already passed exact real activations but
+showed no stable gain, so do not repeat that strategy. Test either a multi-stage
+gate/up/activation/down path or hierarchical GPU argmax after a bounded local
+real-data test. The latter needs first-index-tie and finite semantics; the
+existing single-threadgroup ggml argmax slowed decode. Require exact real
+logit/state comparison and alternating whole-request timing at integration.
+CPU/CUDA Qwen3.5 admission and Gemma semantics remain deferred in the backend
+parity register. Do not infer an M1 speed gain from M3/M4/M5 papers or from
+the invalid-output projection-pruning diagnostic.
+
+## Qwen3.5 mapped-weight trial (2026-09-27)
+
+Branch `agent/native-metal-ffn-integration`, baseline `9c61d3f9`, reviewed
+implementation/evidence checkpoint `4c4aeaa9`. A default-off
+`ALIGN_LLM_MAPPED_WEIGHTS=1` path now maps the actual Alignpack and places its
+planned tensors in a host-backed Metal buffer. Align owns mode selection, pack
+validation, plan, admission and session lifetime; the thin shim owns mmap,
+bounds, buffer placement and release. Current ggml graph/compute and the upload
+fallback remain. Read `docs/mapped-weight-trial.md` and its complete benchmark
+receipt. The same binary passed 2B/0.8B real generation owners, 2B HTTP/SSE,
+744,960 exact F32 logits and 258 exact state records. Five-pair worker and
+HTTP/SSE measurements show ~0.4 s faster isolated startup, but no stable warm
+prefill/decode/request gain. Pinned llama.cpp remains faster on all three worker
+request medians. The mapped and validated files use separate opens; the trial
+assumes a stable local pack and stays default-off. Process RSS/vmmap does not
+establish total GPU physical-memory savings. Build, formatter, strict Python
+boundary and measurement-input owner pass. One comprehensive host-native review
+found a relative-pack-path refusal; it was fixed and a real 2B relative-path
+request passes. No valid finding remains unresolved. Raw captures and diagnostic
+memory logs are retained under the resolved Git common directory. This section supersedes the older
+mapped-weight next action below; no publication or merge is claimed.
+
+Next: compare matched endpoint command-buffer and graph preparation costs on
+200/32; if device time remains dominant, test a larger
+gate/up/activation/down fusion or a different Q6_K mapping with the existing
+exact-logit/state oracle. CPU/CUDA admission and Gemma semantics remain
+deferred; no new Align language gap was found in this trial.
+
+## Qwen3.5 decode attribution checkpoint (2026-09-26)
+
+Branch `agent/native-metal-ffn-integration`, baseline `aa54a963`, final
+diagnostic checkpoint `a71e8799`. Read
+`docs/qwen35-decode-attribution.md` and the compact raw receipt. An independent
+Metal pipeline/launch census on the actual 2B request found 663 Align versus
+682 pinned-llama decode dispatches, with 613 identical function/launch
+signatures including every major Q4/Q5/Q6 matrix-vector, attention, recurrent
+and convolution kernel. The dominant kernels are not missing from Align. A
+diagnostic graph that omits only the last Q6_K output projection (node 1,109 of
+1,110) changes paired synchronized decode times by 3.718–7.999 ms, but corrupts
+the second token and is not an inference candidate. The M1 trace has no shader
+timeline; dispatch-boundary timestamp counters are unavailable. No product code
+or inference default changed; compiled probe binaries and full traces remain
+untracked. The checked-in probes and fixed input fixture reproduce the 663/682/
+613 census. A third five-pair run verifies every unpruned response against the
+normal output and records pack, geometry, options and verified bundle identities;
+all five pruned-graph deltas remain positive. Strict Python boundary and receipt
+identity checks pass. The first comprehensive review found a reproducibility
+gap, repaired in `40c2c7a0`; the final full-diff review found two narrow
+measurement-integrity issues, repaired in `a71e8799`. No valid finding remains
+unresolved. The complete review envelope is in the resolved Git common
+directory. This is a local checkpoint; no publication or merge is claimed.
+
+Next: make a bounded mapped-Alignpack weight trial reviewable. First record its
+ownership/ABI contract and closure cases under `docs/specs/` because it changes
+the pack-file-to-device ownership boundary. Keep Align in charge of selection,
+validation and session lifetime, with the current upload path as rollback.
+Implement an opt-in real-model path, qualify bytes/logits/state and cleanup, then
+measure construction, first use, warm prefill/decode, complete requests and
+physical memory under controlled matched conditions. Source/binary evidence
+shows pinned llama.cpp maps weight pages while Align currently copies into a
+ggml-owned Metal buffer; this remains a causal hypothesis for the decode gap,
+not a proven speed gain. No new Align gap has been established yet. CPU/CUDA
+Qwen3.5 qualification and Gemma semantic admission remain deferred.
+
+## Final-layer single-row FFN checkpoint (2026-09-26)
+
+Branch `agent/native-metal-ffn-integration`, baseline `9e1719c9`. Implemented
+`ALIGN_LLM_PREFILL_LAST_FFN_ROW=1` as an opt-in Align session choice; absent/`0`
+retains the full-row graph. It narrows only the final prompt chunk's last FFN
+after all state-producing attention work, in both normal and streaming sessions.
+Read `docs/final-ffn-row-trial.md` and its complete raw receipt before resuming.
+No new Align gap or ABI, retained device buffer, backend-name gate or Python
+product path was introduced.
+
+Managed build/format, strict Python boundary, config refusals and 2B/0.8B
+generation/serving owners passed. Same-width 128/256/512 comparisons cover
+71,516,160 actual full-logit floats: max absolute difference 0.00361634 under
+the predeclared 0.01 bound, identical argmax, bit-identical decode; old binary
+versus new OFF is exact. All 588 full resident-state hashes match. Native SwiGLU
+plus this mode passes the 2B owner. A Q4_0 matrix-vector kernel is selected in
+the final graph, with the same command-buffer count and reported Metal peak.
+
+Five alternating old/new/pinned-llama worker groups show prefill improvement in
+4/5 pairs at each of 64/16, 200/32 and 330/64, but whole-request effects are
+mixed. Same-binary HTTP/SSE has two warmups and five alternating pairs across
+eight cases; several requests regress or have no robust gain. Even the no-op
+129/1 negative control moves. Keep the mode default-off as an experiment; do
+not claim a llama.cpp win. No samples were excluded. Full raw paired evidence
+and source/binary identities are in the tracked receipt; 576 full-logit binary
+captures and diagnostic logs are in the resolved Git common directory.
+Implementation/evidence checkpoint `3f0904d6` received one fresh host-native
+comprehensive review (`codex review --commit 3f0904d6`): CLEAN, findings none.
+The review envelope is retained in the resolved Git common directory. The
+local checkpoint is complete; no publication or merge is claimed.
+
+The subsequent decode diagnostic above completed the Q6_K projection and
+dispatch census. It did not establish a new Q6_K kernel gain or per-shader
+timing. The top section owns the current next action.
+
+## Final-prefill output / Q6_K checkpoint (2026-09-26)
+
+Branch `agent/native-metal-ffn-integration`, baseline `1ae5824a`. Implemented
+`ALIGN_LLM_PREFILL_FINAL_LOGITS=1` by default; `0` restores all chunk outputs.
+Nonfinal prefill executes every recurrent/KV state root and its producers, while
+omitting the final layer's unused output tail and vocabulary head/readback.
+Both generation paths and fixed 64-hex graph identities include the selection.
+Read `docs/final-prefill-q6-trial.md` and its two raw receipts before resuming.
+
+Completed: managed build, formatting, strict Python boundary, configuration
+refusals, 2B/0.8B generation and HTTP/SSE owners. Same-width old/new captures
+at 128/256/512 have zero difference across 71,516,160 floats; seven graphs have
+588 identical full resident-state hashes. Cross-width differences remain
+separate. Default-1/explicit-0 qualification also passes. Metal peak allocation
+is unchanged; nonfinal MUL_MAT falls 187 -> 181 with all state writes retained.
+
+Measured: five alternating worker old/new/pinned-llama groups and same-binary
+HTTP/SSE OFF/ON pairs, all samples retained. At 700/64 paired median request
+improvements are 2.44% HTTP, 1.45% SSE, first-token 4.78%, all five pairs positive.
+1536/1 improves 6.12% HTTP and 5.21% SSE. Worker 330/64 is slower; 200/32 SSE
+has a slower marginal median despite a positive paired median. Desktop activity
+is material. Adopt for the qualified long-input benefit, exact output/state,
+unchanged allocation and low maintenance cost; no universal gain or llama win.
+
+Actual-weight/activation native Q6_K paired-load experiment is complete: full
+vocabulary and 257-row-tail checks are exact, but every five-pair range crosses
+zero. Keep the independent probe/evidence, do not integrate this kernel.
+Implementation/evidence checkpoint `1920cb04` received one fresh independent
+comprehensive review: CLEAN, findings none. Source/artifact identities, all
+paired statistics and complete state-plane records were independently checked;
+the review envelope is retained in the resolved Git common directory. The local
+checkpoint is complete; no publication or merge is claimed. No new Align gap.
+
+Next native work: attribute the Q6_K output projection inside real-model decode
+and calibrate attainable device-read bandwidth before a different work/layout
+mapping; alternatively test bounded tiled gate/up/SiLU/down fusion. Neither is
+implemented. Synchronous-upload memory-pressure qualification remains deferred;
+this trial fixes upload to legacy. CPU/CUDA Qwen3.5 and Gemma semantic admission
+remain deferred under existing restrictions. Older sections below retain their
+historical next actions and decisions; this section owns current execution state.
+
+## Synchronous upload / prefill checkpoint (2026-09-26)
+
+Branch `agent/native-metal-ffn-integration`, baseline `4f56f410`. Implemented
+independently selectable synchronous weight upload and 128/256/512 prefill.
+Defaults remain legacy (`0`/`128`). Align owns policy, loading and graph/state
+control; ggml owns buffers and kernels. No mmap, changed weights or Python
+product dependency. Read `docs/shared-upload-prefill-trial.md` and its raw
+receipt before resuming. All intentional changes belong to this local trial.
+
+Completed: managed build, formatting, strict Python boundary, device cleanup/
+allocation faults, direct upload bounds/failure/isolation owner, real 512/513
+attention owner, 2B defaults/direct generation, 2B/0.8B combined generation and
+HTTP/SSE, 0.8B direct/256 generation, invalid environment refusal, and a private
+Metal legacy/direct 31/3 compatibility check. Direct upload equals all 134 raw
+logit vectors; batch/combined equal 128 token-aligned vectors across repeated
+64/16, 200/32, 700/64, 64/16 requests, maximum difference zero. Six versus one
+nonfinal prefill vectors occur at different positions and remain retained.
+
+Measured: startup improves in all 15 alternating pairs, workload medians about
+1.00–1.08 s -> 0.49–0.58 s. Pre-first-graph Metal commands fall 1369 -> 1 and
+actual shim disassembly confirms the direct branch. Warm inference improvement
+is not established. Batch-only 200/32 shows a small mixed result; the 330/64
+campaign has a slower median. Combined 700/64 is slower in 4/5 HTTP and 3/5 SSE
+pairs. Desktop activity is material; no samples were excluded.
+
+Metal resource maxima are equal for legacy/direct at 200/32 (1,290,174,464 bytes),
+but OS footprint at 700/16 is 147.1M versus 1.3G after CPU initialization. Do not
+infer equal system RAM pressure from the allocation count. Both knobs stay
+experimental; the result is a startup improvement, not a decode victory.
+
+Next: qualify CPU/GPU shared-page residency/accounting under memory pressure;
+then skip unused nonfinal-prefill vocabulary projections/readbacks while retaining
+all recurrent/KV updates; continue actual Q6_K output-projection/whole-FFN decode
+attribution. These follow-ons are not implemented. CPU/CUDA native Qwen3.5 and
+full private-Metal qualification remain deferred. Request 122 records the
+non-blocking imported-constant initializer gap; direct references work.
+
+The local implementation/evidence checkpoint is `b7ef9bd2`. One fresh comprehensive
+review found one P2 in the independent HTTP measurement tool: empty cases could
+report COMPLETE. Accepted and repaired with upfront list/pair validation and
+`test-host-reuse-config` (18 refusals plus default/recorded acceptance). Runtime
+code and the valid measured campaign are unchanged; strict Python boundary and
+diff checks pass. Review envelope and finding disposition are retained in the
+resolved Git common directory. No valid finding remains unresolved. The local
+checkpoint is complete; no publication or merge claimed.
+
+## Retained host-work checkpoint (2026-09-26)
+
+Branch `agent/native-metal-ffn-integration`, implementation/evidence `a00052d6`,
+baseline `6124e90b`.
+Implemented exact decode-key reuse by parity/attention width and per-session
+stream scalar/position/mask/logits scratch. No math, state-reset, device-command
+or synchronization change. Added independent HTTP/SSE measurement and host/Metal
+trace tools. Read `docs/host-reuse-diagnosis.md` and its raw receipt before work.
+
+Verification: `gmake build`, `gmake fmt`, strict Python boundary, and both
+`run-qwen35-generation-smoke` / `run-openai-serving-smoke` on 2B and 0.8B pass.
+Old/new worker, HTTP/SSE and diagnostic outputs agree exactly. Decode crosses
+width 256 and repeated requests return from width 512 to 256. Binary and call
+traces confirm removed key allocations/copies and stream logits zero filling.
+
+Result: 200/32 outside-graph median 20.96 -> 17.97 ms; all five paired outside-
+graph reductions are positive, but whole-request improvement is unestablished.
+HTTP 200/64 SSE is slower in all five pairs (paired median -0.17%); retain this
+regression observation before publication/adoption. Per-decode GPU command-buffer
+union is 27.69 ms within a 28.33 ms graph call on the new binary. This does not
+identify individual shader time or memory stalls. Retain as local lower-host-work
+implementation, not a throughput win; native FFN fusion remains default-off.
+
+One fresh independent comprehensive review of `a00052d6` against `6124e90b`
+completed CLEAN, findings none; no repair was needed. Its envelope is retained
+in the resolved Git common directory under `reviews/host-reuse-a00052d6.json`.
+
+Completed pinned llama.cpp binary follow-up: inspected actual driver/libllama/
+Metal host assembly and runtime paths. Mapped weights avoid Align's upload
+sequence; reference prefill uses one 200-token batch versus Align 128+72.
+`llama_decode` returns asynchronously and waits in `llama_get_logits`; complete
+readiness is about 27.06 ms, not the 1.38 ms decode return. GPU interval union
+is 26.42 ms versus Align 27.80 ms in diagnostic runs; no shader-level causal
+claim. See `docs/llama-binary-comparison.md`; local raw diagnostics reside in the
+resolved Git common directory under `diagnostics/llama-binary-2026-09-26`.
+
+Next: controlled larger-prefill-batch trial; separately mapped/host-visible
+weight loading and cold/warm first use; then real Q6_K output-projection/whole-
+FFN attribution of the remaining decode GPU gap. Do not
+repeat host tweaks or launch-size sweeps without new evidence. Request 121 records
+the non-blocking resource/sibling-view compiler limitation. CPU/CUDA native
+Qwen3.5 and Gemma semantic admission remain deferred under existing restrictions.
+This local checkpoint is complete; no unfinished implementation or unrelated
+files remain. No publication or merge claimed.
+
+## Active native FFN integration (2026-09-26)
+
+Branch: `agent/native-metal-ffn-integration`, based on `ca609a41`; initial implementation
+and measurements at `d2319d03`, follow-up at `33e0e444`.
+The merged synthetic FFN probe is the starting point. The current inference
+policy in `docs/specs/gpu-runtime-performance.md` withdraws all fixed improvement
+floors and permits real-model trial integration before whole-request evidence.
+Earlier handoff sections below are historical, including their old next actions.
+
+Completed: default-off native Q4_0 gate/up/SiLU integration, actual GGUF weights
+and activation checks, 2B/0.8B generation owners, longer repeated requests, and
+five-pair local and real-request measurements. Align retains model/session/graph
+control; ggml retains allocation, command encoding and other operations.
+
+Decision: experimental only. Same-binary/bundle OFF/ON request medians (ms) are
+624.04/620.60 for 64/16 tokens, 1354.77/1399.52 for 200/32, and
+2493.16/2491.26 for 330/64. Every paired range crosses zero. No repeatable
+request improvement or faster-than-llama.cpp claim is established.
+See `docs/native-swiglu-trial.md` and its checked-in raw receipt for exact pinned
+comparisons, local results, limits and reproduction.
+
+Durable verification: `gmake build`, `gmake fmt`,
+`scripts/run-layer-forward-smoke`, native-enabled
+`scripts/run-qwen35-generation-smoke` (2B and 0.8B),
+`python3 scripts/check-python-boundary --strict`,
+`python3 scripts/measure-cuda-optimization --self-test-portable`, and
+`python3 scripts/run-gpu-session-measurement-smoke` pass. Actual-weight checks
+cover 72 tensors; local checks cover all 24 FFNs and an alternate shape/alias
+fallback. 261 full logit vectors pass the unchanged 0.01 absolute bound with
+identical greedy argmax; longer/repeated request outputs match exactly.
+The full CUDA self-test requires Linux `/proc` and was not qualified on macOS.
+
+One fresh independent comprehensive review of `d2319d03` against `ca609a41`
+completed CLEAN, findings none. No content repair was needed.
+
+Completed follow-up: four independent Q4_0 partial sums at 128 threads, plus a
+separate 64-thread probe. Four five-pair, three-workload request campaigns do not
+establish repeatable speedup. Retain four sums/128 threads as default-off for its
+reference-like reduction and zero observed numerical differences; withdraw 64.
+The original native bundle and both follow-up variants remain replayable.
+
+Follow-up verification: all 24 captured FFNs, alternate shape and alias checks,
+2B/0.8B generation owners, 261 full-logit vectors (maximum difference zero),
+48 real decode fusions, and strict Python boundary pass. Measurement tools now
+support explicit old-native comparison with `--native-control`. See
+`docs/native-swiglu-followup.md` and its raw receipt. Desktop activity limits
+small-effect interpretation; no timing samples were removed.
+
+Research expanded to Reddit, Stack Overflow, upstream PRs and Apple guidance.
+The IQ3_XXS narrow-row idle-lane fix does not apply to this Q4_0 width-2048 path.
+Next: measure the Q6_K full-vocabulary projection with real final activations and
+try its load/work mapping; then a tiled gate/up/SiLU/down consumer with bounded
+partial-output reduction. Neither is implemented. Do not continue launch-size
+sweeps without a new concrete hypothesis. The follow-up at `33e0e444` received
+one fresh independent comprehensive CLEAN review against `b1d24207`, findings
+none; no repair was needed.
+CPU/CUDA fusion and Gemma semantic admission remain explicitly deferred until
+a useful Metal specialization is demonstrated. Existing fallbacks remain.
+All current changes belong to this capability; no unrelated work was present.
+No publication/preflight or merge is claimed at this local checkpoint.
+
+## Historical checkpoints
+
+Earlier next-action and percentage-floor wording below records its dated
+checkpoint only. Current work and decisions use the topmost active checkpoint
+and the no-fixed-floor policy in `docs/specs/gpu-runtime-performance.md`.
+
 ## Active fused Metal FFN probe (2026-09-25)
 
 Branch: `agent/qwen35-metal-fusion-next`, based on merged `main` `ec34abac`
@@ -15,9 +636,10 @@ and 1.0661/0.9457 ms, with 14/15 native wins. This is not a whole-request
 result. The code and exact limits are in `scripts/bench-metal-q4-ffn.mm` and
 `docs/specs/qwen35-text.md`.
 
-Next: decide whether a real-model fused GPU seam can clear the existing 15%
-whole-request floor, with exact output and request-timing owners before any
-runtime integration. CPU/CUDA 2B and large models remain deferred.
+Historical next action, superseded by the current policy: integrate a
+reversible real-model fused GPU seam after local validation, then check exact
+output and request timing without a fixed percentage floor. CPU/CUDA 2B and
+large models remain deferred.
 
 ## Qwen3.5 2B operation-level diagnosis (2026-09-25)
 
@@ -65,7 +687,7 @@ executable runtime candidate.
 Next: run the executable pre-publication classifier with the standalone
 benchmark as owner, then publish and merge the developer benchmark. A production custom
 GPU seam would still need a winning kernel, exact end-to-end output owner,
-and the existing 15% request floor. Do not ship a K/V layout, mask-copy, or
+and paired real-request evidence under the current policy. Do not ship a K/V layout, mask-copy, or
 concurrency change from node counts alone. CPU/CUDA 2B qualification and
 large models remain deferred.
 

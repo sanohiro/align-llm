@@ -1,6 +1,7 @@
 module ggml_ffi
 
 import ggml_ffi.internal.resource
+import runtime_greedy
 
 // R4.5-EXTERNAL-BUFFER-SPIKE (`docs/specs/r4-5-external-buffer.md` sections 3.4 and 3.9). The
 // boundary package in this repository that contains an `extern` declaration or an `unsafe` block.
@@ -24,10 +25,10 @@ import ggml_ffi.internal.resource
 // carries the language-owned half of that as a recorded gap; this module is the application-side
 // answer and consumes no hypothetical surface.
 //
-// Everything above the extern block is safe: every wrapper returns a `Result` or a scalar, every
-// handle is an opaque `raw`, no view over foreign memory is ever formed, and no handle is ever
-// aggregated into a record or returned as a view. A function containing `unsafe` is inferred
-// Impure, so nothing here can enter a `par_map` — the danger stays visible and traceable.
+// Everything above the extern block is safe: wrappers return checked results or scalars. The
+// opt-in shared Metal output view is tied to its GPU owner and consumed before graph mutation;
+// its foreign pointer conversion remains in this boundary. A function containing `unsafe` is
+// inferred Impure, so nothing here can enter a `par_map`.
 
 // Section 3.4's status vocabulary, shared byte-for-byte with both C files. `0` is success; every
 // negative value maps to exactly one `R4_5_*` code in `code_for` below, which is the single place
@@ -292,6 +293,7 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_device_staging_consumed(owner: raw) -> i32
   fn align_gpu_device_staging_path_valid(owner: raw) -> i32
   fn align_gpu_device_bundle_id(owner: raw, out: slice<u8>, cap: i32) -> i32
+  fn align_gpu_device_ingraph_argmax_supported(owner: raw) -> i32
   fn align_gpu_staging_owned() -> i32
   fn align_gpu_staging_transfer(
     root: str, root_len: i64, artifact_count: i64, poison: i32,
@@ -313,6 +315,8 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_plan_finish(owner: raw) -> i32
   fn align_gpu_plan_cancel(owner: raw) -> i32
   fn align_gpu_memory_allocate(owner: raw) -> i32
+  fn align_gpu_mapped_weights_open(owner: raw, path: str, path_len: i64,
+    expected_bytes: i64) -> i32
   fn align_gpu_memory_allocated_bytes(owner: raw, field: i32) -> i64
   fn align_gpu_weight_metadata_bytes(tensor_count: i64) -> i64
   fn align_gpu_weight_allocation_bytes(
@@ -324,6 +328,7 @@ extern "C" link("align_ggml_shim") {
     ne2: i64,
     ne3: i64,
   ) -> i64
+  fn align_gpu_weight_upload_mode(owner: raw, mode: i32) -> i32
   fn align_gpu_weights_begin(owner: raw, tensor_count: i64) -> i32
   fn align_gpu_weight_add(
     owner: raw,
@@ -333,6 +338,10 @@ extern "C" link("align_ggml_shim") {
     ne1: i64,
     ne2: i64,
     ne3: i64,
+  ) -> i64
+  fn align_gpu_weight_add_mapped(
+    owner: raw, kind: i32, n_dims: i32, ne0: i64, ne1: i64, ne2: i64, ne3: i64,
+    pack_offset: i64, expected_bytes: i64,
   ) -> i64
   fn align_gpu_weight_upload(
     owner: raw, index: i64, offset: i64, data: slice<u8>, length: i64,
@@ -362,6 +371,12 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_kv_write_slot(
     owner: raw, index: i64, kind: i32, layout: i32, position: i64,
     slots: slice<u8>, out: i64, source: i64,
+  ) -> i32
+  fn align_gpu_native_state_copy_mode(owner: raw, mode: i32) -> i32
+  fn align_gpu_native_state_copy_enabled(owner: raw) -> i32
+  fn align_gpu_native_state_copy_finish(owner: raw) -> i32
+  fn align_gpu_native_state_copy_register(
+    owner: raw, kind: i32, slots: slice<u8>, source: i64, destination: i64,
   ) -> i32
   fn align_gpu_kv_write_prefix(
     owner: raw, index: i64, kind: i32, layout: i32, position: i64, width: i64,
@@ -412,6 +427,10 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_observation_state(owner: raw, field: i32) -> i64
   fn align_gpu_slot_get(owner: raw, slots: slice<u8>, index: i64,
     bytes: slice<u8>, offset: i64, size: i64) -> i32
+  fn align_gpu_slot_shared_view(owner: raw, slots: slice<u8>, index: i64,
+    expected_bytes: i64) -> raw
+  fn align_gpu_slot_neon_greedy(owner: raw, slots: slice<u8>, index: i64,
+    expected_bytes: i64) -> i64
   fn align_gpu_device_close(owner: raw) -> ()
   // R5C section 3.4. The registry's own device selection for either kind, its numeric properties,
   // its buffer type's maximum length, and its two names.
@@ -469,6 +488,8 @@ extern "C" link("align_ggml_shim") {
   fn align_ggml_op_mul(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_add(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_mul_mat(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
+  fn align_ggml_op_argmax_row(ctx: raw, slots: slice<u8>, out: i64, a: i64) -> i32
+  fn align_ggml_op_native_swiglu_gate(ctx: raw, slots: slice<u8>, out: i64, a: i64, b: i64) -> i32
   fn align_ggml_op_attention_scores(ctx: raw, slots: slice<u8>, out: i64, k: i64, q: i64) -> i32
   fn align_ggml_op_attention_mask(ctx: raw, slots: slice<u8>, out: i64, source: i64) -> i32
   fn align_ggml_op_flash_attention(ctx: raw, slots: slice<u8>, out: i64,
@@ -674,6 +695,12 @@ pub fn gpu_device_bundle_id(borrow owner: GpuDevice) -> string {
   }
 }
 
+pub fn gpu_ingraph_argmax_supported(borrow owner: GpuDevice) -> bool {
+  unsafe {
+    return align_gpu_device_ingraph_argmax_supported(resource.raw(resource.borrow(owner))) == 1
+  }
+}
+
 pub fn gpu_staging_owned() -> bool {
   unsafe {
     return align_gpu_staging_owned() == 1
@@ -810,6 +837,18 @@ pub fn gpu_memory_allocate(borrow owner: GpuDevice) -> Result<(), Fault> {
   }
 }
 
+pub fn gpu_mapped_weights_open(borrow owner: GpuDevice, path: str,
+  expected_bytes: i64) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if path.len() < 1 || expected_bytes < 1 { return Err(fault("CONFIG", "mapped_weights")) }
+  unsafe {
+    status := align_gpu_mapped_weights_open(
+      resource.raw(resource.borrow(owner)), path, path.len(), expected_bytes) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
 pub fn gpu_memory_allocated_bytes(borrow owner: GpuDevice, field: i64) -> i64 {
   if field < GPU_MEMORY_HOST_TOTAL || field > GPU_MEMORY_LEGACY_CACHE {
     return -1
@@ -848,6 +887,16 @@ pub fn gpu_weight_allocation_bytes(
   }
 }
 
+pub fn gpu_weight_upload_mode(borrow owner: GpuDevice, synchronous: bool) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  mode := if synchronous { 1 as i32 } else { 0 as i32 }
+  unsafe {
+    status := align_gpu_weight_upload_mode(resource.raw(resource.borrow(owner)), mode) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
 pub fn gpu_weights_begin(
   borrow owner: GpuDevice,
   tensor_count: i64,
@@ -883,6 +932,26 @@ pub fn gpu_weight_add(
       ne1,
       ne2,
       ne3,
+    )
+    if index < 0 { return Err(gpu_fault_for(index)) }
+    return Ok(index)
+  }
+}
+
+pub fn gpu_weight_add_mapped(
+  borrow owner: GpuDevice, kind: i64, n_dims: i64,
+  ne0: i64, ne1: i64, ne2: i64, ne3: i64,
+  pack_offset: i64, expected_bytes: i64,
+) -> Result<i64, Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind < 0 || kind > 2147483647 || n_dims < 1 || n_dims > 4
+    || pack_offset < 0 || expected_bytes < 1 {
+    return Err(fault("CONFIG", "mapped_weight_shape"))
+  }
+  unsafe {
+    index := align_gpu_weight_add_mapped(
+      resource.raw(resource.borrow(owner)), kind as i32, n_dims as i32,
+      ne0, ne1, ne2, ne3, pack_offset, expected_bytes,
     )
     if index < 0 { return Err(gpu_fault_for(index)) }
     return Ok(index)
@@ -1066,6 +1135,48 @@ pub fn gpu_kv_write_slot(
     status := align_gpu_kv_write_slot(
       resource.raw(resource.borrow(owner)), index, kind as i32, layout as i32,
       position, slots, out, source,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_native_state_copy_select(borrow owner: GpuDevice, enabled: bool) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_native_state_copy_mode(
+      resource.raw(resource.borrow(owner)), if enabled { 1 } else { 0 },
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_native_state_copy_enabled(borrow owner: GpuDevice) -> bool {
+  unsafe {
+    return align_gpu_native_state_copy_enabled(resource.raw(resource.borrow(owner))) == 1
+  }
+}
+
+pub fn gpu_native_state_copy_finish(borrow owner: GpuDevice) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_SYNCHRONIZE)
+  unsafe {
+    status := align_gpu_native_state_copy_finish(resource.raw(resource.borrow(owner))) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_native_state_copy_register(borrow owner: GpuDevice, kind: i64,
+  borrow slots: slice<u8>, source: i64, destination: i64,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind != GPU_GRAPH_DECODE && kind != GPU_GRAPH_DECODE_ALT {
+    return Err(fault("CONFIG", "graph_kind"))
+  }
+  unsafe {
+    status := align_gpu_native_state_copy_register(
+      resource.raw(resource.borrow(owner)), kind as i32, slots, source, destination,
     ) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
@@ -1847,6 +1958,63 @@ pub fn gpu_slot_get(borrow owner: GpuDevice, borrow slots: slice<u8>, index: i64
   }
 }
 
+pub fn gpu_slot_shared_greedy(borrow owner: GpuDevice, borrow slots: slice<u8>,
+  index: i64, expected_bytes: i64, label: str,
+) -> Result<i64, Fault> {
+  gpu_failure_activity(GPU_STAGE_READBACK)
+  if expected_bytes < 4 || expected_bytes > 2147483647 {
+    gpu_note_failure(GPU_STATUS_CONFIG, GPU_STAGE_READBACK)
+    return Err(fault("CONFIG", label))
+  }
+  unsafe {
+    ptr := align_gpu_slot_shared_view(resource.raw(resource.borrow(owner)), slots,
+      index, expected_bytes)
+    if handle_absent(ptr) {
+      gpu_note_failure(GPU_STATUS_UNSUPPORTED, GPU_STAGE_READBACK)
+      return Err(fault("UNSUPPORTED", label))
+    }
+    view: slice<u8> := resource.view_from_raw(resource.borrow(owner), ptr,
+      expected_bytes) else {
+      gpu_note_failure(GPU_STATUS_CONFIG, GPU_STAGE_READBACK)
+      return Err(fault("CONFIG", label))
+    }
+    match runtime_greedy.greedy(view, -1) {
+      Ok(token) => { return Ok(token) },
+      Err(_) => {
+        gpu_note_failure(GPU_STATUS_COMPUTE, GPU_STAGE_READBACK)
+        return Err(fault("SHAPE", label))
+      },
+    }
+  }
+}
+
+pub fn gpu_slot_neon_greedy(borrow owner: GpuDevice, borrow slots: slice<u8>,
+  index: i64, expected_bytes: i64, label: str,
+) -> Result<i64, Fault> {
+  gpu_failure_activity(GPU_STAGE_READBACK)
+  if expected_bytes < 4 || expected_bytes > 4194304 || expected_bytes % 4 != 0 {
+    gpu_note_failure(GPU_STATUS_CONFIG, GPU_STAGE_READBACK)
+    return Err(fault("CONFIG", label))
+  }
+  unsafe {
+    token := align_gpu_slot_neon_greedy(resource.raw(resource.borrow(owner)), slots,
+      index, expected_bytes)
+    if token == -1 {
+      gpu_note_failure(GPU_STATUS_UNSUPPORTED, GPU_STAGE_READBACK)
+      return Err(fault("UNSUPPORTED", label))
+    }
+    if token == -2 {
+      gpu_note_failure(GPU_STATUS_COMPUTE, GPU_STAGE_READBACK)
+      return Err(fault("SHAPE", label))
+    }
+    if token < 0 || token >= expected_bytes / 4 {
+      gpu_note_failure(GPU_STATUS_CONFIG, GPU_STAGE_READBACK)
+      return Err(fault("CONFIG", label))
+    }
+    return Ok(token)
+  }
+}
+
 pub fn slot_get(
   borrow slots: slice<u8>,
   index: i64,
@@ -1937,6 +2105,21 @@ pub fn op_mul_mat(
   ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
   unsafe {
     return r5_result(align_ggml_op_mul_mat(ctx, slots, out, a, b) as i64, label)
+  }
+}
+
+pub fn op_argmax_row(ctx: raw, borrow slots: slice<u8>, out: i64, a: i64,
+  label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_argmax_row(ctx, slots, out, a) as i64, label)
+  }
+}
+
+// Request a device fusion while retaining ordinary matrix multiplication fallback.
+pub fn op_native_swiglu_gate(
+  ctx: raw, borrow slots: slice<u8>, out: i64, a: i64, b: i64, label: str) -> Result<(), Fault> {
+  unsafe {
+    return r5_result(align_ggml_op_native_swiglu_gate(ctx, slots, out, a, b) as i64, label)
   }
 }
 

@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "METAL_LINEAR_COPY_SHADER_ATTRIBUTION",
+  "instrument": "Metal System Trace + Metal GPU Counters",
+  "sampling_note": "PID-filtered Shader Timeline interval sums; instrumented attribution, not dispatch duration or marginal request gain",
+  "arms": [
+    {
+      "arm": "control",
+      "pid": 26437,
+      "bundle_id": "a414d11a2fc9bd437550e35666c3115bf7253d0fecbce1b8069d58871e508527",
+      "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+      "requests": [
+        {
+          "prompt_tokens": 200,
+          "completion_tokens": 32,
+          "total_tokens": 232
+        },
+        {
+          "prompt_tokens": 200,
+          "completion_tokens": 32,
+          "total_tokens": 232
+        }
+      ],
+      "worker_shader_rows": 9642,
+      "worker_sample_duration_ns": 2414167915,
+      "f32_copy_sample_duration_ns": 199921918,
+      "f32_copy_sample_rows": 1372,
+      "f32_copy_shader_names": [
+        "kernel_cpy_f32_f32 (18)",
+        "kernel_cpy_f32_f32 (6)"
+      ]
+    },
+    {
+      "arm": "candidate",
+      "pid": 26623,
+      "bundle_id": "79ec2cf34b45bd90239df29e6944c6c306ca32b489359fe639d138efb7e56ba8",
+      "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+      "requests": [
+        {
+          "prompt_tokens": 200,
+          "completion_tokens": 32,
+          "total_tokens": 232
+        },
+        {
+          "prompt_tokens": 200,
+          "completion_tokens": 32,
+          "total_tokens": 232
+        }
+      ],
+      "worker_shader_rows": 8355,
+      "worker_sample_duration_ns": 2120823607,
+      "f32_copy_sample_duration_ns": 11227690,
+      "f32_copy_sample_rows": 322,
+      "f32_copy_shader_names": [
+        "kernel_cpy_f32_f32 (18)"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,147 @@
+--- a/ggml/src/ggml-metal/ggml-metal-ops.cpp
++++ b/ggml/src/ggml-metal/ggml-metal-ops.cpp
+@@ -86,6 +86,13 @@
+         }
+
+         return ggml_can_fuse_ext(gf, idxs.data() + i0, ops, n_ops);
++    }
++
++    bool can_fuse_swiglu(int i) const {
++        if (!use_fusion || i + 3 > n_nodes()) return false;
++        const ggml_op ops[] = {GGML_OP_MUL_MAT, GGML_OP_MUL_MAT, GGML_OP_GLU};
++        const int outputs[] = {idxs[i + 2]};
++        return ggml_can_fuse_subgraph_ext(gf, idxs.data() + i, 3, ops, outputs, 1);
+     }
+
+     ggml_metal_device_t  dev;
+@@ -2296,7 +2303,65 @@
+     return 1;
+ }
+
++// Align opts in at graph construction. This specialization owns only a device
++// operation, never model semantics, graph scheduling or generation.
++static bool align_native_swiglu(ggml_metal_op_t ctx, int idx) {
++    auto gate = ctx->node(idx);
++    if (strcmp(gate->name, "align_native_q40_swiglu") != 0 ||
++        !ctx->can_fuse_swiglu(idx)) return false;
++    auto up = ctx->node(idx + 1);
++    auto out = ctx->node(idx + 2);
++    auto wg = gate->src[0];
++    auto wu = up->src[0];
++    auto x = gate->src[1];
++    if (!wg || !wu || !x || up->src[1] != x ||
++        out->src[0] != gate || out->src[1] != up ||
++        ggml_get_glu_op(out) != GGML_GLU_OP_SWIGLU ||
++        ggml_get_op_params_i32(out, 1) != 0 ||
++        wg->type != GGML_TYPE_Q4_0 || wu->type != GGML_TYPE_Q4_0 ||
++        x->type != GGML_TYPE_F32 || out->type != GGML_TYPE_F32 ||
++        !ggml_is_contiguous(wg) || !ggml_is_contiguous(wu) ||
++        !ggml_is_contiguous(x) || !ggml_is_contiguous(out) ||
++        !ggml_are_same_shape(wg, wu) || !ggml_is_matrix(wg) ||
++        !ggml_is_vector(x) || !ggml_is_vector(out) ||
++        wg->ne[0] != x->ne[0] || wg->ne[1] != out->ne[0] ||
++        wg->ne[0] % 32 != 0 || wg->ne[1] % 4 != 0 ||
++        wg->ne[0] > 65536 || wg->ne[1] > 65536) return false;
++    // The unfused allocator may recycle the input after the two projections.
++    // A fused dispatch must not read and write overlapping GPU storage.
++    const uintptr_t output_begin = reinterpret_cast<uintptr_t>(out->data);
++    for (const auto source : {wg, wu, x}) {
++        // Metal can expose overlapping views of a large backing allocation as
++        // different MTLBuffer objects. Compare backing addresses, not object IDs.
++        const uintptr_t input_begin = reinterpret_cast<uintptr_t>(source->data);
++        if (input_begin <= output_begin
++                ? output_begin - input_begin < ggml_nbytes(source)
++                : input_begin - output_begin < ggml_nbytes(out)) return false;
++    }
++    auto pipeline = ggml_metal_library_compile_pipeline(ctx->lib,
++        "align_q40_gate_up_swiglu", "align_q40_gate_up_swiglu", nullptr);
++    GGML_ASSERT(pipeline.pipeline);
++    // Account for both branches' reads and the new output before dispatch.
++    // The outer encoder already checked gate. Check the other branch and
++    // output against earlier dispatches, retaining every necessary barrier.
++    if (!ggml_metal_op_concurrency_check(ctx, up) ||
++        !ggml_metal_op_concurrency_check(ctx, out)) {
++        ggml_metal_op_concurrency_reset(ctx);
++    }
++    uint32_t width = wg->ne[0], hidden = wg->ne[1];
++    ggml_metal_encoder_set_pipeline(ctx->enc, pipeline);
++    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(wg), 0);
++    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(wu), 1);
++    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(x), 2);
++    ggml_metal_encoder_set_buffer(ctx->enc, ggml_metal_get_buffer_id(out), 3);
++    ggml_metal_encoder_set_bytes(ctx->enc, &width, sizeof(width), 4);
++    ggml_metal_encoder_set_bytes(ctx->enc, &hidden, sizeof(hidden), 5);
++    ggml_metal_encoder_dispatch_threadgroups(ctx->enc, (hidden * 8 + 127) / 128, 1, 1, 128, 1, 1);
++    return true;
++}
++
+ int ggml_metal_op_mul_mat(ggml_metal_op_t ctx, int idx) {
++    if (align_native_swiglu(ctx, idx)) return 3;
+     ggml_tensor * op = ctx->node(idx);
+
+     ggml_metal_library_t lib = ctx->lib;
+--- a/ggml/src/ggml-metal/ggml-metal.metal
++++ b/ggml/src/ggml-metal/ggml-metal.metal
+@@ -11885,3 +11885,62 @@
+         *(device float *) (dst + i0*args.nb_d0 + idst*args.nb_d1 + it*args.nb_d2) = result[idst];
+     }
+ }
++
++#include <metal_stdlib>
++using namespace metal;
++
++struct AlignQ40Block { half scale; uchar packed[16]; };
++
++inline float align_q40_dot(device const AlignQ40Block * weight, float sum_x,
++                     thread float * scaled_x, uint half_lane) {
++    device const ushort * packed = (device const ushort *)weight->packed + half_lane * 4;
++    float accum[4] = {0.0f, 0.0f, 0.0f, 0.0f};
++    for (uint i = 0; i < 4; ++i) {
++        ushort q = packed[i];
++        accum[0] += scaled_x[i * 2] * float(q & 0x000f);
++        accum[1] += scaled_x[i * 2 + 1] * float(q & 0x0f00);
++        accum[2] += scaled_x[i * 2 + 8] * float(q & 0x00f0);
++        accum[3] += scaled_x[i * 2 + 9] * float(q & 0xf000);
++    }
++    return float(weight->scale) * (sum_x * -8.0f + accum[0] + accum[1] + accum[2] + accum[3]);
++}
++
++kernel void align_q40_gate_up_swiglu(
++    device const AlignQ40Block * gate_weight [[buffer(0)]],
++    device const AlignQ40Block * up_weight [[buffer(1)]],
++    device const float * input [[buffer(2)]],
++    device float * gated [[buffer(3)]],
++    constant uint & width [[buffer(4)]],
++    constant uint & hidden [[buffer(5)]],
++    uint tid [[thread_position_in_grid]]) {
++    uint row = (tid / 32) * 4;
++    if (row >= hidden) return;
++    uint lane = tid % 32;
++    uint block_lane = lane / 2;
++    uint half_lane = lane % 2;
++    float gate[4] = {0}, up[4] = {0};
++    for (uint block = block_lane; block < width / 32; block += 16) {
++        float scaled_x[16], sum_x = 0.0f;
++        uint at = block * 32 + half_lane * 8;
++        for (uint i = 0; i < 8; i += 2) {
++            float a = input[at + i], b = input[at + i + 1];
++            float c = input[at + i + 16], d = input[at + i + 17];
++            sum_x += a + b + c + d;
++            scaled_x[i] = a;
++            scaled_x[i + 1] = b / 256.0f;
++            scaled_x[i + 8] = c / 16.0f;
++            scaled_x[i + 9] = d / 4096.0f;
++        }
++        for (uint r = 0; r < 4; ++r) {
++            gate[r] += align_q40_dot(gate_weight + (row + r) * (width / 32) + block,
++                               sum_x, scaled_x, half_lane);
++            up[r] += align_q40_dot(up_weight + (row + r) * (width / 32) + block,
++                             sum_x, scaled_x, half_lane);
++        }
++    }
++    for (uint r = 0; r < 4; ++r) {
++        float g = simd_sum(gate[r]), u = simd_sum(up[r]);
++        if (lane == 0) gated[row + r] = (g / (1.0f + exp(-g))) * u;
++    }
++}
++

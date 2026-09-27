@@ -1,8 +1,76 @@
 # Python execution-boundary audit
 
+`scripts/diagnose-qwen35-decode-metal` is `BENCHMARK_OR_MEASUREMENT`: an
+independent Darwin/Metal diagnostic caller. It compiles the checked-in C/Metal
+interposers, checks fixed 200-token input IDs, runs explicit Align and pinned
+llama.cpp binaries, and retains dispatch and intentionally invalid-output
+projection-pruning evidence. It never supplies product inference logic or
+participates in normal startup. Its temporary pruning branch cannot be used
+as a correctness or shipping path.
+
+The final-chunk logits trial extends the existing independent measurement tools
+with an explicit per-arm output policy, and the capture oracle with explicit
+final-only capture alignment. Their classifications remain unchanged; neither
+implements model computation. Raw intermediate baseline vectors remain retained.
+The final-layer row trial adds an explicit per-arm `final_ffn_row` flag to those
+same independent measurement callers. Python still does not select, build or
+execute the product graph.
+
+`scripts/measure-host-reuse` is `BENCHMARK_OR_MEASUREMENT`: an independent
+HTTP/SSE caller compares explicit native binaries, checks exact output and token
+counts, and retains alternating timing samples. Explicit per-arm upload/batch/mapped-weight settings and optional larger prompt cases support the controlled trials. It never supplies inference
+logic or participates in product startup. Workload collections are validated before launching servers.
+The shared-logits setting only selects an explicit native trial arm; Python
+never reads a product logit or chooses a token.
+The NEON greedy setting also selects only an explicit native trial arm; the
+native numeric kernel and Align generation own every inference decision.
+The graph-greedy setting likewise selects only a native trial arm for HTTP/SSE
+measurement; no Python code reads logits or chooses tokens.
+`scripts/test-host-reuse-config` is `CI_OR_DEVELOPER_TOOL`: it checks measurement-input refusal without loading a model or starting a server.
+
 `scripts/test-development-preflight` remains `BUILD_OR_DEVELOPER_TOOL`; its hosted
 20-minute hosted and installed-profile 15-minute timeout assertions validate publication
 automation and do not enter normal product execution.
+
+`scripts/gpu_backend_recipe.py` remains `CI_OR_DEVELOPER_TOOL`; the optional
+native SwiGLU, in-graph argmax, Metal adjacent-range, and contiguous F32 copy
+patches are build inputs, retained with their digests, never Python inference
+dependencies.
+`scripts/run-prefix-ttft`, `scripts/run-decode-step` and
+`scripts/run-moe-decode-step` retain their independent qualification/measurement
+roles; latency is reported for assessment without a fixed shipping percentage.
+
+`scripts/measure-cuda-optimization` and `scripts/run-gpu-session-measurement`
+remain `BENCHMARK_OR_MEASUREMENT`; valid evidence now reports assessment required,
+paired changes and wins instead of a percentage-based adoption verdict.
+
+`scripts/measure-native-swiglu` is `BENCHMARK_OR_MEASUREMENT`: it launches
+native products/reference executables, captures timing and checks output/counts.
+It also checks the native arms' exact prompt token IDs before timing.
+Its optional graph-greedy setting only selects a native Align/Metal trial arm;
+the script never chooses a product token or builds a model graph.
+Per-arm upload/batch/mapped-weight environment, first-request timing and optional uninstrumented wall-only runs remain independent measurement inputs; expected graph counts follow the recorded batch width.
+Its shared-logits setting remains a measurement input to explicit native
+binaries, outside normal product execution.
+The NEON greedy setting is likewise an independent measurement input and does
+not move token selection into Python.
+The Metal private-buffer setting selects the pinned backend's existing storage
+mode per explicit measurement arm before session construction; it does not add a
+Python inference path or change the production default.
+Its optional `--native-control` compares two explicit native developer builds
+without changing the product interface. `--native-disabled` fixes both builds
+to the unfused path for host-only comparisons. It is never imported or launched by product execution.
+
+`scripts/measure-metal-worker-footprint` is `BENCHMARK_OR_MEASUREMENT`: it
+samples macOS process footprint and RSS for explicit resident Metal bundles
+after fixed native requests. It compares startup and memory observations but
+does not participate in inference, choose tokens or treat process footprint
+as total GPU memory.
+
+`scripts/check-native-captures` is `INDEPENDENT_ORACLE`: it verifies captured
+weights against GGUF offsets and compares paired F32 logits with the predeclared
+existing 0.01 absolute bound and identical greedy argmax. It never supplies
+product state or changes acceptance tolerances. Explicit request/chunk metadata can align final-prefill and decode vectors across different prefill schedules; raw intermediate captures remain retained.
 
 ## Current cutover checkpoint (2026-09-13)
 

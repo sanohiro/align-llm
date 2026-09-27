@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "QWEN35_LINEAR_COPY_BINARY_COMPARISON",
+  "bundles": {
+    "discovery": {
+      "bundle_id": "8ac92940dcd0fa69d09676796bde28af07bb07cd2895ac7445e959f841ad32ca",
+      "plugin_sha256": "a5a9a79fee51e8601378ad68503621be3e554be41e99b081a96ba37616f246b8",
+      "patch_sha256": "91d1de81a9ef63076fbd90d309766636c6529c6951cdc03d962b187686a2e798",
+      "core_sha256": {
+        "libggml-base.0.dylib": "3ef67ab4b0d4f27ce3d6391e5d305e03b7de475c4abdbcbcf89e77672339c7a8",
+        "libggml-base.dylib": "3ef67ab4b0d4f27ce3d6391e5d305e03b7de475c4abdbcbcf89e77672339c7a8",
+        "libggml.0.dylib": "4c6c9b3bc6c50a0aab339a1f3d99a6d51b9a13ff0a711d2f8abf316c5a1b9d3c",
+        "libggml.dylib": "4c6c9b3bc6c50a0aab339a1f3d99a6d51b9a13ff0a711d2f8abf316c5a1b9d3c"
+      }
+    },
+    "final": {
+      "bundle_id": "79ec2cf34b45bd90239df29e6944c6c306ca32b489359fe639d138efb7e56ba8",
+      "plugin_sha256": "4927ff8a5242aca83ad2703100da4ad3adff3ed0b3c0c6ef12bda250e7f1b5f0",
+      "patch_sha256": "91d1de81a9ef63076fbd90d309766636c6529c6951cdc03d962b187686a2e798",
+      "core_sha256": {
+        "libggml-base.0.dylib": "3ef67ab4b0d4f27ce3d6391e5d305e03b7de475c4abdbcbcf89e77672339c7a8",
+        "libggml-base.dylib": "3ef67ab4b0d4f27ce3d6391e5d305e03b7de475c4abdbcbcf89e77672339c7a8",
+        "libggml.0.dylib": "4c6c9b3bc6c50a0aab339a1f3d99a6d51b9a13ff0a711d2f8abf316c5a1b9d3c",
+        "libggml.dylib": "4c6c9b3bc6c50a0aab339a1f3d99a6d51b9a13ff0a711d2f8abf316c5a1b9d3c"
+      }
+    },
+    "clean_final": {
+      "bundle_id": "8467e3decec541f6d4b637df4cede3c7ca6e4981b9ac07eb3f42e2f88d3a03b8",
+      "plugin_sha256": "71975f50d8662ced25ed18d33bf11de5c73530eada22e03be558a77d217e9838",
+      "patch_sha256": "5ecb87bb7e2cca3fa2135ec1fb04443fe45d7fe80952e436856242a63b4e4abc",
+      "core_sha256": {
+        "libggml-base.0.dylib": "3ef67ab4b0d4f27ce3d6391e5d305e03b7de475c4abdbcbcf89e77672339c7a8",
+        "libggml-base.dylib": "3ef67ab4b0d4f27ce3d6391e5d305e03b7de475c4abdbcbcf89e77672339c7a8",
+        "libggml.0.dylib": "4c6c9b3bc6c50a0aab339a1f3d99a6d51b9a13ff0a711d2f8abf316c5a1b9d3c",
+        "libggml.dylib": "4c6c9b3bc6c50a0aab339a1f3d99a6d51b9a13ff0a711d2f8abf316c5a1b9d3c"
+      }
+    }
+  },
+  "sections": [
+    {
+      "name": "__TEXT,__text",
+      "bytes": 119720,
+      "same": true,
+      "discovery_sha256": "6aac92946a2205f921e955ecb4636225e913938775a13ea4b7fb5b628a594e78",
+      "final_sha256": "6aac92946a2205f921e955ecb4636225e913938775a13ea4b7fb5b628a594e78",
+      "clean_final_sha256": "6aac92946a2205f921e955ecb4636225e913938775a13ea4b7fb5b628a594e78",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__TEXT,__stubs",
+      "bytes": 1104,
+      "same": true,
+      "discovery_sha256": "3911921eb1b2501c0101e1a5254fbb0c86b42c6f8d8d6fe7d895ec0d7c1b126c",
+      "final_sha256": "3911921eb1b2501c0101e1a5254fbb0c86b42c6f8d8d6fe7d895ec0d7c1b126c",
+      "clean_final_sha256": "3911921eb1b2501c0101e1a5254fbb0c86b42c6f8d8d6fe7d895ec0d7c1b126c",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__TEXT,__objc_stubs",
+      "bytes": 2560,
+      "same": true,
+      "discovery_sha256": "017c723e2dc68dbf46436ff91c6a0cd401beb7232d3f6181239fc5d6c46de2e3",
+      "final_sha256": "017c723e2dc68dbf46436ff91c6a0cd401beb7232d3f6181239fc5d6c46de2e3",
+      "clean_final_sha256": "017c723e2dc68dbf46436ff91c6a0cd401beb7232d3f6181239fc5d6c46de2e3",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__TEXT,__gcc_except_tab",
+      "bytes": 668,
+      "same": true,
+      "discovery_sha256": "598aceb94bdc363fa7e1321af5e01a7ff065f663cea1a4607487a078ab2b267c",
+      "final_sha256": "598aceb94bdc363fa7e1321af5e01a7ff065f663cea1a4607487a078ab2b267c",
+      "clean_final_sha256": "598aceb94bdc363fa7e1321af5e01a7ff065f663cea1a4607487a078ab2b267c",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__TEXT,__const",
+      "bytes": 920,
+      "same": true,
+      "discovery_sha256": "2e0925576a944cc7b6fb2f412d296331085ce586736c8e55ee42991646479c14",
+      "final_sha256": "2e0925576a944cc7b6fb2f412d296331085ce586736c8e55ee42991646479c14",
+      "clean_final_sha256": "2e0925576a944cc7b6fb2f412d296331085ce586736c8e55ee42991646479c14",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__TEXT,__cstring",
+      "bytes": 13593,
+      "same": false,
+      "discovery_sha256": "13297af5b924aac6093756e3924936b21016bf3e73e0c3dd2bc6e6be2cd88bae",
+      "final_sha256": "d50950caf1bfcc9f40504f5b7c0f5565e9cba9e815d193b9f1d56594bc389477",
+      "clean_final_sha256": "35f1da5f894601a458ba341a25392c4465460363df2ad54496cec1f0cb57647d",
+      "same_as_measured_final": false
+    },
+    {
+      "name": "__TEXT,__objc_methname",
+      "bytes": 1713,
+      "same": true,
+      "discovery_sha256": "6b8aaa4e6d01e27237a8bb72d31d2376292a6d6a310f85e1e018d2c345199440",
+      "final_sha256": "6b8aaa4e6d01e27237a8bb72d31d2376292a6d6a310f85e1e018d2c345199440",
+      "clean_final_sha256": "6b8aaa4e6d01e27237a8bb72d31d2376292a6d6a310f85e1e018d2c345199440",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__TEXT,__unwind_info",
+      "bytes": 1224,
+      "same": true,
+      "discovery_sha256": "e3731fcbc6db86d5211e205d36556464e0d2e49764f1126bf6c4e3c12bdb97be",
+      "final_sha256": "e3731fcbc6db86d5211e205d36556464e0d2e49764f1126bf6c4e3c12bdb97be",
+      "clean_final_sha256": "e3731fcbc6db86d5211e205d36556464e0d2e49764f1126bf6c4e3c12bdb97be",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__DATA_CONST,__const",
+      "bytes": 992,
+      "same": true,
+      "discovery_sha256": "3f77087040d096da605d5b4bb86f1d7c6c909bfaf0d6ffbee4a36da1a1b9cdf0",
+      "final_sha256": "3f77087040d096da605d5b4bb86f1d7c6c909bfaf0d6ffbee4a36da1a1b9cdf0",
+      "clean_final_sha256": "3f77087040d096da605d5b4bb86f1d7c6c909bfaf0d6ffbee4a36da1a1b9cdf0",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__DATA_CONST,__cfstring",
+      "bytes": 320,
+      "same": true,
+      "discovery_sha256": "0f7636ce525de9d37c9aac189b9d0aabda004cd0e37e2cc8abd371f42a7964f6",
+      "final_sha256": "0f7636ce525de9d37c9aac189b9d0aabda004cd0e37e2cc8abd371f42a7964f6",
+      "clean_final_sha256": "0f7636ce525de9d37c9aac189b9d0aabda004cd0e37e2cc8abd371f42a7964f6",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__DATA_CONST,__objc_imageinfo",
+      "bytes": 8,
+      "same": true,
+      "discovery_sha256": "94039884329d3732c577860f40d0dfdf883ff89dac332f87216e692c08892fa2",
+      "final_sha256": "94039884329d3732c577860f40d0dfdf883ff89dac332f87216e692c08892fa2",
+      "clean_final_sha256": "94039884329d3732c577860f40d0dfdf883ff89dac332f87216e692c08892fa2",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__DATA_CONST,__got",
+      "bytes": 920,
+      "same": true,
+      "discovery_sha256": "f6c79ebfbbd6f5c5ef747e2221e38a91f41975668085de00202acf6262aa1212",
+      "final_sha256": "f6c79ebfbbd6f5c5ef747e2221e38a91f41975668085de00202acf6262aa1212",
+      "clean_final_sha256": "f6c79ebfbbd6f5c5ef747e2221e38a91f41975668085de00202acf6262aa1212",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__DATA,__objc_selrefs",
+      "bytes": 640,
+      "same": true,
+      "discovery_sha256": "90304e7955e61e5023e5d1098139f086c6c151d3038aea99751097ea5d87bf72",
+      "final_sha256": "90304e7955e61e5023e5d1098139f086c6c151d3038aea99751097ea5d87bf72",
+      "clean_final_sha256": "90304e7955e61e5023e5d1098139f086c6c151d3038aea99751097ea5d87bf72",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__DATA,__data",
+      "bytes": 312,
+      "same": true,
+      "discovery_sha256": "b86ea7939426f0d856ae10c16ccd6e56299ab57bedcf1caf0a272040d7638bec",
+      "final_sha256": "b86ea7939426f0d856ae10c16ccd6e56299ab57bedcf1caf0a272040d7638bec",
+      "clean_final_sha256": "b86ea7939426f0d856ae10c16ccd6e56299ab57bedcf1caf0a272040d7638bec",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__DATA,__ggml_metallib",
+      "bytes": 663521,
+      "same": true,
+      "discovery_sha256": "2601b16dfc93f6ec1aa2c7dca10d987de26b4bf95a1cd386b7e21764ac3ce048",
+      "final_sha256": "2601b16dfc93f6ec1aa2c7dca10d987de26b4bf95a1cd386b7e21764ac3ce048",
+      "clean_final_sha256": "2601b16dfc93f6ec1aa2c7dca10d987de26b4bf95a1cd386b7e21764ac3ce048",
+      "same_as_measured_final": true
+    },
+    {
+      "name": "__DATA,__bss",
+      "bytes": 360,
+      "same": true,
+      "discovery_sha256": "19ceae9d37991dcc8b834b37f7a55bc9f1ff0f04a6892f3501910df3adb932d1",
+      "final_sha256": "19ceae9d37991dcc8b834b37f7a55bc9f1ff0f04a6892f3501910df3adb932d1",
+      "clean_final_sha256": "19ceae9d37991dcc8b834b37f7a55bc9f1ff0f04a6892f3501910df3adb932d1",
+      "same_as_measured_final": true
+    }
+  ]
+}

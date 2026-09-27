@@ -1,0 +1,6 @@
+{"event":"check","bytes":417177600,"vectors":26073600,"groups":25463,"checksum":1730434682}
+{"event":"pair","pair":0,"gpu_ms":7.990118751,"wall_ms":8.310668850,"read_gb_s":52.211690}
+{"event":"pair","pair":1,"gpu_ms":8.014033336,"wall_ms":8.384633450,"read_gb_s":52.055885}
+{"event":"pair","pair":2,"gpu_ms":7.758110418,"wall_ms":8.090052050,"read_gb_s":53.773094}
+{"event":"pair","pair":3,"gpu_ms":7.671964576,"wall_ms":8.063139550,"read_gb_s":54.376893}
+{"event":"pair","pair":4,"gpu_ms":7.686714584,"wall_ms":8.069739550,"read_gb_s":54.272550}

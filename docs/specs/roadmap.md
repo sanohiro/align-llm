@@ -1,5 +1,7 @@
 # align 開発ロードマップ v2.0
 
+Current optimization decisions follow [the 2026-09-26 policy](gpu-runtime-performance.md#current-inference-optimization-policy-2026-09-26). Earlier percentage floors and fixed win-count rules below describe superseded experiments, not admission or adoption requirements.
+
 ## 1. 開発戦略
 
 一人開発であるため、align-runtimeとalign-coderを同時に全面開発しない。
@@ -20,7 +22,42 @@ align-runtimeは、重要な技術spikeと小さな実装を並行して進め�
 
 ## 2. Capability delivery model
 
-### Active Qwen3.5 text lane (2026-09-24)
+### Current GPU priority: selectable native execution (2026-09-27)
+
+The current user priority is GPU inference performance. The durable objective
+is an Align-selected native execution path that can coexist with the ggml path,
+preserves real-model correctness, and can be extended from the current Qwen3.5
+models to other Qwen sizes and Gemma where their semantics are implemented.
+The measured contiguous F32-copy ggml patch is a historical performance
+finding, not a required build or deployment route. The first [independent
+Metal state-copy seam](../qwen35-native-state-copy-trial.md) now runs in the
+real Qwen3.5 decode path behind an Align-owned opt-in, using the unmodified
+ggml bundle as producer and control. It passed actual-state/logit checks and
+improved 15/15 reviewed warm-request pairs against both the ordinary Align
+path and pinned llama.cpp on one M1, with positive medians at all tested
+lengths; startup remains slower. Keep the ordinary
+ggml path for comparison and rollback. Next, qualify native failures and
+another Metal device, then select a larger native decode segment that removes
+more of the ggml/native execution boundary. The active evidence and exact
+next action are in `HANDOFF.md`; the admission policy is in
+`gpu-runtime-performance.md`.
+
+### Completed native FFN trial (2026-09-26)
+
+The native Q4_0 gate/up/SiLU specialization is connected to Align-built real
+inference behind an opt-in switch. Actual weights/activations and 2B/0.8B
+correctness pass. Local and paired real-request measurements do not establish
+a repeatable gain, so production remains on the reference path. The
+[result and reproduction](../native-swiglu-trial.md) retain all samples and
+comparison limits. The [four-sum and launch-size follow-up](../native-swiglu-followup.md) also
+completes without repeatable speedup. The historical follow-up proposed a real
+Q6_K output projection and a tiled FFN including down and partial-output
+reduction; subsequent Q6_K local screens are recorded in `HANDOFF.md`. Other
+Qwen sizes and Gemma reuse operation/device seams only when
+semantics match; full family coverage is not a prerequisite. See the trial
+ledger in `qwen35-text.md`. Serving and 2B adoption are complete.
+
+### Prior Qwen3.5 text lane (2026-09-24)
 
 The user prioritized very fast local inference on small and middle-size Qwen3.5 models, with a
 normally usable local endpoint. Large models are deferred. The authoritative model contract is
@@ -28,8 +65,7 @@ normally usable local endpoint. Large models are deferred. The authoritative mod
 Real GGUF Model IR/alignpack merged in #294, tokenizer CLI parity in #295, and the pinned
 0.8B text chat template for `--prepare-prompt` in #296. Deliver native `align-runtime` prefill
 and multistep decode for 0.8B with pinned llama.cpp
-parity, locate its actual bottleneck, and attempt only measured optimizations that meet the
-declared floor. Once that path is stable, expose it for normal local use through an Align-owned
+parity, locate its actual bottleneck, and measure bounded optimization trials under the current inference policy. Once that path is stable, expose it for normal local use through an Align-owned
 OpenAI-compatible HTTP server, beginning with `POST /v1/chat/completions` and a real Qwen3.5
 request. The endpoint contract and closure are in [local OpenAI-compatible serving](openai-local-serving.md);
 the existing `ModelProvider` OpenAI adapter is a client, not this server. Prefer the
@@ -1974,10 +2010,10 @@ establish a program-wide verdict.
     and memory, including a `not_met` result. Collect early runtime baselines during G1; G6 requires
     G1R and examination of relevant high-impact mechanisms, not completion of every extra backend
     or workload-irrelevant option. Its design gate precommits the task corpus, retry/stop grammar,
-    failure states, metrics and aggregation before measurement. The first material-win floor is
-    15% lower paired latency, measured separately for the declared runtime workload and for time to
-    a passing patch without a task-success reduction. This floor is not the ambition; a scoped 2x
-    runtime speedup is a stretch objective, not a prediction. Useful capacity has its own fixed
+    failure states, metrics and aggregation before measurement. Assess paired runtime latency and
+    time to a passing patch separately, including quality, variability, regressions, memory and
+    maintenance; no fixed improvement percentage or win count gates experimentation, integration
+    or adoption. A scoped 2x runtime speedup is a stretch objective, not a prediction. Useful capacity has its own fixed
     latency/throughput/quality limits. A failed candidate leads to the next material hypothesis,
     not automatic abandonment after one comparison. Native Linux, WSL2 and GPU/vendor combinations
     retain separate evidence. This is not a claim that R9 speculation or R10 pressure work is complete.
@@ -3247,7 +3283,7 @@ targets, not passing evidence.
 | Workload | The existing fixed integer-list requests copy nothing from the prompt and would measure a zero acceptance rate, so this protocol needs its own edit-shaped fixed request, frozen before implementation: a system prompt identical to section 6.1's, a user prompt containing a fixed 10-line Python function followed by an instruction to re-emit the whole function with exactly one named line changed, and a quality predicate requiring the output to be the original function with exactly that one line differing and exactly the declared token count. The function is sized so the complete re-emission fits well inside the request schema's 128-token `max_tokens` cap, which the campaign keeps at 128 unchanged. That output is about 95% verbatim from the prompt, which is the acceptance regime the coding repair loop actually has. |
 | Primary row | `qwen2 warm-long-changed`. It is the edit-shaped case: a changed long prefix, so the prompt is re-processed and the output is dominated by verbatim copying. Guardrails: `qwen2 warm-short-cached` and both OLMoE rows (OLMoE must be bit-for-bit unaffected because it stays on the existing path) must not regress by more than 5%. |
 | Metrics | Primary `client_ns`. Reported alongside, never substituted for it: accepted tokens per target forward pass (the "verified tokens per weight sweep" of section 5's constrained-memory table), tokens per second, and the accounting counters above. A high acceptance rate with no wall-clock win is a negative result. |
-| Decision floor | Section 6 unchanged: at least 15% median paired reduction on the primary row, at least 4 of 5 pairs faster, all responses passing the quality predicate. |
+| Decision | The former Section 6 15%/four-of-five floor is historical and does not gate this planned consumer. Require all responses to pass the predeclared quality predicate, retain every pair, and assess the primary latency and regressions under the current policy in `gpu-runtime-performance.md` without a fixed improvement threshold. |
 | llama-server baseline | Section 5 view 2 requires a properly configured current baseline, and the pinned current llama.cpp `304665fe7ac957df95e3ff8c8c4ffdf92dd6ffa3` ships draft-model-free self-speculation: `COMMON_SPECULATIVE_TYPE_NGRAM_SIMPLE` (`common/common.h:171-183`), selected by `--spec-type ngram-simple` with `--spec-ngram-simple-size-n`, `--spec-ngram-simple-size-m` and `--spec-ngram-simple-min-hits` (`common/arg.cpp:4272-4343`, `common/speculative.cpp:40-44`). The same-ggml pin `bb4caa75` carries the same enum. The comparison campaign therefore adds a fourth arm, a current llama-server configured with `ngram-simple` at the same `n` and `m` as the candidate, to the section 6.1 / 6.2 baseline policy row, keeping every other baseline setting frozen. The candidate is not compared only against a non-speculative server. |
 | Cost ceiling | Total 32 active hours: 6 for the verify graph kind and input reshaping, 4 for the draft source and acceptance loop, 1 for the options schema bump and kit regeneration (Align and the Python validator together), 5 for the rollback and mask contract, 6 for the reference driver extension and the new owners, 5 for the harness per-arm options, protocol and workload, 5 for qualification and the campaign. Campaign wall time at most 7200 s. Reconsider the capability boundary if 24 hours pass without a consumer-usable speculative result. |
 | Observer caveat | A valid external load-observer receipt requires a bare terminal with no Claude Code CLI session attached; see `docs/specs/cuda-optimization-enablement.md`, P1 and the capped-read startup result. |

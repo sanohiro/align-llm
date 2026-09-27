@@ -1,5 +1,7 @@
 # CUDA optimization enablement
 
+Current optimization decisions follow [the 2026-09-26 policy](gpu-runtime-performance.md#current-inference-optimization-policy-2026-09-26). Earlier percentage floors and fixed win-count rules below describe superseded experiments, not admission or adoption requirements.
+
 Status: CUDA-KV-F16 correctness and local performance qualified, 2026-09-14.
 PR publication and merge remain active. The renewed Q/K/V lifetime experiment is
 complete and NOT_MET; the qualified shipping scope remains F16 KV only. The user has requested implementation,

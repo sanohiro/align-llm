@@ -16891,3 +16891,105 @@ Consumer verification (2026-09-25): `.align-revision` pins Align v0.8.1 and
 oracle, refuses a header declaring a 16 MiB body without waiting for body bytes,
 observes unchanged server RSS across that request, then serves another normal chat.
 SSE, malformed-input refusal, disconnect recovery, and shutdown/restart also pass.
+
+### Request 121: independent scratch views beside a borrowed resource field (2026-09-26)
+
+Status: PROPOSED
+Priority: medium
+Blocking: no
+Blocked gate or slice: factoring retained Qwen3.5 stream input updates through the existing helper
+Independent work that may continue: retain scratch, write inputs in the owning function, refresh sibling views after mutable calls, and measure real requests
+Resume condition: shipped ownership analysis can prove this independent-storage case without admitting dependent-resource aliasing
+Align commit or pull request: none; observed at consumer pin `b20429be50d6ab889496a0589143320683b29aeb` and installed sibling compiler; sibling source inspected at `c2f32a2d213fcba6678f7c4dfeca5dac11e308a9`
+align-llm verification: pending provider implementation; current application path compiles and passes generation/serving owners without consuming a proposed API
+
+Classification: compiler ownership-analysis capability, not inference semantics.
+A record containing `device: ggml_ffi.GpuDevice`, `scratch: buffer` and
+`second: buffer` cannot pass `p.device` with mutable byte views of the two
+independently owned buffers to a helper. The checker reports each view as
+aliasing argument 1. The buffer-only analogue checks successfully. Minimal body:
+
+```align
+pub fn update(borrow mut p: Pair) {
+  mut bytes := p.scratch.bytes()
+  mut other := p.second.bytes()
+  write(p.device, bytes, other)
+}
+```
+
+Here `write` takes `(borrow device: ggml_ffi.GpuDevice,
+borrow mut bytes: slice<u8>, borrow mut other: slice<u8>)`, writes the two
+views, and calls `ggml_ffi.gpu_device_synchronize(device)`. Both tested compilers
+reject this witness. Sibling `align_sema/src/lib.rs`'s conflicting-root check
+already has disjoint-sibling-place handling; resource-derived roots still
+conflict in this case. Plan `37-borrowed-buffer-writer-plan.md` admits field byte
+views but preserves the existing alias/effect rules, so it does not settle this
+extension. No language API is invented here.
+
+Proposed surface: retain ordinary explicit borrow syntax and prove independent
+owned-buffer storage beside a non-consuming resource projection where ownership
+and resource dependency facts justify it. Do not simply discard resource roots.
+Acceptance includes successful exact-byte execution of this witness in whole
+and per-unit compilation, rejection when the resource actually depends on the
+same buffer or when the owner can be replaced, and the real client's factored
+stream input helper with unchanged disconnect/recovery behavior. Until then,
+`runtime_qwen35_generation.stream_next` writes the small input fields locally;
+this bounded duplication is the recorded application cost, not a compatibility
+layer or a hypothetical compiler dependency.
+
+## Request 122 — Imported public constants in constant initializers
+
+Status: PROPOSED
+Priority: low
+Blocking: no
+Blocked gate or slice: none; controlled upload/prefill trial uses the defining constant directly
+Independent work that may continue: direct qualified uses inside functions, runtime implementation and measurements
+Resume condition: shipped constant evaluation resolves imported public scalar constants with visibility and cycle checks
+Align commit or pull request: none; consumer pin b20429be50d6ab889496a0589143320683b29aeb rejects the initializer
+align-llm verification: build rejected `pub MAX_PREFILL := runtime_attention.MAX_PREFILL`; direct uses avoid the alias
+
+Classification: compiler constant-evaluation gap, not model execution policy.
+Sibling `align_sema/src/lib.rs` at `c2f32a2d213fcba6678f7c4dfeca5dac11e308a9`
+explicitly rejects qualified references in `ConstEval::expr`; field-access
+initializers reach the generic constant-initializer rejection. The language guide
+allows exported constants to be named with `module.NAME`, but the implemented
+initializer subset does not compose this use. The application keeps one public
+limit in `runtime_attention` and refers to it directly in function bodies.
+Proposed surface: ordinary `pub LIMIT := module.LIMIT`, with no new syntax.
+Acceptance: whole/per-unit compilation folds imported public scalars and rejects
+private references and cycles deterministically; the two-module witness and an
+align-llm build pass. This is non-blocking and introduces no compatibility layer.
+
+### Request 123: return a resource view borrowed from a caller-owned resource
+
+Status: PROPOSED
+Priority: low
+Blocking: no
+Blocked gate or slice: factoring the checked shared Metal output view as a separate borrowed-view helper
+Independent work that may continue: form and consume the view inside `ggml_ffi.gpu_slot_shared_greedy`, then measure real requests
+Resume condition: shipped return-provenance analysis admits a view rooted in a borrowed input resource while rejecting a view of a callee-owned resource
+Align commit or pull request: none; observed at consumer pin `b20429be50d6ab889496a0589143320683b29aeb` and sibling source `c2f32a2d213fcba6678f7c4dfeca5dac11e308a9`
+align-llm verification: the first `gmake build` refused `src/ggml_ffi.align:1922:12` with “cannot return a value containing a slice that views a local array”; the in-module scan compiles and passes real 2B/0.8B generation owners
+
+Classification: compiler borrow/return-provenance gap, not an inference API
+requirement. The rejected helper took `borrow owner: GpuDevice`, called the
+checked native shared-output accessor, formed `slice<u8>` with
+`resource.view_from_raw(resource.borrow(owner), ptr, expected_bytes)`, and
+returned `Result<slice<u8>, Fault>`. The owner was supplied by the caller and
+remained live; the function neither created nor moved it. Sibling
+`docs/impl/03-types.md` specifies that a view carries the supplied resource
+root/generation through `Option` and aggregate wrappers. The existing compiler
+test `raw_views_cannot_escape_their_resource_generation` correctly rejects a
+view of a resource created in the callee. The observed diagnostic appears to
+treat the caller-rooted view as local in this result-return case. No proposed
+surface is consumed by align-llm: the current FFI function scans the borrowed
+view before returning a scalar token.
+
+Proposed surface: retain the existing `resource.view_from_raw` and borrowed
+resource syntax, with a return summary tied to the input owner's generation.
+Acceptance: whole-program and per-unit compiler tests admit a `Result` or
+`Option` view borrowed from a live input resource, preserve its provenance at
+the caller, and reject use after mutable owner access, move, replacement or
+drop. Keep the callee-owned-resource escape test rejecting. An align-llm helper
+may then return the checked view, and the exact-logit and retained-session
+owners must pass without broadening the view lifetime.

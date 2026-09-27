@@ -1,0 +1,2600 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "QWEN35_MAPPED_WEIGHTS_METAL_TRIAL",
+  "policy": "2026-09-27-no-percentage-floor",
+  "status": "COMPLETE",
+  "decision": "EXPERIMENT_CONTINUE_DEFAULT_OFF",
+  "host": "Apple M1, 16 GiB, macOS",
+  "configuration": {
+    "model": "Qwen3.5-2B Q4_0 GGUF",
+    "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+    "pack_sha256": "b4b418ebef9f83f911e4d604bdcce03e589fb7d2afa35f7e3bbdff3111b810b1",
+    "pack_bytes": 1621209088,
+    "pack_member_alignment": 64,
+    "geometry_sha256": "39baceca01ea59dba7f989f3b6c15214f8927880926e2e87d18ffc56fd813c98",
+    "options_sha256": "4a56d75c22b990f639fa5cf84340ab7d86680685700f2a1185635f4161141d4d",
+    "binary_sha256": "1a68fddf65579a50ad098d3fb6d2458abad9de14639dfc495f47244bc9e4f7a5",
+    "shim_sha256": "794dd905eb1183d295bfd460d0ac99c6f03365bf9e4b545ac84755595e0b7450",
+    "bundle_id": "5e4f7d9053d7beeb12829afaf570f3f75c532597b97ca04b4d132a0fee06c96b",
+    "bundle_manifest_sha256": "1d7357a1074b4b6ee25df6ffe02eb2e4d34d9f934a2983c60467f441c9ded159",
+    "bundle_artifacts_verified": true,
+    "pinned_llama_revision": "bb4caa7540188872173c44d161602d9271386413",
+    "native_swiglu": "0",
+    "sync_weight_upload": "0",
+    "prefill_chunk": 128,
+    "final_prefill_logits": "1",
+    "final_ffn_row": "0",
+    "mapped_weights": "0/1"
+  },
+  "correctness": {
+    "two_b_generation_owner": "PASS both OFF and ON; short, 200 and 330 prompt tokens; six retained requests and invalid-request recovery",
+    "zero_point_eight_b_generation_owner": "PASS ON; same three prompt lengths and six retained requests",
+    "two_b_serving_owner": "PASS ON; HTTP, SSE, refusal, disconnect, recovery and restart",
+    "two_b_logit_vectors": 3,
+    "two_b_logit_f32_values": 744960,
+    "max_abs_difference": 0,
+    "predeclared_abs_bound": 0.01,
+    "logit_capture_sha256": {
+      "0000.bin": "67221fda97e4948066b6f9bf0981aaa15c11ec6e4295172639f92d553ab11b26",
+      "0001.bin": "5af22d993a9fce508b1e237720262cb26f4ed1d807917bf61e4e891450f7f88a",
+      "0002.bin": "cf04bf011b7ae2345efde65f24307e4bdd1ebc4e1dc58aa86667e0a5619154ab"
+    },
+    "state_records": 258,
+    "complete_graphs": 3,
+    "state_records_exact": true,
+    "invalid_option_refused": true,
+    "two_b_source_pack_byte_identity": {
+      "members": 321,
+      "bytes_compared": 1621089536,
+      "status": "PASS"
+    },
+    "zero_point_eight_b_source_pack_byte_identity": {
+      "members": 321,
+      "bytes_compared": 822246656,
+      "status": "PASS"
+    }
+  },
+  "memory_probe": {
+    "method": "sequential warm 200/32 HTTP server, ps RSS and vmmap summary; process footprint excludes GPU allocations and is not a full physical-memory attribution",
+    "off_rss_kib": 181088,
+    "on_rss_kib": 145328,
+    "off_vmmap_physical_footprint_peak_mib": 147.4,
+    "on_vmmap_physical_footprint_peak_mib": 147.3,
+    "off_mapped_file_virtual_mib": 467.6,
+    "on_mapped_file_virtual_gib": 2.0,
+    "finding": "The opt-in buffer maps the actual pack without application weight upload; these OS summaries cannot prove total GPU/physical memory savings."
+  },
+  "measurement_sources": {
+    "worker_script_sha256": "6b1795f7548b5f966530bd0c9282a846db9a7f2372194fa1ca53403fb7bb672e",
+    "http_sse_script_sha256": "28bf9ac727bbc5694fb1dc9bf4c6eab781426245327edd7f8714ca6bec75098b",
+    "state_interposer_sha256": "48b4775501842ba2a6a77e84bcd5a9340ade05590b0d3feb9a851c8ac7519546",
+    "logit_interposer_sha256": "1c85a8a3ec632763d7934b07cc6b3243bf51f90d134a7ebee9691dfa8c4e7cba",
+    "pack_identity_reader_sha256": "b521afd35f43ed504cedc95e071b79d98594c7ce0cd05d31397100099a0cf9c1"
+  },
+  "worker": {
+    "schema_version": 2,
+    "artifact_kind": "NATIVE_SWIGLU_MEASUREMENT",
+    "align_revision": "b20429be50d6ab889496a0589143320683b29aeb",
+    "policy": "2026-09-26-no-percentage-floor",
+    "status": "PASS",
+    "control_kind": "both_native_disabled",
+    "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+    "ggml_commit": "bb4caa7540188872173c44d161602d9271386413",
+    "identities": {
+      "control": "1a68fddf65579a50ad098d3fb6d2458abad9de14639dfc495f47244bc9e4f7a5",
+      "candidate": "1a68fddf65579a50ad098d3fb6d2458abad9de14639dfc495f47244bc9e4f7a5"
+    },
+    "reference_sha256": "f384a6a64603479cf5c675ba587aeafbd64a500c3129a0afdcd271dcf532717d",
+    "trace_sha256": "b40a96fcb7bad67afa2cb3df860975cdb7f0f250b8df580d55f342171cc09f31",
+    "backend_identities": {
+      "control": "5e4f7d9053d7beeb12829afaf570f3f75c532597b97ca04b4d132a0fee06c96b",
+      "candidate": "5e4f7d9053d7beeb12829afaf570f3f75c532597b97ca04b4d132a0fee06c96b"
+    },
+    "options_sha256": {
+      "control": "4a56d75c22b990f639fa5cf84340ab7d86680685700f2a1185635f4161141d4d",
+      "candidate": "4a56d75c22b990f639fa5cf84340ab7d86680685700f2a1185635f4161141d4d"
+    },
+    "control_commit": "9c61d3f9766ef3ea6771474f1dec6f39d391ffaa",
+    "candidate_patch_sha256": "5c636b74fe34210e7e2ed5702498d580f8d926bfea44514136265a9c016f1d8a",
+    "note": "Startup is construction-to-ready with OS file cache uncontrolled. Graph phase includes synchronization; not shader-only time.",
+    "phase_instrumented": true,
+    "execution": {
+      "control": {
+        "sync_weight_upload": "0",
+        "prefill_chunk": "128",
+        "final_prefill_logits": "1",
+        "final_ffn_row": "0",
+        "mapped_weights": "0"
+      },
+      "candidate": {
+        "sync_weight_upload": "0",
+        "prefill_chunk": "128",
+        "final_prefill_logits": "1",
+        "final_ffn_row": "0",
+        "mapped_weights": "1"
+      }
+    },
+    "cases": [
+      {
+        "prompt_tokens": 64,
+        "completion_tokens": 16,
+        "prompt_ids": [
+          248045,
+          8678,
+          198,
+          2523,
+          513,
+          264,
+          10505,
+          17313,
+          13,
+          3301,
+          264,
+          61446,
+          10582,
+          33924,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          826,
+          279,
+          24959,
+          494,
+          220,
+          16,
+          310,
+          220,
+          16,
+          15,
+          15,
+          15,
+          303,
+          34217,
+          1906,
+          11,
+          18101,
+          539,
+          3074,
+          12258,
+          13,
+          8984,
+          1132,
+          279,
+          24959,
+          13,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ],
+        "pairs": [
+          {
+            "control": {
+              "wall_ns": 574445291,
+              "startup_ns": 1336220292,
+              "first_request_ns": 592787875,
+              "first_ready_ns": 1929008167,
+              "prefill_graphs": 1,
+              "prefill_ns": 126245000,
+              "decode_ns": 431153000,
+              "output": "1 2 3 4 5 6 7 8 "
+            },
+            "candidate": {
+              "wall_ns": 565540417,
+              "startup_ns": 609296583,
+              "first_request_ns": 600358125,
+              "first_ready_ns": 1209654708,
+              "prefill_graphs": 1,
+              "prefill_ns": 124520000,
+              "decode_ns": 426192000,
+              "output": "1 2 3 4 5 6 7 8 "
+            },
+            "llama": {
+              "wall_ns": 585485167,
+              "prefill_ns": 128403125,
+              "decode_ns": 457082042,
+              "startup_ns": 500310625,
+              "output": "1 2 3 4 5 6 7 8 "
+            }
+          },
+          {
+            "llama": {
+              "wall_ns": 543326166,
+              "prefill_ns": 124672500,
+              "decode_ns": 418653666,
+              "startup_ns": 403146042,
+              "output": "1 2 3 4 5 6 7 8 "
+            },
+            "candidate": {
+              "wall_ns": 569297125,
+              "startup_ns": 914059209,
+              "first_request_ns": 591071542,
+              "first_ready_ns": 1505130751,
+              "prefill_graphs": 1,
+              "prefill_ns": 124404000,
+              "decode_ns": 430200000,
+              "output": "1 2 3 4 5 6 7 8 "
+            },
+            "control": {
+              "wall_ns": 570367083,
+              "startup_ns": 934020542,
+              "first_request_ns": 588721250,
+              "first_ready_ns": 1522741792,
+              "prefill_graphs": 1,
+              "prefill_ns": 124758000,
+              "decode_ns": 430433000,
+              "output": "1 2 3 4 5 6 7 8 "
+            }
+          },
+          {
+            "control": {
+              "wall_ns": 565139000,
+              "startup_ns": 995024875,
+              "first_request_ns": 592765750,
+              "first_ready_ns": 1587790625,
+              "prefill_graphs": 1,
+              "prefill_ns": 124786000,
+              "decode_ns": 425153000,
+              "output": "1 2 3 4 5 6 7 8 "
+            },
+            "candidate": {
+              "wall_ns": 570573166,
+              "startup_ns": 650693291,
+              "first_request_ns": 585792875,
+              "first_ready_ns": 1236486166,
+              "prefill_graphs": 1,
+              "prefill_ns": 124756000,
+              "decode_ns": 429937000,
+              "output": "1 2 3 4 5 6 7 8 "
+            },
+            "llama": {
+              "wall_ns": 543685542,
+              "prefill_ns": 124026458,
+              "decode_ns": 419659084,
+              "startup_ns": 491119500,
+              "output": "1 2 3 4 5 6 7 8 "
+            }
+          },
+          {
+            "llama": {
+              "wall_ns": 554070791,
+              "prefill_ns": 125598708,
+              "decode_ns": 428472083,
+              "startup_ns": 406443167,
+              "output": "1 2 3 4 5 6 7 8 "
+            },
+            "candidate": {
+              "wall_ns": 574555834,
+              "startup_ns": 453999958,
+              "first_request_ns": 584754667,
+              "first_ready_ns": 1038754625,
+              "prefill_graphs": 1,
+              "prefill_ns": 126759000,
+              "decode_ns": 431594000,
+              "output": "1 2 3 4 5 6 7 8 "
+            },
+            "control": {
+              "wall_ns": 571320750,
+              "startup_ns": 1002216875,
+              "first_request_ns": 589410333,
+              "first_ready_ns": 1591627208,
+              "prefill_graphs": 1,
+              "prefill_ns": 125977000,
+              "decode_ns": 429740000,
+              "output": "1 2 3 4 5 6 7 8 "
+            }
+          },
+          {
+            "control": {
+              "wall_ns": 567682167,
+              "startup_ns": 954139541,
+              "first_request_ns": 587885166,
+              "first_ready_ns": 1542024707,
+              "prefill_graphs": 1,
+              "prefill_ns": 125586000,
+              "decode_ns": 429181000,
+              "output": "1 2 3 4 5 6 7 8 "
+            },
+            "candidate": {
+              "wall_ns": 563404541,
+              "startup_ns": 446271250,
+              "first_request_ns": 582581541,
+              "first_ready_ns": 1028852791,
+              "prefill_graphs": 1,
+              "prefill_ns": 124185000,
+              "decode_ns": 424394000,
+              "output": "1 2 3 4 5 6 7 8 "
+            },
+            "llama": {
+              "wall_ns": 545506208,
+              "prefill_ns": 126928666,
+              "decode_ns": 418577542,
+              "startup_ns": 447407625,
+              "output": "1 2 3 4 5 6 7 8 "
+            }
+          }
+        ],
+        "median_ms": {
+          "control": {
+            "wall_ns": 570.367083,
+            "prefill_ns": 125.586,
+            "decode_ns": 429.74,
+            "startup_ns": 995.024875
+          },
+          "candidate": {
+            "wall_ns": 569.297125,
+            "prefill_ns": 124.52,
+            "decode_ns": 429.937,
+            "startup_ns": 609.296583
+          },
+          "llama": {
+            "wall_ns": 545.506208,
+            "prefill_ns": 125.598708,
+            "decode_ns": 419.659084,
+            "startup_ns": 447.407625
+          }
+        }
+      },
+      {
+        "prompt_tokens": 200,
+        "completion_tokens": 32,
+        "prompt_ids": [
+          248045,
+          8678,
+          198,
+          2523,
+          513,
+          264,
+          10505,
+          17313,
+          13,
+          3301,
+          264,
+          61446,
+          10582,
+          33924,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          826,
+          279,
+          24959,
+          494,
+          220,
+          16,
+          310,
+          220,
+          16,
+          15,
+          15,
+          15,
+          303,
+          34217,
+          1906,
+          11,
+          18101,
+          539,
+          3074,
+          12258,
+          13,
+          8984,
+          1132,
+          279,
+          24959,
+          13,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ],
+        "pairs": [
+          {
+            "control": {
+              "wall_ns": 1286292625,
+              "startup_ns": 986231958,
+              "first_request_ns": 1303645792,
+              "first_ready_ns": 2289877750,
+              "prefill_graphs": 2,
+              "prefill_ns": 381528000,
+              "decode_ns": 875626000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            },
+            "candidate": {
+              "wall_ns": 1302014208,
+              "startup_ns": 558961792,
+              "first_request_ns": 1314677125,
+              "first_ready_ns": 1873638917,
+              "prefill_graphs": 2,
+              "prefill_ns": 382222000,
+              "decode_ns": 891609000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            },
+            "llama": {
+              "wall_ns": 1256142375,
+              "prefill_ns": 381874042,
+              "decode_ns": 874268333,
+              "startup_ns": 474205125,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            }
+          },
+          {
+            "llama": {
+              "wall_ns": 1249770542,
+              "prefill_ns": 382044167,
+              "decode_ns": 867726375,
+              "startup_ns": 401346917,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            },
+            "candidate": {
+              "wall_ns": 1286662000,
+              "startup_ns": 461916583,
+              "first_request_ns": 1314107083,
+              "first_ready_ns": 1776023666,
+              "prefill_graphs": 2,
+              "prefill_ns": 381957000,
+              "decode_ns": 875894000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            },
+            "control": {
+              "wall_ns": 1285023125,
+              "startup_ns": 923168583,
+              "first_request_ns": 1309886417,
+              "first_ready_ns": 2233055000,
+              "prefill_graphs": 2,
+              "prefill_ns": 383092000,
+              "decode_ns": 873368000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            }
+          },
+          {
+            "control": {
+              "wall_ns": 1288122584,
+              "startup_ns": 947234625,
+              "first_request_ns": 1324907500,
+              "first_ready_ns": 2272142125,
+              "prefill_graphs": 2,
+              "prefill_ns": 381688000,
+              "decode_ns": 878660000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            },
+            "candidate": {
+              "wall_ns": 1288901583,
+              "startup_ns": 594413625,
+              "first_request_ns": 1303027125,
+              "first_ready_ns": 1897440750,
+              "prefill_graphs": 2,
+              "prefill_ns": 382315000,
+              "decode_ns": 877300000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            },
+            "llama": {
+              "wall_ns": 1253334208,
+              "prefill_ns": 381995375,
+              "decode_ns": 871338833,
+              "startup_ns": 470301209,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            }
+          },
+          {
+            "llama": {
+              "wall_ns": 1244619791,
+              "prefill_ns": 383546625,
+              "decode_ns": 861073166,
+              "startup_ns": 419812500,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            },
+            "candidate": {
+              "wall_ns": 1289580917,
+              "startup_ns": 546084792,
+              "first_request_ns": 1312949625,
+              "first_ready_ns": 1859034417,
+              "prefill_graphs": 2,
+              "prefill_ns": 383928000,
+              "decode_ns": 877054000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            },
+            "control": {
+              "wall_ns": 1293411125,
+              "startup_ns": 1028356500,
+              "first_request_ns": 1310901625,
+              "first_ready_ns": 2339258125,
+              "prefill_graphs": 2,
+              "prefill_ns": 385566000,
+              "decode_ns": 879571000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            }
+          },
+          {
+            "control": {
+              "wall_ns": 1294180459,
+              "startup_ns": 1018979458,
+              "first_request_ns": 1311873708,
+              "first_ready_ns": 2330853166,
+              "prefill_graphs": 2,
+              "prefill_ns": 384205000,
+              "decode_ns": 881591000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            },
+            "candidate": {
+              "wall_ns": 1295643250,
+              "startup_ns": 504444125,
+              "first_request_ns": 1307708333,
+              "first_ready_ns": 1812152458,
+              "prefill_graphs": 2,
+              "prefill_ns": 382459000,
+              "decode_ns": 884456000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            },
+            "llama": {
+              "wall_ns": 1256763583,
+              "prefill_ns": 381027500,
+              "decode_ns": 875736083,
+              "startup_ns": 452176917,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+            }
+          }
+        ],
+        "median_ms": {
+          "control": {
+            "wall_ns": 1288.122584,
+            "prefill_ns": 383.092,
+            "decode_ns": 878.66,
+            "startup_ns": 986.231958
+          },
+          "candidate": {
+            "wall_ns": 1289.580917,
+            "prefill_ns": 382.315,
+            "decode_ns": 877.3,
+            "startup_ns": 546.084792
+          },
+          "llama": {
+            "wall_ns": 1253.334208,
+            "prefill_ns": 381.995375,
+            "decode_ns": 871.338833,
+            "startup_ns": 452.176917
+          }
+        }
+      },
+      {
+        "prompt_tokens": 330,
+        "completion_tokens": 64,
+        "prompt_ids": [
+          248045,
+          8678,
+          198,
+          2523,
+          513,
+          264,
+          10505,
+          17313,
+          13,
+          3301,
+          264,
+          61446,
+          10582,
+          33924,
+          4087,
+          13,
+          248046,
+          198,
+          248045,
+          846,
+          198,
+          826,
+          279,
+          24959,
+          494,
+          220,
+          16,
+          310,
+          220,
+          16,
+          15,
+          15,
+          15,
+          303,
+          34217,
+          1906,
+          11,
+          18101,
+          539,
+          3074,
+          12258,
+          13,
+          8984,
+          1132,
+          279,
+          24959,
+          13,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          23066,
+          248046,
+          198,
+          248045,
+          74455,
+          198,
+          248068,
+          271,
+          248069,
+          271
+        ],
+        "pairs": [
+          {
+            "control": {
+              "wall_ns": 2439779875,
+              "startup_ns": 978139750,
+              "first_request_ns": 2438338167,
+              "first_ready_ns": 3416477917,
+              "prefill_graphs": 3,
+              "prefill_ns": 603280000,
+              "decode_ns": 1790619000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            },
+            "candidate": {
+              "wall_ns": 2430639417,
+              "startup_ns": 511678208,
+              "first_request_ns": 2458239208,
+              "first_ready_ns": 2969917416,
+              "prefill_graphs": 3,
+              "prefill_ns": 597701000,
+              "decode_ns": 1786210000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            },
+            "llama": {
+              "wall_ns": 2347763083,
+              "prefill_ns": 596777833,
+              "decode_ns": 1750985250,
+              "startup_ns": 473083709,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            }
+          },
+          {
+            "llama": {
+              "wall_ns": 2343257625,
+              "prefill_ns": 596055917,
+              "decode_ns": 1747201708,
+              "startup_ns": 399082583,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            },
+            "candidate": {
+              "wall_ns": 2427637791,
+              "startup_ns": 753164333,
+              "first_request_ns": 2453526834,
+              "first_ready_ns": 3206691167,
+              "prefill_graphs": 3,
+              "prefill_ns": 597254000,
+              "decode_ns": 1784142000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            },
+            "control": {
+              "wall_ns": 2440001291,
+              "startup_ns": 1020261125,
+              "first_request_ns": 2440641708,
+              "first_ready_ns": 3460902833,
+              "prefill_graphs": 3,
+              "prefill_ns": 596932000,
+              "decode_ns": 1797398000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            }
+          },
+          {
+            "control": {
+              "wall_ns": 2445446708,
+              "startup_ns": 1028726667,
+              "first_request_ns": 2476721291,
+              "first_ready_ns": 3505447958,
+              "prefill_graphs": 3,
+              "prefill_ns": 599923000,
+              "decode_ns": 1798619000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            },
+            "candidate": {
+              "wall_ns": 2480402792,
+              "startup_ns": 540575583,
+              "first_request_ns": 2503498875,
+              "first_ready_ns": 3044074458,
+              "prefill_graphs": 3,
+              "prefill_ns": 598570000,
+              "decode_ns": 1832538000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            },
+            "llama": {
+              "wall_ns": 2375618459,
+              "prefill_ns": 596742584,
+              "decode_ns": 1778875875,
+              "startup_ns": 501428625,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            }
+          },
+          {
+            "llama": {
+              "wall_ns": 2350935458,
+              "prefill_ns": 596655666,
+              "decode_ns": 1754279792,
+              "startup_ns": 407047167,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            },
+            "candidate": {
+              "wall_ns": 2427742208,
+              "startup_ns": 619837459,
+              "first_request_ns": 2453751208,
+              "first_ready_ns": 3073588667,
+              "prefill_graphs": 3,
+              "prefill_ns": 598099000,
+              "decode_ns": 1783551000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            },
+            "control": {
+              "wall_ns": 2438011833,
+              "startup_ns": 1005582167,
+              "first_request_ns": 2456032167,
+              "first_ready_ns": 3461614334,
+              "prefill_graphs": 3,
+              "prefill_ns": 598898000,
+              "decode_ns": 1792106000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            }
+          },
+          {
+            "control": {
+              "wall_ns": 2444713458,
+              "startup_ns": 1097395583,
+              "first_request_ns": 2477822375,
+              "first_ready_ns": 3575217958,
+              "prefill_graphs": 3,
+              "prefill_ns": 597003000,
+              "decode_ns": 1795662000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            },
+            "candidate": {
+              "wall_ns": 2428917041,
+              "startup_ns": 748100000,
+              "first_request_ns": 2458212916,
+              "first_ready_ns": 3206312916,
+              "prefill_graphs": 3,
+              "prefill_ns": 597498000,
+              "decode_ns": 1784669000,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            },
+            "llama": {
+              "wall_ns": 2347606583,
+              "prefill_ns": 595524958,
+              "decode_ns": 1752081625,
+              "startup_ns": 478793750,
+              "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+            }
+          }
+        ],
+        "median_ms": {
+          "control": {
+            "wall_ns": 2440.001291,
+            "prefill_ns": 598.898,
+            "decode_ns": 1795.662,
+            "startup_ns": 1020.261125
+          },
+          "candidate": {
+            "wall_ns": 2428.917041,
+            "prefill_ns": 597.701,
+            "decode_ns": 1784.669,
+            "startup_ns": 619.837459
+          },
+          "llama": {
+            "wall_ns": 2347.763083,
+            "prefill_ns": 596.655666,
+            "decode_ns": 1752.081625,
+            "startup_ns": 473.083709
+          }
+        }
+      }
+    ],
+    "adoption": "ASSESSMENT_REQUIRED"
+  },
+  "http_sse": {
+    "schema_version": 1,
+    "status": "COMPLETE",
+    "native_enabled": false,
+    "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+    "align_revision": "b20429be50d6ab889496a0589143320683b29aeb",
+    "ggml_revision": "bb4caa7540188872173c44d161602d9271386413",
+    "arms": {
+      "control": {
+        "binary_sha256": "1a68fddf65579a50ad098d3fb6d2458abad9de14639dfc495f47244bc9e4f7a5",
+        "options_sha256": "4a56d75c22b990f639fa5cf84340ab7d86680685700f2a1185635f4161141d4d",
+        "bundle_id": "5e4f7d9053d7beeb12829afaf570f3f75c532597b97ca04b4d132a0fee06c96b",
+        "startup_ns": 1103506125,
+        "execution": {
+          "sync_weight_upload": "0",
+          "prefill_chunk": "128",
+          "final_prefill_logits": "1",
+          "final_ffn_row": "0",
+          "mapped_weights": "0"
+        }
+      },
+      "candidate": {
+        "binary_sha256": "1a68fddf65579a50ad098d3fb6d2458abad9de14639dfc495f47244bc9e4f7a5",
+        "options_sha256": "4a56d75c22b990f639fa5cf84340ab7d86680685700f2a1185635f4161141d4d",
+        "bundle_id": "5e4f7d9053d7beeb12829afaf570f3f75c532597b97ca04b4d132a0fee06c96b",
+        "startup_ns": 1237249125,
+        "execution": {
+          "sync_weight_upload": "0",
+          "prefill_chunk": "128",
+          "final_prefill_logits": "1",
+          "final_ffn_row": "0",
+          "mapped_weights": "1"
+        }
+      }
+    },
+    "cases": [
+      {
+        "prompt_tokens": 64,
+        "completion_tokens": 16,
+        "modes": [
+          {
+            "stream": false,
+            "warmups": [
+              {
+                "control": {
+                  "wall_ns": 585061291,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 599438500,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 570811500,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "control": {
+                  "wall_ns": 568611875,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              }
+            ],
+            "pairs": [
+              {
+                "control": {
+                  "wall_ns": 564412000,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 565714917,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 578510541,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "control": {
+                  "wall_ns": 564358166,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 564240334,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 570773500,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 564900125,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "control": {
+                  "wall_ns": 563652125,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 560613625,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 566790959,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 64,
+                    "completion_tokens": 16,
+                    "total_tokens": 80
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              }
+            ]
+          },
+          {
+            "stream": true,
+            "warmups": [
+              {
+                "control": {
+                  "wall_ns": 562385167,
+                  "ttft_ns": 134980959,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 568004250,
+                  "ttft_ns": 135067375,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 563325542,
+                  "ttft_ns": 133778375,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 568135042,
+                  "ttft_ns": 138793084,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              }
+            ],
+            "pairs": [
+              {
+                "control": {
+                  "wall_ns": 565712709,
+                  "ttft_ns": 135518459,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 566873583,
+                  "ttft_ns": 134230917,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 566413042,
+                  "ttft_ns": 133991167,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 565327125,
+                  "ttft_ns": 137092583,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 563972125,
+                  "ttft_ns": 134755834,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 564781583,
+                  "ttft_ns": 133998375,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 563087000,
+                  "ttft_ns": 134528958,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 567394417,
+                  "ttft_ns": 137441333,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 564235625,
+                  "ttft_ns": 134889583,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 563987208,
+                  "ttft_ns": 134660042,
+                  "output": "1 2 3 4 5 6 7 8 ",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "prompt_tokens": 200,
+        "completion_tokens": 32,
+        "modes": [
+          {
+            "stream": false,
+            "warmups": [
+              {
+                "control": {
+                  "wall_ns": 1283209334,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 1292367333,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 1285309375,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "control": {
+                  "wall_ns": 1286122958,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              }
+            ],
+            "pairs": [
+              {
+                "control": {
+                  "wall_ns": 1283477459,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 1288720417,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 1285236417,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "control": {
+                  "wall_ns": 1288086417,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 1291898833,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 1288408000,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 1287346292,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "control": {
+                  "wall_ns": 1289507125,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 1286980333,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 1293085875,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 200,
+                    "completion_tokens": 32,
+                    "total_tokens": 232
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              }
+            ]
+          },
+          {
+            "stream": true,
+            "warmups": [
+              {
+                "control": {
+                  "wall_ns": 1282209583,
+                  "ttft_ns": 399309458,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 1293321209,
+                  "ttft_ns": 406218042,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 1292418083,
+                  "ttft_ns": 402636958,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 1294133959,
+                  "ttft_ns": 404721625,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              }
+            ],
+            "pairs": [
+              {
+                "control": {
+                  "wall_ns": 1293362500,
+                  "ttft_ns": 401813000,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 1296548958,
+                  "ttft_ns": 405738041,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 1293163166,
+                  "ttft_ns": 402032166,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 1291813292,
+                  "ttft_ns": 403353792,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 1286919500,
+                  "ttft_ns": 401888500,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 1301916250,
+                  "ttft_ns": 407049792,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 1292228042,
+                  "ttft_ns": 400745417,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 1303592417,
+                  "ttft_ns": 406714042,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 1287765792,
+                  "ttft_ns": 400947125,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 1298156667,
+                  "ttft_ns": 404286792,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "prompt_tokens": 330,
+        "completion_tokens": 64,
+        "modes": [
+          {
+            "stream": false,
+            "warmups": [
+              {
+                "control": {
+                  "wall_ns": 2451534750,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 2461984583,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2422789959,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "control": {
+                  "wall_ns": 2434139125,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              }
+            ],
+            "pairs": [
+              {
+                "control": {
+                  "wall_ns": 2431536917,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 2430624375,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2419147292,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "control": {
+                  "wall_ns": 2424756375,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 2419679083,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 2425362125,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2459358625,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "control": {
+                  "wall_ns": 2457448375,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 2477276458,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 2454203583,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 330,
+                    "completion_tokens": 64,
+                    "total_tokens": 394
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              }
+            ]
+          },
+          {
+            "stream": true,
+            "warmups": [
+              {
+                "control": {
+                  "wall_ns": 2459435208,
+                  "ttft_ns": 631686916,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 2477041125,
+                  "ttft_ns": 627467084,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2453518125,
+                  "ttft_ns": 625935042,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 2448135625,
+                  "ttft_ns": 630727875,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              }
+            ],
+            "pairs": [
+              {
+                "control": {
+                  "wall_ns": 2541204208,
+                  "ttft_ns": 626197333,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 2458158208,
+                  "ttft_ns": 629710583,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2454320333,
+                  "ttft_ns": 625790792,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 2466914041,
+                  "ttft_ns": 632081791,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 2432209417,
+                  "ttft_ns": 625036625,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 2438653083,
+                  "ttft_ns": 630790375,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2433401208,
+                  "ttft_ns": 624738833,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 2432889042,
+                  "ttft_ns": 631918375,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 2439913375,
+                  "ttft_ns": 624582750,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 2438169708,
+                  "ttft_ns": 630449250,
+                  "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "prompt_tokens": 1536,
+        "completion_tokens": 1,
+        "modes": [
+          {
+            "stream": false,
+            "warmups": [
+              {
+                "control": {
+                  "wall_ns": 2757855291,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 2756999750,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2753412125,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "control": {
+                  "wall_ns": 2757739708,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              }
+            ],
+            "pairs": [
+              {
+                "control": {
+                  "wall_ns": 2757834041,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 2756618917,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2751162292,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "control": {
+                  "wall_ns": 2756329042,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 2751612500,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 2753549334,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2751895542,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "control": {
+                  "wall_ns": 2758494000,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 2756452291,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "candidate": {
+                  "wall_ns": 2761149958,
+                  "output": "1",
+                  "finish": "length",
+                  "usage": {
+                    "prompt_tokens": 1536,
+                    "completion_tokens": 1,
+                    "total_tokens": 1537
+                  }
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              }
+            ]
+          },
+          {
+            "stream": true,
+            "warmups": [
+              {
+                "control": {
+                  "wall_ns": 2756101542,
+                  "ttft_ns": 2752654875,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 2756308458,
+                  "ttft_ns": 2753779375,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2750192583,
+                  "ttft_ns": 2747885708,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 2755884500,
+                  "ttft_ns": 2753503042,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              }
+            ],
+            "pairs": [
+              {
+                "control": {
+                  "wall_ns": 2751688375,
+                  "ttft_ns": 2748946250,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 2751984042,
+                  "ttft_ns": 2749813125,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2753734542,
+                  "ttft_ns": 2751556125,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 2756779250,
+                  "ttft_ns": 2754355959,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 2755431583,
+                  "ttft_ns": 2753082541,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 2759451417,
+                  "ttft_ns": 2757075959,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              },
+              {
+                "candidate": {
+                  "wall_ns": 2749861959,
+                  "ttft_ns": 2747582209,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "control": {
+                  "wall_ns": 2756833042,
+                  "ttft_ns": 2754134958,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "order": [
+                  "candidate",
+                  "control"
+                ]
+              },
+              {
+                "control": {
+                  "wall_ns": 2750691375,
+                  "ttft_ns": 2748303250,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "candidate": {
+                  "wall_ns": 2757734584,
+                  "ttft_ns": 2755436459,
+                  "output": "1",
+                  "finish": "length"
+                },
+                "order": [
+                  "control",
+                  "candidate"
+                ]
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    "note": "Two retained servers, serial requests, two warmups per mode, five alternating pairs. SSE counts are established by identical text and finish against the counted nonstream response; SSE does not expose usage."
+  },
+  "limits": [
+    "Two servers coexist in the HTTP/SSE campaign; startup order and memory pressure differ from isolated worker startups.",
+    "The worker llama.cpp comparison uses its native driver while Align uses a retained session protocol; the endpoints are not identical.",
+    "The mapped file and validated file are opened separately; opt-in use assumes a stable local pack and is not ready for production adoption.",
+    "No direct whole-system physical-memory attribution was available.",
+    "Every source-to-pack member byte was compared and mapped placement uses checked pack offsets, but no independent full GPU-weight readback was performed.",
+    "Construction-to-ready was measured; an isolated load-only clock was not captured."
+  ],
+  "review_repair": {
+    "finding": "Relative pack paths accepted by the existing provider were incorrectly refused in mapped mode. The absolute-path gate was removed; embedded NUL and extent checks remain.",
+    "measured_shim_sha256": "794dd905eb1183d295bfd460d0ac99c6f03365bf9e4b545ac84755595e0b7450",
+    "final_shim_sha256": "e4b8d71bc543e3b7d5b612da29a7a05083f2d8469eaf1f5be99876fc31bc4b7f",
+    "relative_pack_path_owner": "PASS: real 2B Q4_0, 31 prompt and 3 generated tokens, exact expected output",
+    "performance_rerun": "N/A: the repair only removes the pre-open absolute-path refusal; measured requests used an absolute path and all execution code is unchanged."
+  }
+}

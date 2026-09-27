@@ -456,6 +456,25 @@ pub fn load_file(
   return Ok(())
 }
 
+// The plan supplies the same validated shape and member offsets as load_file.
+// The native owner retains the mapped pack until its synchronized teardown.
+pub fn load_mapped(borrow owner: ggml_ffi.GpuDevice,
+  borrow plan: Plan) -> Result<(), Error> {
+  validate_plan(plan)?
+  runtime_weights.begin(owner, plan.count)?
+  mut at := 0
+  loop {
+    if at >= plan.count { break }
+    index := runtime_weights.add_mapped(owner, runtime_weights.Shape {
+        ggml_type: plan.ggml_type[at], n_dims: plan.n_dims[at],
+        ne0: plan.ne0[at], ne1: plan.ne1[at], ne2: plan.ne2[at], ne3: plan.ne3[at],
+      }, plan.pack_offset[at], plan.nbytes[at])?
+    if index != at { return Err(Error.Invalid) }
+    at = at + 1
+  }
+  return runtime_weights.finish(owner)
+}
+
 pub fn load(
   borrow owner: ggml_ffi.GpuDevice,
   pack_path: str,

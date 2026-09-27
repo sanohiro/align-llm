@@ -83,8 +83,8 @@ def comparison(arms, model, case, reference):
             values[arm['system']] = rows[0]['elapsed_ns']
         reductions.append((values[reference] - values['candidate']) / values[reference])
     median = statistics.median(reductions)
-    met = median >= .15 and sum(value > 0 for value in reductions) >= 4
-    return dict(decision='met' if met else 'not_met', median_paired_reduction=median,
+    return dict(decision='assessment_required', median_paired_reduction=median,
+                faster_pairs=sum(value > 0 for value in reductions),
                 paired_reductions=reductions)
 
 
@@ -405,7 +405,7 @@ def run(args):
     option['backend_bundle'] = str((args.profile.resolve().parent/option['backend_bundle']).resolve())
     options_path = destination/'options.json'
     options_path.write_text(json.dumps(option))
-    record = dict(schema_version=2 if final_cuda(args) else 1,artifact_kind='GPU_SESSION_MEASUREMENT',status='FAIL',decision='incomplete',
+    record = dict(schema_version=3,artifact_kind='GPU_SESSION_MEASUREMENT',status='FAIL',decision='incomplete',
         identities=identities,policy=dict(campaign=args.campaign,
             timing_basis='producer_internal_processing' if final_cuda(args) else 'caller_wall_including_startup_and_transport',order=ORDER,cases=CASES,system=SYSTEM,maximum_tokens=128,deadline_seconds=7200,
             same_kv='f32',current_kv='f16',context=2304,batch=2048,microbatch=128,threads=4,flash_attention=True,

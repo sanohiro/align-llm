@@ -1,6 +1,7 @@
 module runtime_qwen35_recurrent
 
 import ggml_ffi
+import runtime_attention
 import runtime_qwen35_geometry
 import runtime_qwen35_roles
 import runtime_qwen35_state
@@ -42,7 +43,7 @@ pub fn build_many(
 ) -> Result<(), Error> {
   if !runtime_qwen35_geometry.valid_layer_pattern(g)
     || layer < 0 || layer >= g.n_layer || runtime_qwen35_state.is_attention(g, layer)
-    || count < 1 || count > 128
+    || count < 1 || count > runtime_attention.MAX_PREFILL
     || g.ssm_inner_size / g.ssm_time_step_rank != g.ssm_state_size
     || g.ssm_time_step_rank % g.ssm_group_count != 0
     || ggml_ffi.handle_absent(ctx) || ggml_ffi.handle_absent(graph)
@@ -144,10 +145,24 @@ pub fn build_many(
     1, 1, count, "q35_recurrent_delta_next") else { return Err(Error.Invalid) }
   ggml_ffi.op_reshape_3d(ctx, slots, 54, 52, g.ssm_state_size, g.ssm_state_size,
     g.ssm_time_step_rank, "q35_recurrent_delta_next_shape") else { return Err(Error.Invalid) }
-  runtime_qwen35_state_io.stage_write(owner, g, state, layer, runtime_qwen35_state.DELTA,
-    kind, slots, 55, 54)?
-  ggml_ffi.graph_expand(graph, slots, 55, "q35_recurrent_delta_commit") else {
-    return Err(Error.Invalid)
+  if kind != ggml_ffi.GPU_GRAPH_PREFILL && ggml_ffi.gpu_native_state_copy_enabled(owner) {
+    destination := runtime_qwen35_state.write_index(
+      g, state, layer, runtime_qwen35_state.DELTA)?
+    ggml_ffi.gpu_native_state_copy_register(owner, kind, slots, 54, destination) else {
+      return Err(Error.Invalid)
+    }
+    ggml_ffi.slot_mark_output(slots, 54, "q35_native_delta_source") else {
+      return Err(Error.Invalid)
+    }
+    ggml_ffi.graph_expand(graph, slots, 54, "q35_native_delta_source") else {
+      return Err(Error.Invalid)
+    }
+  } else {
+    runtime_qwen35_state_io.stage_write(owner, g, state, layer, runtime_qwen35_state.DELTA,
+      kind, slots, 55, 54)?
+    ggml_ffi.graph_expand(graph, slots, 55, "q35_recurrent_delta_commit") else {
+      return Err(Error.Invalid)
+    }
   }
   ggml_ffi.op_reshape_3d(ctx, slots, 56, 51, g.ssm_state_size, g.ssm_time_step_rank, count,
     "q35_recurrent_output_shape") else { return Err(Error.Invalid) }

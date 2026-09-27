@@ -31,7 +31,7 @@ pub fn build_many(
   ctx: raw, graph: raw, borrow slots: slice<u8>,
 ) -> Result<(), Error> {
   if !runtime_qwen35_roles.full_attention(g, layer)
-    || position < 0 || count < 1 || count > 128
+    || position < 0 || count < 1 || count > runtime_attention.MAX_PREFILL
     || count > g.context_length - position {
     return Err(Error.Invalid)
   }

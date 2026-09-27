@@ -1,0 +1,183 @@
+#!/usr/bin/env python3
+"""Independent old/new retained HTTP and SSE timing; no production inference logic."""
+import argparse
+import hashlib
+import http.client
+import json
+import os
+from pathlib import Path
+import socket
+import subprocess
+import time
+
+
+def digest(path):
+    with open(path, 'rb') as source:
+        return hashlib.file_digest(source, 'sha256').hexdigest()
+
+
+def request(port, body):
+    connection = http.client.HTTPConnection('127.0.0.1', port, timeout=180)
+    start = time.monotonic_ns()
+    try:
+        connection.request('POST', '/v1/chat/completions', json.dumps(body),
+                           {'Content-Type': 'application/json'})
+        response = connection.getresponse()
+        if response.status != 200:
+            raise ValueError((response.status, response.read()))
+        if not body['stream']:
+            result = json.loads(response.read())
+            return dict(wall_ns=time.monotonic_ns()-start, output=result['choices'][0]['message']['content'],
+                        finish=result['choices'][0]['finish_reason'], usage=result['usage'])
+        text, first, finish, done = [], None, None, False
+        while line := response.readline():
+            if not line.startswith(b'data: '):
+                continue
+            data = line[6:].strip()
+            if data == b'[DONE]':
+                done = True
+                break
+            event = json.loads(data)['choices'][0]
+            content = event['delta'].get('content') or ''
+            if content:
+                text.append(content)
+                if first is None:
+                    first = time.monotonic_ns()-start
+            if event.get('finish_reason') is not None:
+                finish = event['finish_reason']
+        if not done or first is None or finish is None:
+            raise ValueError('incomplete SSE response')
+        return dict(wall_ns=time.monotonic_ns()-start, ttft_ns=first,
+                    output=''.join(text), finish=finish)
+    finally:
+        connection.close()
+
+
+def workloads(cfg):
+    cases = cfg.get('cases', [[64,16], [200,64], [330,64], [64,16]])
+    if type(cases) is not list or not cases:
+        raise ValueError('cases must be a nonempty list of prompt/output pairs')
+    for case in cases:
+        if type(case) is not list or len(case) != 2:
+            raise ValueError('cases must contain prompt/output pairs')
+        prompt, steps = case
+        if type(prompt) is not int or type(steps) is not int or not 64 <= prompt <= 2048 or not 1 <= steps <= 127 or prompt + steps - 1 > 2175:
+            raise ValueError('case exceeds measurement session bounds')
+    return cases
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--config', type=Path, required=True,
+                        help='Same model/pack/geometry and control/candidate binary/options/lib as measure-native-swiglu')
+    parser.add_argument('--output', type=Path, required=True)
+    args = parser.parse_args()
+    if args.output.exists():
+        parser.error('output must be new')
+    cfg = json.loads(args.config.read_text())
+    cases = workloads(cfg)
+    env = {k: v for k, v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_', 'ALIGN_LLM_SYNC_WEIGHT_UPLOAD', 'ALIGN_LLM_PREFILL_', 'ALIGN_LLM_MAPPED_WEIGHTS', 'ALIGN_LLM_SHARED_LOGITS', 'ALIGN_LLM_NEON_GREEDY', 'ALIGN_LLM_GRAPH_GREEDY'))}
+    report = dict(schema_version=1, status='INCOMPLETE', native_enabled=False,
+                  model_sha256=digest(cfg['model']), align_revision=Path('.align-revision').read_text().strip(),
+                  ggml_revision=Path('.llama-revision').read_text().strip(), arms={}, cases=[],
+                  note='Two retained servers, serial requests, two warmups per mode, five alternating pairs. SSE counts are established by identical text and finish against the counted nonstream response; SSE does not expose usage.')
+    servers = []
+    def save():
+        args.output.write_text(json.dumps(report, indent=2)+'\n')
+    save()
+    try:
+        for name in ('control', 'candidate'):
+            arm = cfg[name]
+            execution = arm.get('execution', {})
+            if set(execution) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights', 'shared_logits', 'neon_greedy', 'graph_greedy'}:
+                raise ValueError('unknown execution setting')
+            sync, chunk = execution.get('sync_weight_upload', '0'), execution.get('prefill_chunk', '128')
+            final_logits = execution.get('final_prefill_logits', '0')
+            last_row = execution.get('final_ffn_row', '0')
+            mapped = execution.get('mapped_weights', '0')
+            shared = execution.get('shared_logits', '0')
+            neon = execution.get('neon_greedy', '0')
+            graph = execution.get('graph_greedy', '0')
+            if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or shared not in ('0', '1') or neon not in ('0', '1') or graph not in ('0', '1') or sum((shared == '1', neon == '1', graph == '1')) > 1 or (mapped == '1' and sync == '1'):
+                raise ValueError('invalid execution setting')
+            with socket.socket() as listener:
+                listener.bind(('127.0.0.1', 0))
+                port = listener.getsockname()[1]
+            log = args.output.with_suffix('.'+name+'.log').open('wb')
+            started = time.monotonic_ns()
+            try:
+                process = subprocess.Popen([arm['binary'], '--serve-openai', cfg['model'], cfg['pack'], cfg['geometry'],
+                                            arm['options'], '0', 'host-reuse', str(port)], stdout=log, stderr=log,
+                                           env=dict(env, DYLD_LIBRARY_PATH=arm['lib'], ALIGN_LLM_NATIVE_SWIGLU='0',
+                                                    ALIGN_LLM_SYNC_WEIGHT_UPLOAD=sync, ALIGN_LLM_PREFILL_CHUNK=chunk,
+                                                    ALIGN_LLM_PREFILL_FINAL_LOGITS=final_logits,
+                                                    ALIGN_LLM_PREFILL_LAST_FFN_ROW=last_row,
+                                                    ALIGN_LLM_MAPPED_WEIGHTS=mapped,
+                               ALIGN_LLM_SHARED_LOGITS=shared, ALIGN_LLM_NEON_GREEDY=neon,
+                               ALIGN_LLM_GRAPH_GREEDY=graph))
+            except BaseException:
+                log.close()
+                raise
+            servers.append((process, log, port))
+            while True:
+                if process.poll() is not None:
+                    raise RuntimeError(f'{name} server exited: {process.returncode}; see its log')
+                if time.monotonic_ns()-started > 180_000_000_000:
+                    raise TimeoutError(f'{name} readiness timeout')
+                connection = http.client.HTTPConnection('127.0.0.1', port, timeout=1)
+                try:
+                    connection.request('GET', '/v1/models')
+                    response = connection.getresponse()
+                    if response.status == 200:
+                        response.read()
+                        break
+                except (OSError, http.client.HTTPException):
+                    time.sleep(0.05)
+                finally:
+                    connection.close()
+            report['arms'][name] = dict(binary_sha256=digest(arm['binary']), options_sha256=digest(arm['options']),
+                bundle_id=json.loads((Path(arm['lib'])/'manifest.json').read_text())['bundle_id'],
+                startup_ns=time.monotonic_ns()-started, execution=dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped, shared_logits=shared, neon_greedy=neon, graph_greedy=graph))
+        for prompt, steps in cases:
+            body = dict(model='host-reuse', temperature=0, max_tokens=steps, stream=False,
+                        messages=[dict(role='system',content='You are a coding assistant. Return a concise patch-oriented answer.'),
+                                  dict(role='user',content='List the integers from 1 to 1000 in ascending order, separated by single spaces. Output only the integers. '+'hello '*(prompt-56))])
+            case = dict(prompt_tokens=prompt, completion_tokens=steps, modes=[])
+            report['cases'].append(case)
+            expected = None
+            for stream in (False, True):
+                body['stream'] = stream
+                mode = dict(stream=stream, warmups=[], pairs=[])
+                case['modes'].append(mode)
+                for repetition in range(7):
+                    pair = {}
+                    order = (0,1) if repetition % 2 == 0 else (1,0)
+                    for at in order:
+                        name = ('control','candidate')[at]
+                        row = request(servers[at][2], body)
+                        if expected is None:
+                            expected = row['output']
+                        if row['output'] != expected or row['finish'] != 'length':
+                            raise ValueError('output or actual generation length differs')
+                        if not stream and row['usage'] != dict(prompt_tokens=prompt, completion_tokens=steps, total_tokens=prompt+steps):
+                            raise ValueError(('token count differs', row['usage']))
+                        pair[name] = row
+                    pair['order'] = [('control','candidate')[at] for at in order]
+                    mode['warmups' if repetition < 2 else 'pairs'].append(pair)
+                    save()
+            print(f'HTTP/SSE {prompt}/{steps}: exact output PASS, five pairs retained', flush=True)
+        report['status'] = 'COMPLETE'
+        save()
+    finally:
+        for process, log, _ in servers:
+            process.terminate()
+            try:
+                process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=10)
+            log.close()
+
+
+if __name__ == '__main__':
+    main()
