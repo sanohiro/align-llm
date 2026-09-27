@@ -1,0 +1,50 @@
+case layer=3 gpu=Apple M1 threadgroup=128 setup_ms=91.6487 gate_bytes=7077888 up_bytes=7077888 down_bytes=7077888 gated_max_abs_diff=2.98023e-07 down_max_abs_diff=8.9407e-08
+pair layer=3 stage=gated index=0 ggml_ms=0.732348 native_ms=0.695710 native_gpu_ms=0.447935 difference_ms=0.036637
+pair layer=3 stage=gated index=1 ggml_ms=0.774931 native_ms=0.743911 native_gpu_ms=0.463162 difference_ms=0.031021
+pair layer=3 stage=gated index=2 ggml_ms=0.790110 native_ms=0.735763 native_gpu_ms=0.448027 difference_ms=0.054348
+pair layer=3 stage=gated index=3 ggml_ms=0.784487 native_ms=0.715381 native_gpu_ms=0.448158 difference_ms=0.069106
+pair layer=3 stage=gated index=4 ggml_ms=0.808796 native_ms=0.745365 native_gpu_ms=0.458117 difference_ms=0.063431
+summary layer=3 stage=gated ggml_median_ms=0.784487 native_median_ms=0.735763 native_gpu_median_ms=0.448158 paired_difference_median_ms=0.054348
+pair layer=3 stage=full index=0 ggml_ms=0.990869 native_ms=0.933623 native_gpu_ms=0.652337 difference_ms=0.057246
+pair layer=3 stage=full index=1 ggml_ms=0.955054 native_ms=0.912002 native_gpu_ms=0.666817 difference_ms=0.043052
+pair layer=3 stage=full index=2 ggml_ms=0.960310 native_ms=0.918364 native_gpu_ms=0.651238 difference_ms=0.041946
+pair layer=3 stage=full index=3 ggml_ms=1.107191 native_ms=1.035881 native_gpu_ms=0.655862 difference_ms=0.071310
+pair layer=3 stage=full index=4 ggml_ms=1.120510 native_ms=1.023054 native_gpu_ms=0.654798 difference_ms=0.097456
+summary layer=3 stage=full ggml_median_ms=0.990869 native_median_ms=0.933623 native_gpu_median_ms=0.654798 paired_difference_median_ms=0.057246
+boundary_pair layer=3 mode=wait index=0 combined_ms=1.029329 separate_ms=1.375271 combined_gpu_ms=0.680525 separate_gpu_ms=0.672056 extra_wall_ms=0.345942
+boundary_pair layer=3 mode=wait index=1 combined_ms=1.017477 separate_ms=1.378988 combined_gpu_ms=0.657881 separate_gpu_ms=0.670121 extra_wall_ms=0.361511
+boundary_pair layer=3 mode=wait index=2 combined_ms=1.027104 separate_ms=1.416865 combined_gpu_ms=0.655183 separate_gpu_ms=0.671594 extra_wall_ms=0.389760
+boundary_pair layer=3 mode=wait index=3 combined_ms=1.040529 separate_ms=1.397579 combined_gpu_ms=0.674569 separate_gpu_ms=0.671492 extra_wall_ms=0.357050
+boundary_pair layer=3 mode=wait index=4 combined_ms=0.982721 separate_ms=1.356662 combined_gpu_ms=0.652879 separate_gpu_ms=0.680179 extra_wall_ms=0.373942
+boundary_summary layer=3 mode=wait combined_median_ms=1.027104 separate_median_ms=1.378988 combined_gpu_median_ms=0.657881 separate_gpu_median_ms=0.671594 paired_extra_wall_median_ms=0.361511
+boundary_pair layer=3 mode=queued index=0 combined_ms=1.044587 separate_ms=1.051060 combined_gpu_ms=0.679794 separate_gpu_ms=0.658840 extra_wall_ms=0.006473
+boundary_pair layer=3 mode=queued index=1 combined_ms=0.994775 separate_ms=1.058863 combined_gpu_ms=0.654846 separate_gpu_ms=0.685777 extra_wall_ms=0.064087
+boundary_pair layer=3 mode=queued index=2 combined_ms=1.013642 separate_ms=1.053771 combined_gpu_ms=0.656694 separate_gpu_ms=0.666160 extra_wall_ms=0.040129
+boundary_pair layer=3 mode=queued index=3 combined_ms=1.021498 separate_ms=1.080698 combined_gpu_ms=0.655263 separate_gpu_ms=0.666300 extra_wall_ms=0.059200
+boundary_pair layer=3 mode=queued index=4 combined_ms=1.024119 separate_ms=1.114156 combined_gpu_ms=0.653658 separate_gpu_ms=0.707300 extra_wall_ms=0.090037
+boundary_summary layer=3 mode=queued combined_median_ms=1.021498 separate_median_ms=1.058863 combined_gpu_median_ms=0.655263 separate_gpu_median_ms=0.666300 paired_extra_wall_median_ms=0.059200
+case layer=23 gpu=Apple M1 threadgroup=128 setup_ms=82.6483 gate_bytes=7077888 up_bytes=7077888 down_bytes=7077888 gated_max_abs_diff=1.81794e-06 down_max_abs_diff=7.15256e-07
+pair layer=23 stage=gated index=0 ggml_ms=0.749990 native_ms=0.701350 native_gpu_ms=0.446796 difference_ms=0.048640
+pair layer=23 stage=gated index=1 ggml_ms=0.778469 native_ms=0.750873 native_gpu_ms=0.463202 difference_ms=0.027596
+pair layer=23 stage=gated index=2 ggml_ms=0.794923 native_ms=0.724594 native_gpu_ms=0.448381 difference_ms=0.070329
+pair layer=23 stage=gated index=3 ggml_ms=0.785825 native_ms=0.765377 native_gpu_ms=0.486021 difference_ms=0.020448
+pair layer=23 stage=gated index=4 ggml_ms=0.769713 native_ms=0.747346 native_gpu_ms=0.473815 difference_ms=0.022367
+summary layer=23 stage=gated ggml_median_ms=0.778469 native_median_ms=0.747346 native_gpu_median_ms=0.463202 paired_difference_median_ms=0.027596
+pair layer=23 stage=full index=0 ggml_ms=1.013752 native_ms=0.954940 native_gpu_ms=0.652510 difference_ms=0.058813
+pair layer=23 stage=full index=1 ggml_ms=1.076271 native_ms=0.967352 native_gpu_ms=0.653942 difference_ms=0.108919
+pair layer=23 stage=full index=2 ggml_ms=1.080990 native_ms=1.013773 native_gpu_ms=0.656331 difference_ms=0.067217
+pair layer=23 stage=full index=3 ggml_ms=1.075721 native_ms=1.026763 native_gpu_ms=0.677531 difference_ms=0.048958
+pair layer=23 stage=full index=4 ggml_ms=1.132379 native_ms=1.030537 native_gpu_ms=0.655367 difference_ms=0.101842
+summary layer=23 stage=full ggml_median_ms=1.076271 native_median_ms=1.013773 native_gpu_median_ms=0.655367 paired_difference_median_ms=0.067217
+boundary_pair layer=23 mode=wait index=0 combined_ms=0.994175 separate_ms=1.362140 combined_gpu_ms=0.655062 separate_gpu_ms=0.672721 extra_wall_ms=0.367965
+boundary_pair layer=23 mode=wait index=1 combined_ms=1.048156 separate_ms=1.417086 combined_gpu_ms=0.680802 separate_gpu_ms=0.665292 extra_wall_ms=0.368929
+boundary_pair layer=23 mode=wait index=2 combined_ms=1.005090 separate_ms=1.357040 combined_gpu_ms=0.656935 separate_gpu_ms=0.669733 extra_wall_ms=0.351950
+boundary_pair layer=23 mode=wait index=3 combined_ms=1.015425 separate_ms=1.413081 combined_gpu_ms=0.655467 separate_gpu_ms=0.675696 extra_wall_ms=0.397656
+boundary_pair layer=23 mode=wait index=4 combined_ms=1.003071 separate_ms=1.291633 combined_gpu_ms=0.674031 separate_gpu_ms=0.657790 extra_wall_ms=0.288562
+boundary_summary layer=23 mode=wait combined_median_ms=1.005090 separate_median_ms=1.362140 combined_gpu_median_ms=0.656935 separate_gpu_median_ms=0.669733 paired_extra_wall_median_ms=0.367965
+boundary_pair layer=23 mode=queued index=0 combined_ms=1.014971 separate_ms=1.049169 combined_gpu_ms=0.666146 separate_gpu_ms=0.659438 extra_wall_ms=0.034198
+boundary_pair layer=23 mode=queued index=1 combined_ms=0.985210 separate_ms=1.027667 combined_gpu_ms=0.680588 separate_gpu_ms=0.678571 extra_wall_ms=0.042456
+boundary_pair layer=23 mode=queued index=2 combined_ms=0.967967 separate_ms=1.037160 combined_gpu_ms=0.654117 separate_gpu_ms=0.667702 extra_wall_ms=0.069194
+boundary_pair layer=23 mode=queued index=3 combined_ms=0.969546 separate_ms=1.035254 combined_gpu_ms=0.654002 separate_gpu_ms=0.685967 extra_wall_ms=0.065708
+boundary_pair layer=23 mode=queued index=4 combined_ms=1.056823 separate_ms=1.080908 combined_gpu_ms=0.680775 separate_gpu_ms=0.683777 extra_wall_ms=0.024085
+boundary_summary layer=23 mode=queued combined_median_ms=0.985210 separate_median_ms=1.037160 combined_gpu_median_ms=0.666146 separate_gpu_median_ms=0.678571 paired_extra_wall_median_ms=0.042456

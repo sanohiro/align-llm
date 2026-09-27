@@ -245,6 +245,56 @@ mappings. The unsplit local result justifies a separate complete-FFN command
 screen before any real-model integration; it is not a request-speed claim.
 Conditions and all samples are in `docs/qwen35-q4-down-split-screen.md`.
 
+### Independent Metal Q4_0 complete-FFN capture screen (2026-09-28)
+
+The unsplit down projection beat isolated ggml in 19/20 local wall pairs,
+whereas hidden-axis split-K and a one-group-per-hidden-tile complete FFN lost.
+Test the earlier two-dispatch gate/up/SiLU plus unsplit-down design on actual
+captured Qwen3.5-2B bytes, rather than relying on its synthetic-input result.
+This is an independent Metal command with one explicit producer/consumer
+barrier; no ggml source patch or model-runtime change is part of the screen.
+
+| Contract | Definition |
+| --- | --- |
+| Admission / semantics | Actual captured layers 3 and 23: Q4_0 gate/up `[2048,6144]`, Q4_0 down `[6144,2048]`, F32 input and Qwen SiLU gate. Require exact capture sizes and independently rebuild the pinned ggml graph. Q4_1 down layers 0..2 are excluded. Constants stay in this local probe; any runtime specialization must select by shape/type/activation/layout. |
+| Ownership / order | The native arm owns one exact shared Metal buffer per weight, one input, one 6144-F32 gated intermediate and one 2048-F32 result. Upload before timing; gate/up/SiLU and down dispatch in one command encoder with an explicit buffer barrier. Wait once after the complete command. ggml independently owns its oracle graph and allocation. No timed CPU/GPU copy, model-sized duplicate within an arm or omitted state update. |
+| Correctness | Before timing, require rebuilt ggml gated/final outputs to match the captures, then compare complete native gated/final vectors under the already declared FFN bound `0.005 + 0.0005 * abs(reference)`, with finite checks. Check twenty reused commands separately and the output after each timed pair. Preserve the existing generation regression suite; this local screen cannot claim generation compatibility. |
+| Measurement / ceiling | Twelve warmups per arm, two process runs of five alternating pairs of twenty synchronized complete FFNs per arm. Record ggml and native wall time, native GPU command interval, gate-only versus complete command, setup/upload and scratch. Build plus one run <=900 s; native intermediate <=24 KiB and result <=8 KiB beyond weights/input. A local advantage justifies an opt-in real-model connection trial only if the graph-boundary cost is accounted for; a local loss withdraws this mapping. No percentage gate. |
+
+Before a real-model graph partition, measure its minimum native command cost on
+the same captured bytes: run gate/up and down in separate command buffers with
+the necessary completion wait between them, versus the same two kernels in one
+command with a barrier. Use twelve warmups and five alternating pairs of twenty
+complete operations, check the output, and record wall and summed GPU intervals.
+This is a boundary diagnostic, not an exact ggml-graph partition measurement.
+Also test two command buffers on one Metal queue with default tracked shared
+buffers, committing gate/up before down and waiting only for down completion.
+Check both command statuses and the complete output after each pair, using the
+same warmup/alternation. This tests whether queue order and hazard tracking
+can retain correctness while avoiding the intermediate host wait; it does
+not imply that the current ggml graph API can use that schedule.
+The combined and separate native schedules keep distinct gated/result buffers
+so every pair verifies both arms regardless of execution order.
+
+Closure: checked capture identity, construction/allocation and command failure;
+complete gated/final and reuse checks; paired samples and honest decision.
+Before runtime adoption, Align must own model selection and graph boundaries,
+and full 2B/0.8B correctness, prefill/decode/request, startup and rollback
+must be measured. A separate ggml graph partition with a per-layer host wait
+is not assumed to be free.
+
+Result: rebuilt ggml gated/final vectors matched the captures byte for byte;
+independent Metal outputs passed the declared local bound. Across the final
+two five-pair runs and both actual layers, the combined native complete FFN
+beat isolated ggml in 20/20 wall pairs with paired median advantages of
+0.057–0.068 ms. Two commands with an intermediate CPU wait added
+0.362–0.423 ms; ordered same-queue submission with only a final wait added
+0.030–0.059 ms and passed every output check for both timed arms. The latter
+remains close to the local compute gain, so do not claim request improvement or
+enable the candidate. Continue with an Align-owned asynchronous schedule or larger
+execution unit that avoids per-FFN host waits. Full conditions and samples
+are in `docs/qwen35-q4-full-ffn-capture-screen.md`.
+
 ### Final-chunk logits trial (2026-09-26)
 
 Remove unused intermediate-prefill output work on the current 2B consumer. The
