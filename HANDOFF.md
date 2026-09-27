@@ -2,7 +2,23 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active native Metal tile-consumer FFN screen (2026-09-28)
+## Active native Metal Q4_0 down split-K screen (2026-09-28)
+
+Branch `agent/native-metal-q4-down-split-screen` starts from merged `main` at
+`c51c0cfe` (PR #313). GPU optimization remains the priority. The independent
+down screen and raw two-run result are in `docs/qwen35-q4-down-split-screen.md`
+and `eval/benchmarks/qwen35-q4-down-split-2026-09-28-{d,e}.txt`. Actual 2B
+layers 3 and 23 and a synthetic tail pass the declared numerical bound;
+captured and rebuilt ggml full outputs are byte-identical. Two/four-way
+split-K loses direct unsplit GPU-interval and wall comparisons and is withdrawn.
+The independent unsplit down arm wins 19/20 isolated ggml wall pairs but has no
+complete-FFN or request claim. Next: owner verification, one comprehensive
+review, exact-head preflight, CI and merge; then screen a complete native
+gate/up/SiLU plus unsplit-down command using the actual captures. Source weights
+and captures remain outside Git. Another Metal host, CUDA and Gemma are
+deferred until qualified.
+
+## Completed native Metal tile-consumer FFN screen (2026-09-28)
 
 Branch `agent/native-metal-ffn-tile-consumer` starts from merged `main` at
 `eee12bdb` (PR #312). GPU optimization remains the priority. The bounded
@@ -17,9 +33,9 @@ post-pair output checks lost another 10/10 pairs (-0.609 and -0.662 ms).
 Scalar/packed loads, 256/512/1024 threads and two output
 partitions were screened; the latter increases repeated gate/up work. Withdraw
 this mapping before runtime integration; retain ggml fallback and prior native
-state-copy route. Next: rerun exact-head preflight after two review repairs,
-inspect the narrow repair delta, publish the negative result, then inspect down
-projection scheduling/counters without repeating gate/up work. Q4_1 down
+state-copy route. Final exact-head preflight and all three CI checks passed at
+`8abed89b`; PR #313 merged as `c51c0cfe`. Next inspect down projection
+scheduling without repeating gate/up work. Q4_1 down
 layers, another Metal host, CUDA and Gemma remain deferred until qualified.
 
 ## Completed native Metal copy-command greedy trial (2026-09-28)

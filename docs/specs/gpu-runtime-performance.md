@@ -212,6 +212,39 @@ and full receipt in `docs/qwen35-native-q4-tile-ffn-screen.md`. Next inspect
 down projection scheduling/counters without repeating gate/up work. This local
 loss does not impose a fixed improvement threshold or rule out other fused FFNs.
 
+### Independent Metal Q4_0 down split-K screen (2026-09-28)
+
+The tile-consumer FFN lost while doing long down-row work in each tile group.
+Isolate that scheduling hypothesis without recomputing gate/up: use the captured
+F32 gated vector and Q4_0 down weights from actual 2B layers 3 and 23. Compare
+the pinned ggml Metal down projection, an independent four-row unsplit Metal
+kernel, and two/four-way hidden-axis split-K kernels followed by a reduction.
+This is a local device experiment; it does not change runtime selection.
+
+| Contract | Definition |
+| --- | --- |
+| Admission / semantics | Captured F32 gated vector of length 6144, Q4_0 down matrix `[6144,2048]`, and complete F32 output for layers 3 and 23. Q4_1 layers 0..2 are excluded. The split divides only the reduction axis, preserving the same weight bytes, quantized dot operation and output rows. Shape and quantization are local probe arguments, not model-name predicates in product code. |
+| Ownership / execution | Each arm has its own exact-weight shared Metal buffer; input is uploaded once. Native split partials have one owner and a bounded second reduction dispatch in the same command with an explicit buffer barrier. No per-operation CPU/GPU copies, gate/up recomputation or intermediate CPU wait. ggml independently owns its oracle graph. The wrapper owns and releases all probe allocations. |
+| Correctness gate | Before timing, match the pinned ggml full output and the captured complete output; reject nonfinite results. Declare the existing FFN local bound `0.005 + 0.0005 * abs(reference)` before the screen, and report actual differences for unsplit and each split. Check repeated command reuse and a synthetic nonmultiple split tail. Do not weaken existing generation checks or call this exact compatibility. |
+| Measurement / ceiling | Twelve warmups, then five alternating pairs of twenty synchronized complete down operations per arm on identical bytes. Record host wall and native GPU intervals, dispatch count, setup/upload, partial scratch, all pairs and device identity. A local run must finish within 900 s; split scratch <=64 KiB, one output <=8 KiB, and no second model-weight copy within an arm. Compare unsplit versus split and ggml versus split; a stable local advantage permits an opt-in real-model trial but is not a request-speed claim. A loss withdraws this mapping only. No percentage threshold applies. |
+
+Closure: verify captured sizes/types before allocation; validate both complete
+outputs and a split tail; detect command/encoder failure and clean up; check
+reused output separately from timing; retain the raw alternating samples and
+an explicit integration or withdrawal decision. Any real-model integration
+would require a separate Align-owned selection and complete 2B/0.8B
+correctness, prefill/decode/request and rollback qualification.
+
+Result: both real captured down outputs matched rebuilt ggml byte for byte,
+and unsplit/two/four-way native outputs passed the predeclared bound, including
+a 160-wide synthetic tail and repeated reuse. Across two five-pair runs, the
+unsplit native arm beat isolated ggml in 19/20 paired wall comparisons. The
+two-way split beat unsplit in only 4/20 wall pairs and 6/20 GPU-interval pairs;
+the four-way split won 2/20 wall and 2/20 GPU pairs. Withdraw both split
+mappings. The unsplit local result justifies a separate complete-FFN command
+screen before any real-model integration; it is not a request-speed claim.
+Conditions and all samples are in `docs/qwen35-q4-down-split-screen.md`.
+
 ### Final-chunk logits trial (2026-09-26)
 
 Remove unused intermediate-prefill output work on the current 2B consumer. The

@@ -109,6 +109,15 @@ speed result. Historical measurements remain in their owning reports.
   concrete suspects, not isolated counter findings. Measure the whole fused
   operation and its work distribution before assuming saved intermediate bytes
   exceed lost parallelism. See the [tile-consumer screen](qwen35-native-q4-tile-ffn-screen.md).
+- A split reduction axis must recover more GPU work than its partial writes,
+  reduction dispatch and barrier add. On M1, actual Q4_0 FFN down projections
+  from 2B layers 3 and 23 passed complete-output checks. Two/four-way split-K
+  lost the direct unsplit GPU-interval comparison in 14/20 and 18/20 pairs,
+  respectively, across two runs; wall results also favored unsplit. The
+  independent unsplit arm beat isolated pinned ggml in 19/20 wall pairs, but
+  that does not include a gate/up connection or model request. Test a complete
+  native FFN command with this unsplit down mapping before changing the runtime.
+  See the [down split screen](qwen35-q4-down-split-screen.md).
 
 ## Current Qwen3.5-2B evidence and next test
 
