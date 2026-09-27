@@ -33,6 +33,31 @@ def bundle_patch_digest(bundle, flag_name, file_name):
         raise ValueError('retained bundle patch does not match build flag')
     return values[0]
 
+def read_log_span(fd, start, end):
+    if end < start:
+        raise ValueError('diagnostic log shrank during a request')
+    parts = []
+    while start < end:
+        part = os.pread(fd, end - start, start)
+        if not part:
+            raise ValueError('diagnostic log span could not be read')
+        parts.append(part)
+        start += len(part)
+    return b''.join(parts)
+
+def last_request_native_waits(request_waits, prefill_graphs, steps, state_copy, prefill_copy):
+    per_request = (steps - 1 if state_copy else 0) + (prefill_graphs if prefill_copy else 0)
+    if len(request_waits) != 3:
+        raise ValueError('three request-local native wait groups are required')
+    for ordinal, waits in enumerate(request_waits):
+        if len(waits) != per_request:
+            raise ValueError(f'request {ordinal} native wait count mismatch: {len(waits)} != {per_request}')
+        prefill_waits = prefill_graphs if prefill_copy else 0
+        if any(kind != 0 for kind, _ in waits[:prefill_waits]) \
+                or any(kind == 0 for kind, _ in waits[prefill_waits:]):
+            raise ValueError(f'request {ordinal} native wait kinds differ from selected execution')
+    return request_waits[-1]
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True,
@@ -113,7 +138,7 @@ def main():
     if any(execution[arm]['graph_greedy'] == '1' and argmax_patches[arm] is None
            for arm in ('control', 'candidate')):
         raise ValueError('graph greedy requires a verified argmax bundle patch')
-    report = dict(schema_version=2,
+    report = dict(schema_version=3,
                   artifact_kind='NATIVE_COPY_GREEDY_MEASUREMENT' if greedy_trial else ('NATIVE_PREFILL_STATE_COPY_MEASUREMENT' if prefill_copy_trial else ('NATIVE_CONV_COPY_MEASUREMENT' if conv_copy_trial else ('NATIVE_STATE_COPY_MEASUREMENT' if state_copy_trial else ('INGRAPH_ARGMAX_MEASUREMENT' if graph_trial else 'NATIVE_SWIGLU_MEASUREMENT')))),
                   align_revision=Path('.align-revision').read_text().strip(),
                   policy='2026-09-26-no-percentage-floor', status='INCOMPLETE',
@@ -189,6 +214,7 @@ def main():
                         startup=time.monotonic_ns()-started
                         first_wall=None
                         outputs=[]
+                        log_offsets=[os.fstat(session.log.fileno()).st_size] if not args.wall_only else []
                         for _ in range(3):
                             start=time.monotonic_ns()
                             result=session.generate(dict(schema_version=1,system=SYSTEM,user=user,max_tokens=steps,temperature=0.0,seed=None))
@@ -197,29 +223,40 @@ def main():
                             outputs.append(result['output'])
                             if result['prompt_tokens']!=len(ids) or result['completion_tokens']!=steps:
                                 raise ValueError('actual processed token count differs')
-                        session.log.seek(0);log=session.log.read().decode('utf-8','replace')
-                    graphs=[(int(k),int(t)) for k,t in re.findall(r'Q35_TIMING graph_kind=(\d+) elapsed_ns=(\d+) status=0',log)]
-                    waits=[(int(k),int(t)) for k,t in re.findall(r'Q35_TIMING native_wait_kind=(\d+) elapsed_ns=(\d+) status=0',log)]
+                            if not args.wall_only:
+                                log_offsets.append(os.fstat(session.log.fileno()).st_size)
+                        request_logs=[read_log_span(session.log.fileno(),start,end).decode('utf-8','replace')
+                                      for start,end in zip(log_offsets,log_offsets[1:])]
+                    graph_groups=[[(int(k),int(t)) for k,t in re.findall(r'Q35_TIMING graph_kind=(\d+) elapsed_ns=(\d+) status=0',log)]
+                                  for log in request_logs]
+                    wait_groups=[[(int(k),int(t)) for k,t in re.findall(r'Q35_TIMING native_wait_kind=(\d+) elapsed_ns=(\d+) status=0',log)]
+                                 for log in request_logs]
                     if len(set(outputs))!=1:raise ValueError('repeated output disagreement')
                     chunk=int(execution[arm]['prefill_chunk'])
                     count=(len(ids)+chunk-1)//chunk+steps-1
-                    if not args.wall_only and len(graphs)!=3*count:raise ValueError(f'phase graph count mismatch: {len(graphs)} != {3*count}')
-                    expected_waits=3*((steps-1 if execution[arm]['native_state_copy']=='1' else 0)
-                                      + ((len(ids)+chunk-1)//chunk if execution[arm]['native_prefill_state_copy']=='1' else 0))
-                    if prefill_copy_trial and not args.wall_only and len(waits)!=expected_waits:
-                        raise ValueError(f'native wait count mismatch: {len(waits)} != {expected_waits}')
-                    recent=graphs[-count:]
-                    recent_waits=waits[-expected_waits:] if expected_waits and waits else []
+                    if not args.wall_only:
+                        for ordinal,graphs in enumerate(graph_groups):
+                            prefill_count=(len(ids)+chunk-1)//chunk
+                            if len(graphs)!=count or any(k!=0 for k,_ in graphs[:prefill_count]) \
+                                    or any(k==0 for k,_ in graphs[prefill_count:]):
+                                raise ValueError(f'request {ordinal} graph count/kinds differ from selected execution')
+                    recent=graph_groups[-1] if graph_groups else []
+                    recent_waits=[] if args.wall_only else last_request_native_waits(
+                        wait_groups, (len(ids)+chunk-1)//chunk, steps,
+                        execution[arm]['native_state_copy']=='1',
+                        execution[arm]['native_prefill_state_copy']=='1')
                     graph_prefill=sum(t for k,t in recent if k==0)
                     graph_decode=sum(t for k,t in recent if k!=0)
                     wait_prefill=sum(t for k,t in recent_waits if k==0)
                     wait_decode=sum(t for k,t in recent_waits if k!=0)
+                    if not args.wall_only and graph_prefill+graph_decode+wait_prefill+wait_decode>wall:
+                        raise ValueError('last-request phase clocks exceed measured request wall')
                     return dict(wall_ns=wall,startup_ns=startup,first_request_ns=first_wall,first_ready_ns=startup+first_wall,prefill_graphs=(len(ids)+chunk-1)//chunk,prefill_ns=None if args.wall_only else graph_prefill+wait_prefill,
                                 decode_ns=None if args.wall_only else graph_decode+wait_decode,
                                 graph_submit_prefill_ns=None if args.wall_only else graph_prefill,
                                 graph_submit_decode_ns=None if args.wall_only else graph_decode,
-                                native_wait_prefill_ns=None if args.wall_only or not waits else wait_prefill,
-                                native_wait_decode_ns=None if args.wall_only or not waits else wait_decode,
+                                native_wait_prefill_ns=None if args.wall_only or not recent_waits else wait_prefill,
+                                native_wait_decode_ns=None if args.wall_only or not recent_waits else wait_decode,
                                 output=result['output'])
                 def llama():
                     started=time.monotonic_ns()

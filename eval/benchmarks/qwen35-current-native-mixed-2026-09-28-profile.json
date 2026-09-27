@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "QWEN35_CURRENT_NATIVE_MIXED_PROFILE",
+  "status": "PASS",
+  "scope": "Instrumented diagnostic, not untraced throughput; one M1 worker ran three retained 200/32 requests while one Metal System Trace with GPU Counters was recorded.",
+  "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+  "binary_sha256": "cc2ef89cdf5dfdf4391f903ad892ddc829b0dfd732d3e0e880764b9bc1ae93c8",
+  "native_shim_sha256": "7ccb01d08d08407c3274121e4531196a18186e7c42052691621ff8b417467dd9",
+  "ggml_commit": "bb4caa7540188872173c44d161602d9271386413",
+  "backend_id": "0a472538ef35e2722fb9488d677196081ab8f726eff825a4e7837ddade57814b",
+  "phase_interposer_sha256": "5f7d6e718cd25efd242a0ba2511ff29b57c3237ff6844c37180c1c211ac69728",
+  "measurement_script_sha256": "fb96b74b710f769ce757fd35434d7a86b2f979990955cef9f9a291fae6d55f1a",
+  "worker_pid": 78849,
+  "last_request": {
+    "status": "PASS",
+    "worker_pid": 78849,
+    "scope": "instrumented third retained request; times are diagnostic, not throughput",
+    "worker_wall_ns": 1295526708,
+    "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925",
+    "graph_prefill_ns": 392026000,
+    "graph_decode_ns": 854045000,
+    "native_wait_decode_ns": 32081000,
+    "native_gpu_command_decode_ns": 25878529,
+    "native_submit_preparation_decode_ns": 2846000,
+    "native_command_total_decode_ns": 37403000,
+    "tensor_get_recent": [
+      [
+        993280,
+        276000
+      ],
+      [
+        993280,
+        40000
+      ],
+      [
+        993280,
+        47000
+      ],
+      [
+        993280,
+        37000
+      ],
+      [
+        993280,
+        25000
+      ],
+      [
+        993280,
+        33000
+      ],
+      [
+        993280,
+        60000
+      ],
+      [
+        993280,
+        26000
+      ],
+      [
+        993280,
+        36000
+      ],
+      [
+        993280,
+        28000
+      ],
+      [
+        993280,
+        28000
+      ],
+      [
+        993280,
+        28000
+      ],
+      [
+        993280,
+        26000
+      ],
+      [
+        993280,
+        31000
+      ],
+      [
+        993280,
+        26000
+      ],
+      [
+        993280,
+        27000
+      ],
+      [
+        993280,
+        28000
+      ],
+      [
+        993280,
+        29000
+      ],
+      [
+        993280,
+        206000
+      ],
+      [
+        993280,
+        119000
+      ],
+      [
+        993280,
+        32000
+      ],
+      [
+        993280,
+        30000
+      ],
+      [
+        993280,
+        36000
+      ],
+      [
+        993280,
+        27000
+      ],
+      [
+        993280,
+        62000
+      ],
+      [
+        993280,
+        55000
+      ],
+      [
+        993280,
+        31000
+      ],
+      [
+        993280,
+        27000
+      ],
+      [
+        993280,
+        26000
+      ],
+      [
+        993280,
+        38000
+      ],
+      [
+        993280,
+        32000
+      ]
+    ],
+    "graph_count": 33,
+    "native_command_count": 31
+  },
+  "shader_intervals": {
+    "worker_pid": 78849,
+    "scope": "one xctrace Metal System Trace sample of three retained 200/32 requests; shader interval sums are diagnostic and may overlap",
+    "shader_rows": 10681,
+    "sample_span_ns": 3876222084,
+    "sample_duration_ns": 3095870072,
+    "top": [
+      {
+        "name": "kernel_mul_mv_q4_0_f32",
+        "rows": 3417,
+        "sample_ns": 1106986885,
+        "share": 0.3575689093066048
+      },
+      {
+        "name": "kernel_mul_mm_q4_0_f32",
+        "rows": 633,
+        "sample_ns": 807564415,
+        "share": 0.260852166343756
+      },
+      {
+        "name": "kernel_mul_mv_q6_K_f32",
+        "rows": 251,
+        "sample_ns": 725023134,
+        "share": 0.23419042696828007
+      },
+      {
+        "name": "kernel_gated_delta_net_f32_4",
+        "rows": 702,
+        "sample_ns": 120622756,
+        "share": 0.038962473616366934
+      },
+      {
+        "name": "kernel_mul_mm_q5_K_f32",
+        "rows": 679,
+        "sample_ns": 109833571,
+        "share": 0.03547744848641051
+      },
+      {
+        "name": "kernel_mul_mv_q5_K_f32",
+        "rows": 1163,
+        "sample_ns": 46865792,
+        "share": 0.01513816501017553
+      },
+      {
+        "name": "kernel_unary_f32_f32_4",
+        "rows": 1059,
+        "sample_ns": 33090345,
+        "share": 0.010688544490054427
+      },
+      {
+        "name": "kernel_mul_mv_q4_1_f32",
+        "rows": 281,
+        "sample_ns": 32445128,
+        "share": 0.0104801323199716
+      },
+      {
+        "name": "kernel_mul_mm_q4_1_f32",
+        "rows": 21,
+        "sample_ns": 25083422,
+        "share": 0.008102220512049965
+      },
+      {
+        "name": "kernel_cpy_f32_f32",
+        "rows": 212,
+        "sample_ns": 23056320,
+        "share": 0.007447444325434856
+      },
+      {
+        "name": "kernel_swiglu_f32",
+        "rows": 289,
+        "sample_ns": 14812682,
+        "share": 0.004784658805280766
+      },
+      {
+        "name": "kernel_concat_f32",
+        "rows": 120,
+        "sample_ns": 13415140,
+        "share": 0.00433323740596566
+      },
+      {
+        "name": "kernel_ssm_conv_f32_f32_batched_4",
+        "rows": 108,
+        "sample_ns": 10547625,
+        "share": 0.0034069985996492426
+      },
+      {
+        "name": "kernel_bin_fuse_f32_f32_f32_4",
+        "rows": 699,
+        "sample_ns": 5698403,
+        "share": 0.001840646689774906
+      },
+      {
+        "name": "kernel_cpy_f32_f16",
+        "rows": 108,
+        "sample_ns": 5514674,
+        "share": 0.0017813002069681173
+      }
+    ]
+  },
+  "counter_names_verified_from_trace": {
+    "10": "Buffer Read Limiter",
+    "25": "GPU Read Bandwidth",
+    "2": "F32 Utilization",
+    "24": "Compute Occupancy"
+  },
+  "shader_counter_samples": {
+    "kernel_mul_mv_q4_0_f32": {
+      "buffer_read_limiter_percent": {
+        "samples": 24597,
+        "median": 100.0
+      },
+      "gpu_read_gb_per_s": {
+        "samples": 24597,
+        "median": 52.064100946
+      },
+      "f32_utilization_percent": {
+        "samples": 24597,
+        "median": 11.008856975
+      },
+      "compute_occupancy_percent": {
+        "samples": 24597,
+        "median": 20.435149461
+      }
+    },
+    "kernel_mul_mv_q6_K_f32": {
+      "buffer_read_limiter_percent": {
+        "samples": 18238,
+        "median": 99.79890138100001
+      },
+      "gpu_read_gb_per_s": {
+        "samples": 18238,
+        "median": 56.501520642
+      },
+      "f32_utilization_percent": {
+        "samples": 18238,
+        "median": 7.256181591000001
+      },
+      "compute_occupancy_percent": {
+        "samples": 18238,
+        "median": 32.705773671
+      }
+    },
+    "kernel_mul_mm_q4_0_f32": {
+      "buffer_read_limiter_percent": {
+        "samples": 19307,
+        "median": 28.029904641
+      },
+      "gpu_read_gb_per_s": {
+        "samples": 19307,
+        "median": 26.698621276
+      },
+      "f32_utilization_percent": {
+        "samples": 19307,
+        "median": 83.06675
+      },
+      "compute_occupancy_percent": {
+        "samples": 19307,
+        "median": 27.086583723
+      }
+    },
+    "kernel_cpy_f32_f32": {
+      "buffer_read_limiter_percent": {
+        "samples": 394,
+        "median": 0.38899611
+      },
+      "gpu_read_gb_per_s": {
+        "samples": 394,
+        "median": 5.100926598499999
+      },
+      "f32_utilization_percent": {
+        "samples": 394,
+        "median": 0.0
+      },
+      "compute_occupancy_percent": {
+        "samples": 394,
+        "median": 53.645619741000004
+      }
+    }
+  },
+  "counter_rows": 4507620,
+  "local_trace_location": "Git common directory diagnostics/q35-ceiling-20260928/current-mixed-complete.trace",
+  "limits": [
+    "GPU counter samples and shader intervals are diagnostic associations, not exact causal per-dispatch timings.",
+    "The native command/phase interposer changes host timing; use the separate untraced wall receipt for speed.",
+    "The all-process trace is filtered to the measured worker PID, but background GPU activity may still affect counters."
+  ]
+}
