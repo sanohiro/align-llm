@@ -398,6 +398,10 @@ No publication/preflight or merge is claimed at this local checkpoint.
 
 ## Historical checkpoints
 
+Earlier next-action and percentage-floor wording below records its dated
+checkpoint only. Current work and decisions use the topmost active checkpoint
+and the no-fixed-floor policy in `docs/specs/gpu-runtime-performance.md`.
+
 ## Active fused Metal FFN probe (2026-09-25)
 
 Branch: `agent/qwen35-metal-fusion-next`, based on merged `main` `ec34abac`
