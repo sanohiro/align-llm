@@ -12,12 +12,13 @@ is in `docs/qwen35-native-q4-tile-ffn-screen.md`, with raw pairs in
 layers 3 and 23, plus a synthetic nonmultiple tile, pass the predeclared
 numeric bound. The fastest 512-thread variant loses all five paired complete
 FFN operations on both layers: paired ggml-minus-native medians -0.582 and
--0.647 ms; the final wrapper rerun lost another 10/10 pairs. Scalar/packed
-loads, 256/512/1024 threads and two output
+-0.647 ms; the reviewed final wrapper with twenty untimed reuse checks and
+post-pair output checks lost another 10/10 pairs (-0.609 and -0.662 ms).
+Scalar/packed loads, 256/512/1024 threads and two output
 partitions were screened; the latter increases repeated gate/up work. Withdraw
 this mapping before runtime integration; retain ggml fallback and prior native
-state-copy route. Next: verify final source/receipt/doc consistency, run narrow
-owner and preflight, review and publish the negative result, then inspect down
+state-copy route. Next: rerun exact-head preflight after two review repairs,
+inspect the narrow repair delta, publish the negative result, then inspect down
 projection scheduling/counters without repeating gate/up work. Q4_1 down
 layers, another Metal host, CUDA and Gemma remain deferred until qualified.
 

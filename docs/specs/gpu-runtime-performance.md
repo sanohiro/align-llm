@@ -204,7 +204,9 @@ predeclared numerical bound. The fastest tested 512-thread mapping lost all
 five complete-operation pairs on both captured layers: paired ggml-minus-native
 medians -0.582 and -0.647 ms. A packed-dot rewrite improved the first shader,
 but 1024 threads and two output partitions did not close the gap. The final
-checked-in owner rerun lost another 5/5 pairs per layer. Withdraw
+reviewed owner checked twenty untimed reused outputs and the output after every
+timed pair, and lost another 5/5 pairs per layer (paired medians -0.609 and
+-0.662 ms). Withdraw
 this mapping before runtime integration; retain the reproducible local screen
 and full receipt in `docs/qwen35-native-q4-tile-ffn-screen.md`. Next inspect
 down projection scheduling/counters without repeating gate/up work. This local

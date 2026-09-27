@@ -271,9 +271,10 @@ static void screen(const char *plugin, const char *root, int layer,
     ggml_backend_tensor_get(out, reference_output.data(), 0, width * sizeof(float));
     double max_diff = compare(reference_output.data(),
         static_cast<const float *>(output_buffer.contents), width, "native FFN");
+    std::vector<float> captured;
     if (!synthetic) {
         auto raw = capture(root, layer, "output", width * sizeof(float));
-        std::vector<float> captured(width);
+        captured.resize(width);
         std::memcpy(captured.data(), raw.data(), raw.size());
         double captured_diff = compare(captured.data(), reference_output.data(), width,
                                        "ggml captured FFN");
@@ -281,6 +282,23 @@ static void screen(const char *plugin, const char *root, int layer,
     }
     std::printf("shape=%u/%u layer=%d max_abs=%g scratch=%zu setup_ms=%.3f\n",
                 width, hidden, layer, max_diff, partial_bytes, setup_ms);
+    auto check_reused_output = [&]() {
+        std::vector<float> current(width);
+        ggml_backend_tensor_get(out, current.data(), 0, width * sizeof(float));
+        compare(current.data(), static_cast<const float *>(output_buffer.contents),
+                width, "reused native FFN");
+        if (!captured.empty()) {
+            compare(captured.data(), current.data(), width, "reused captured FFN");
+        }
+    };
+    // Keep readback out of timed operations while checking every reuse in this
+    // separate sequence and the final output of each measured pair.
+    for (int i = 0; i < 20; ++i) {
+        reference();
+        native(nullptr);
+        check_reused_output();
+    }
+    std::printf("reuse_checks=20\n");
     if (timed) {
         for (int i = 0; i < 12; ++i) { reference(); native(nullptr); }
         for (int pair = 0; pair < 5; ++pair) {
@@ -298,7 +316,9 @@ static void screen(const char *plugin, const char *root, int layer,
             }
             std::printf("pair=%d ggml_ms=%.6f native_ms=%.6f native_gpu_ms=%.6f\n",
                         pair, elapsed[0] / 20, elapsed[1] / 20, gpu_total / 20);
+            check_reused_output();
         }
+        std::printf("pair_output_checks=5\n");
     }
     ggml_backend_buffer_free(reference_buffer);
     ggml_free(context);

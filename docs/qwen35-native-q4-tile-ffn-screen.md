@@ -41,7 +41,9 @@ tail of a 64-element tile; maximum difference was `1.41561e-7` for both runs.
 All outputs were finite and passed the bound declared before implementation:
 `0.005 + 0.0005 * abs(reference)`. No tolerance was widened. Reusing one
 command queue and the same buffers across warmups and timed operations produced
-the same output. The tool exits on allocation, encoder or command failure;
+the same output: the final owner checks every result in a separate twenty-call
+reuse sequence and checks the result again after each measured pair, outside
+the timed interval. The tool exits on allocation, encoder or command failure;
 process-owned Metal/ggml allocations are released when the local run ends.
 
 All arms use the same captured bytes and pinned unmodified ggml Metal plugin.
@@ -55,16 +57,17 @@ from the two arm medians.
 
 | Captured layer | ggml median | Native median | Native GPU interval | Paired ggml minus native | Native wins |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| 3 | 0.775 ms | 1.347 ms | 1.025 ms | -0.582 ms | 0/5 |
-| 23 | 0.771 ms | 1.404 ms | 1.102 ms | -0.647 ms | 0/5 |
+| 3 | 0.776 ms | 1.375 ms | 1.075 ms | -0.609 ms | 0/5 |
+| 23 | 0.831 ms | 1.493 ms | 1.193 ms | -0.662 ms | 0/5 |
 
 The first scalar Q4_0 loop was slower still. Reusing the existing packed Q4_0
 dot method improved it modestly; 512 threads beat 256 on this local screen,
 but 1024 threads regressed. Splitting down output rows across two groups per
 hidden tile repeated gate/up work and also regressed. The receipt retains all
-twelve five-pair runs, including those unsuccessful variants and a fresh final
-owner rerun. The rerun's paired ggml-minus-native medians were -0.657 ms for
-layer 3 and -0.508 ms for layer 23, again with 0/5 native wins per layer. This is evidence
+fourteen five-pair runs, including those unsuccessful variants, a first owner
+rerun and the final reviewed owner with repeated-output checks. The preceding
+rerun's paired ggml-minus-native medians were -0.657 ms for layer 3 and
+-0.508 ms for layer 23, again with 0/5 native wins per layer. This is evidence
 that this mapping's gate/up sharing and down-row scheduling fail to recover
 the cost of the long per-group work on this M1. It does not isolate the precise
 register, occupancy or memory-stall cause; a Metal counter/timeline capture
