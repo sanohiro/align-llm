@@ -16,7 +16,9 @@ set -euo pipefail
 #   ALIGN_LLM_GGML_INCLUDE  directory holding `ggml.h` and `ggml-backend.h`  (selects the real shim)
 #   ALIGN_LLM_GGML_LIB      directory holding `libggml` and `libggml-base`   (real shim only)
 #   ALIGN_LLM_GGML_FORCE    the section 4.6 forced-failure builds. `init`, `compute`, and
-#                           `reference` need the real shim; `engine`, `engine+init`,
+#                           `reference` need the real shim; `native-copy-submit` and
+#                           `native-copy-complete` need the real Darwin shim and inject
+#                           one native command failure; `engine`, `engine+init`,
 #                           `engine+alloc`, `engine+compute`, `engine+reference`,
 #                           `engine+slot-range`, `engine+slot-empty`,
 #                           `engine+no-mark-output`, `engine+pad-negative`, and
@@ -103,6 +105,7 @@ source_file="${root_dir}/scripts/ggml_shim_stub.c"
 flavour=stub
 include_flags=()
 link_flags=()
+native_flags=()
 if [ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ]; then
   if [ ! -d "${ALIGN_LLM_GGML_INCLUDE}" ]; then
     printf '%s\n' "build-ggml-shim: ALIGN_LLM_GGML_INCLUDE is not a directory: ${ALIGN_LLM_GGML_INCLUDE}" >&2
@@ -158,6 +161,14 @@ PY_HASH
                flavour="real+force-max-buffer" ;;
     no-host-ptr) include_flags+=("-DALIGN_GGML_FORCE_NO_HOST_PTR=1")
                flavour="real+force-no-host-ptr" ;;
+    native-copy-submit)
+               [ "${suffix}" = dylib ] || { printf '%s\n' "native copy failure requires Darwin" >&2; exit 1; }
+               native_flags+=("-DALIGN_NATIVE_METAL_FORCE_SUBMIT_FAILURE=1")
+               flavour="real+force-native-copy-submit" ;;
+    native-copy-complete)
+               [ "${suffix}" = dylib ] || { printf '%s\n' "native copy failure requires Darwin" >&2; exit 1; }
+               native_flags+=("-DALIGN_NATIVE_METAL_FORCE_COMPLETION_FAILURE=1")
+               flavour="real+force-native-copy-complete" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1
@@ -387,7 +398,7 @@ fi
 
 mkdir -p "${out_dir}"
 native_objects=()
-if [ "${flavour}" = real ] && [ "${suffix}" = dylib ]; then
+if [[ "${flavour}" = real* ]] && [ "${suffix}" = dylib ]; then
   cxx_compiler="${CXX:-c++}"
   if ! command -v "${cxx_compiler}" >/dev/null 2>&1; then
     printf '%s\n' "build-ggml-shim: no C++ compiler (CXX=${cxx_compiler}) for native Metal" >&2
@@ -395,6 +406,7 @@ if [ "${flavour}" = real ] && [ "${suffix}" = dylib ]; then
   fi
   native_object="${out_dir}/align_native_metal_state_copy.o"
   "${cxx_compiler}" -O2 -std=c++17 -fobjc-arc -fPIC -Wall -Wextra -Werror \
+    "${native_flags[@]+"${native_flags[@]}"}" \
     -c "${root_dir}/scripts/native_metal_state_copy.mm" -o "${native_object}"
   native_objects+=("${native_object}")
   link_flags+=("-framework" "Foundation" "-framework" "Metal" "-lc++")

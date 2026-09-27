@@ -109,6 +109,10 @@ remain `INDEPENDENT_ORACLE` for the dense 2B adoption. Their expected GGUF
 SHA-256 can be supplied explicitly for a second recorded source; the commands
 still compare Align output with pinned llama.cpp and remain outside normal
 product execution. The default remains the qualified 0.8B file.
+`scripts/run-qwen35-native-copy-failure-smoke` is `INDEPENDENT_ORACLE`: it
+drives a real-model worker built with one test-only Metal command failure and
+checks the failed envelope and process exit. It does not implement inference
+or run in a product path.
 `scripts/run-openai-serving-smoke` remains an `INDEPENDENT_ORACLE`; its external
 model id can be selected for the 2B text consumer while it compares the real
 HTTP path with pinned llama.cpp. Its default remains the 0.8B id.

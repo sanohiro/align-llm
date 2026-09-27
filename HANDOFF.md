@@ -2,10 +2,11 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active independent Metal state-copy capability (2026-09-27)
+## Active independent Metal state-copy failure qualification (2026-09-27)
 
-Branch `agent/native-metal-ffn-integration`; `fc9ffa7417` introduced the
-initial native copy seam. The user requires an Align-owned
+Branch `agent/native-metal-state-copy-failure` from merged `main` at
+`efa3e07c` (PR #308). `fc9ffa7417` introduced the initial native copy seam.
+The user requires an Align-owned
 independent GPU execution path, with ggml retained only as a selectable
 fallback/temporary producer. Do not promote the ggml F32 source patch as the
 operating goal. The current opt-in `ALIGN_LLM_NATIVE_STATE_COPY=1` replaces 18
@@ -34,21 +35,26 @@ lost every pair;
 its retained receipt and the revised version's evidence are in
 `docs/qwen35-native-state-copy-trial.md`.
 
-Strict Python boundary, real/stub shim builds, `make fmt`, owner checks and one
-fresh native-code review completed. Two P2 findings were repaired: admit only
+The previous capability passed strict Python boundary, real/stub shim builds,
+`make fmt`, owner checks and one fresh native-code review. Two P2 findings were repaired: admit only
 the sole selected `MTL0` matching the physical device, and reject mislabeled
-state-copy controls in the paired measurement tool. Next actions, in order:
-add a focused native command-failure owner before considering default adoption;
-qualify another Metal device and then test a larger native decode segment.
-Keep the route
-opt-in until that owner and another Metal-device qualification are available.
+state-copy controls in the paired measurement tool. This branch adds test-only
+native submit and post-completion failure builds plus a real-model worker owner.
+Both fault builds returned the exact `failed` envelope without a result/token
+and exited 2 on 2B mode `1`; their mode-`0` two-token controls completed.
+`python3 scripts/check-python-boundary --strict`, real forced shim builds and
+both focused failure owner runs passed. The normal real-shim build and 2B
+generation owner also passed after fault injection was compiled out. Next:
+complete preflight/review/merge, then test a larger native decode segment on
+M1. Qualify another Metal device when available; keep the route opt-in until
+that qualification.
 CPU/CUDA Qwen3.5 and Gemma semantic admission remain deferred in
 `docs/backend-parity.md`. Keep model weights, binaries, raw traces and source
 builds outside Git; checked-in benchmark JSON and the report are intentional.
 
 ## GPU-only optimization priority (2026-09-27)
 
-Branch `agent/native-metal-ffn-integration`, current HEAD `fc9ffa7417`. The user directs
+The user directs
 current work toward GPU inference performance; HTTP transport optimization is
 deferred until GPU options are adequately tested. The adjacent-range Metal
 scheduling patch remains default-off with no repeatable competitive request

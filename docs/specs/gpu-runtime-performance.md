@@ -74,7 +74,7 @@ not this integrated trial's speed or portability.
 | --- | --- | --- | --- |
 | Construction / malformed mode | `runtime_qwen35_execution.read`, `runtime_qwen35_generation.prepare` | `align_gpu_native_state_copy_mode` refuses unsupported devices/storage | Invalid mode `2` refused before ready; real and stub shim builds passed. |
 | Success / repeated use | `runtime_qwen35_recurrent.build_many`, generation and parity | Checked copy registration, borrowed views, one native command and finish | 16-token full logits/state equality, both-size generation owners, 0.8B serving owner, five-pair measurements. |
-| Failure / early exit | Session remains unhealthy until copy completion; parity advances only after finish | Command status is checked; close drains pending work | Invalid-request and early-exit generation owners passed. Forced native command failure remains a focused owner before default adoption. |
+| Failure / early exit | Session remains unhealthy until copy completion; parity advances only after finish | Command status is checked; close drains pending work | Invalid-request and early-exit generation owners passed. Test-only submit and post-completion failure builds returned `failed` without a result on real 2B decode, exited nonzero, and retained mode-`0` generation. |
 | Rebuild / cleanup | Topology invalidation and session close | Wait/reset borrowed views before allocator release; reject ambiguous device identity at construction | Repeated-request generation and process-footprint screens passed; another Metal device remains unmeasured. |
 
 Integrated result: the first synchronous native version lost all 15 paired
@@ -90,9 +90,9 @@ independent blit command per step. The final process-footprint screen observed
 a small +0.109 MiB physical and +0.531 MiB peak increase for native mode,
 while the preceding screen had the opposite sign; total GPU/system memory
 remains unmeasured.
-Keep the route opt-in until focused native failure injection and another
-Metal-device qualification. Full conditions, phase limits, memory scope and
-receipts are in `docs/qwen35-native-state-copy-trial.md`.
+Keep the route opt-in until another Metal-device qualification. Full
+conditions, phase limits, memory scope and receipts are in
+`docs/qwen35-native-state-copy-trial.md`.
 
 ### Final-chunk logits trial (2026-09-26)
 
