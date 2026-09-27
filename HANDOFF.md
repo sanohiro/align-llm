@@ -2,7 +2,27 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active native Metal Q4_0 down split-K screen (2026-09-28)
+## Active native Metal Q4_0 complete-FFN capture screen (2026-09-28)
+
+Branch `agent/native-metal-q4-full-ffn-capture` starts from merged `main` at
+`b17ba6ce` (PR #314). GPU optimization remains the priority. The independent
+two-dispatch gate/up/SiLU plus unsplit-down screen on real captured 2B layers
+3 and 23 is implemented; contract, report and raw final pairs are in
+`docs/specs/gpu-runtime-performance.md`,
+`docs/qwen35-q4-full-ffn-capture-screen.md`, and
+`eval/benchmarks/qwen35-q4-full-ffn-capture-2026-09-28-{h,i}.txt`.
+Captured and rebuilt ggml gated/final outputs are byte-identical; native
+outputs pass the declared bound and complete native FFN wins 20/20 local pairs
+with 0.039–0.069 ms paired median gain. A necessary intermediate CPU wait in
+two commands adds 0.313–0.382 ms, while ordered same-queue submission with
+only a final wait passes output checks and adds 0.014–0.043 ms. This is not
+a request gain. Next: owner verification, one comprehensive review,
+exact-head preflight, CI and merge; then prototype an Align-owned asynchronous
+Metal schedule or larger execution unit that avoids per-FFN host waits before
+any real-model adoption claim. Keep captures/weights out of Git. Other Metal
+hosts, CUDA, Q4_1 down and Gemma are deferred.
+
+## Completed native Metal Q4_0 down split-K screen (2026-09-28)
 
 Branch `agent/native-metal-q4-down-split-screen` starts from merged `main` at
 `c51c0cfe` (PR #313). GPU optimization remains the priority. The independent
@@ -12,9 +32,10 @@ layers 3 and 23 and a synthetic tail pass the declared numerical bound;
 captured and rebuilt ggml full outputs are byte-identical. Two/four-way
 split-K loses direct unsplit GPU-interval and wall comparisons and is withdrawn.
 The independent unsplit down arm wins 19/20 isolated ggml wall pairs but has no
-complete-FFN or request claim. Next: owner verification, one comprehensive
-review, exact-head preflight, CI and merge; then screen a complete native
-gate/up/SiLU plus unsplit-down command using the actual captures. Source weights
+complete-FFN or request claim. One comprehensive review and exact-head
+preflight passed at `c6e3dce0`, all three PR checks passed, and PR #314 merged
+as `b17ba6ce`. Next screen a complete native gate/up/SiLU plus unsplit-down
+command using actual captures. Source weights
 and captures remain outside Git. Another Metal host, CUDA and Gemma are
 deferred until qualified.
 

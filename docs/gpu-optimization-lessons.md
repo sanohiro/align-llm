@@ -118,6 +118,17 @@ speed result. Historical measurements remain in their owning reports.
   that does not include a gate/up connection or model request. Test a complete
   native FFN command with this unsplit down mapping before changing the runtime.
   See the [down split screen](qwen35-q4-down-split-screen.md).
+- Count host waits separately from Metal command boundaries. A complete
+  independent Q4_0 gate/up/SiLU/down command beat isolated ggml on actual 2B
+  FFN layers 3 and 23 in 20/20 paired local comparisons, by only
+  0.039–0.069 ms at paired medians. Splitting the same native kernels into two
+  commands and waiting after gate/up added 0.313–0.382 ms. Committing both to
+  one tracked Metal queue and waiting only after down passed every output
+  check and added 0.014–0.043 ms at paired medians. Thus a per-FFN host wait
+  can overwhelm a real kernel win, while ordered queued submission preserves
+  the dependency with much lower wall cost. The queued cost is still the same
+  order as the gain, and the current ggml graph API was not tested with this
+  schedule. See the [complete FFN capture screen](qwen35-q4-full-ffn-capture-screen.md).
 
 ## Current Qwen3.5-2B evidence and next test
 
