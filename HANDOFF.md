@@ -5,7 +5,8 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 ## Qwen3.5 shared-row greedy follow-up (2026-09-27)
 
 Branch `agent/native-metal-ffn-integration`, based on shared-logits checkpoint
-`32ad975e`; the NEON experiment and evidence are the active local candidate.
+`32ad975e`; implementation/evidence checkpoint `6d552f4b`. The NEON experiment
+is complete as a local default-off trial.
 The hierarchical GPU argmax integration passed real correctness but lost its
 connected speed case because each token required a second Metal command buffer;
 its runtime code was withdrawn. `docs/qwen35-hierarchical-greedy-trial.md`
@@ -25,14 +26,23 @@ faster on all worker medians. Keep this mode default-off. Read
 `docs/qwen35-neon-greedy-trial.md` and the checked-in raw receipts for exact
 conditions, phase clocks and limits. No cross-backend speed claim is made.
 
-Next: finish one comprehensive review and affected owner verification, then
-record a local checkpoint. For further speed work, first screen a fused
+Verification: managed Align per-unit check and `gmake fmt`; real and stub shim
+builds; real 2B/0.8B generation and 2B serving owners; 336 exact state-plane
+hashes; invalid-flag and odd-shape checks; strict Python boundary; measurement
+config owner; three complete benchmark receipts; and staged whitespace check
+pass. One host-native `codex review --uncommitted` covered the complete
+candidate and returned CLEAN, findings none. Its local envelope and log are
+retained under the Git common directory. The only post-review repair changed
+diagnostic artifact packaging and its link, with no runtime behavior change.
+
+Next: for further speed work, first screen a fused
 Q6_K output projection plus partial-top-token consumer using captured real
 weights/activations and an in-graph execution boundary; retain the full-logit
 oracle and existing ggml path. Do not repeat the prior one-to-one Q6_K kernel
 mapping or post-sync GPU argmax. CPU/CUDA Qwen3.5 and Gemma graph admission
 remain deferred in the backend parity register. No PR/preflight/merge is
-claimed at this checkpoint.
+claimed at this checkpoint; publication of the completed local experiment is
+separate from the next optimization trial.
 
 ## Qwen3.5 shared-logits boundary trial (2026-09-27)
 
