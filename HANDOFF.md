@@ -2,11 +2,11 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active current Metal speed and bottleneck qualification (2026-09-28)
+## Completed current Metal speed and bottleneck qualification (2026-09-28)
 
-Branch `agent/qwen35-current-bottleneck` starts from merged `main` at
-`d67e224a` (PR #315). The production source closure is unchanged since PR
-#312. A fresh same-binary Qwen3.5-2B M1 campaign completed five uninstrumented
+Branch `agent/qwen35-current-bottleneck` merged as PR #316 at `29398bda`.
+The production source closure is unchanged since PR #312. A fresh same-binary
+Qwen3.5-2B M1 campaign completed five uninstrumented
 alternating pairs at 64/16, 200/32 and 330/64: the already qualified mixed
 native state-copy mode beat ordinary Align and pinned llama.cpp in all 15
 pairs against each. Its isolated complete-FFN candidate remains outside the
@@ -18,24 +18,26 @@ The old schema-2 phase caller summed native waits from three requests; the
 corrected caller now validates each request-local diagnostic log span, and
 historical-receipt caveats are in this branch. A final five-pair real-model
 phase rerun passed with matching outputs and phase containment. One
-comprehensive review found the cross-request wait-count loophole; the focused
-repair and synthetic regression passed, along with the strict Python boundary
-guard and its mutation suite. Next: commit the repair, run exact-head preflight,
-publish/merge the measurement correction, then refresh main and start the
-Align-owned resident Metal execution-plan consumer below. Other Metal hosts,
-CUDA and Gemma remain deferred as registered in `docs/backend-parity.md`.
+comprehensive review found the cross-request wait-count loophole; repair
+`56278136`, synthetic regression, strict Python boundary guard and mutation
+suite passed. Exact-head preflight and all three CI checks passed. The review
+envelope and check evidence are on PR #316. Other Metal hosts, CUDA and Gemma
+remain deferred as registered in `docs/backend-parity.md`.
 
-## Next Align-owned native Metal execution-plan consumer (2026-09-28)
+## Active Align-owned native Metal execution-plan consumer (2026-09-28)
 
-Start from merged `main` after this measurement. GPU optimization remains the
-priority. The complete
+Branch `agent/native-metal-resident-execution` starts from merged `main` at
+`29398bda`. GPU optimization remains the priority. The current 2B M1 trace
+places Q4_0/Q6_K matrix-vector work, associated with buffer-read pressure,
+ahead of state copies; it does not establish a hardware ceiling. The complete
 Q4_0 FFN kernel is locally faster, but Qwen3.5 currently builds all 24 layers
 as one ggml graph and `align_gpu_graph_compute` calls synchronous
 `ggml_backend_graph_compute`. Per-FFN graph partition with a host wait loses
 more than the kernel saves. Next: settle the smallest Align-owned resident
-Metal plan that can keep dependent operations queued, with model semantics and
-selection in Align and only device kernels/minimal ABI in native code. Before
-writing Align source, inspect the relevant checked-in Align language examples
+Metal plan that can keep dependent operations queued and make quantized
+matrix-vector traffic and FFN scheduling testable in real requests, with model
+semantics and selection in Align and only device kernels/minimal ABI in native
+code. Before writing Align source, inspect the relevant checked-in Align language examples
 and compiler tests. Then implement a real captured 2B FFN consumer with
 explicit buffer ownership and checked completion; expand the ownership unit
 toward real decode rather than adding a permanent ggml patch. The existing
