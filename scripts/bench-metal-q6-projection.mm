@@ -102,6 +102,115 @@ kernel void q6_pair_load(
         if (lane == 0 && first_row + row < rows) output[first_row + row] = value;
     }
 }
+
+// Experimental producer-side greedy path. It keeps the paired Q6_K arithmetic
+// above and replaces four full logits per threadgroup with one candidate.
+struct TopPart { float value; uint index; uint invalid; };
+kernel void q6_pair_top(
+    device const Q6Block *weights [[buffer(0)]],
+    device const float *input [[buffer(1)]],
+    device TopPart *parts [[buffer(2)]],
+    constant uint &width [[buffer(3)]],
+    constant uint &rows [[buffer(4)]],
+    uint group [[threadgroup_position_in_grid]],
+    ushort lane [[thread_index_in_simdgroup]],
+    ushort simd [[simdgroup_index_in_threadgroup]],
+    ushort thread_index [[thread_index_in_threadgroup]]) {
+    const uint first_row = (group * 2 + simd) * 2;
+    const uint blocks = width / 256;
+    const ushort tid = lane / 2, ix = lane % 2;
+    const ushort ip = tid / 8, l0 = 4 * (tid % 8), is = 8 * ip + l0 / 16;
+    float sum[2] = {0.0f, 0.0f};
+    for (uint block = ix; block < blocks; block += 2) {
+        float yl[16];
+        device const float *y = input + block * 256 + 128 * ip + l0;
+        for (ushort l = 0; l < 4; ++l) {
+            yl[4*l + 0] = y[l]; yl[4*l + 1] = y[l + 32];
+            yl[4*l + 2] = y[l + 64]; yl[4*l + 3] = y[l + 96];
+        }
+        for (ushort row = 0; row < 2; ++row) {
+            if (first_row + row >= rows) continue;
+            device const Q6Block &q = weights[(first_row + row) * blocks + block];
+            device const ushort *lo1 = (device const ushort *)(q.ql + 64 * ip + l0);
+            device const ushort *lo2 = (device const ushort *)(q.ql + 64 * ip + l0 + 32);
+            device const ushort *high = (device const ushort *)(q.qh + 32 * ip + l0);
+            const ushort a[2] = {lo1[0], lo1[1]};
+            const ushort b[2] = {lo2[0], lo2[1]};
+            const ushort h[2] = {high[0], high[1]};
+            float4 sums = {0.f, 0.f, 0.f, 0.f};
+            #pragma unroll
+            for (ushort l = 0; l < 4; ++l) {
+                const uchar q1 = uchar(a[l / 2] >> (8 * (l % 2)));
+                const uchar q2 = uchar(b[l / 2] >> (8 * (l % 2)));
+                const uchar qh = uchar(h[l / 2] >> (8 * (l % 2)));
+                sums[0] += yl[4*l + 0] * (char((q1 & 0x0f) | ((qh & 0x03) << 4)) - 32);
+                sums[1] += yl[4*l + 1] * (char((q2 & 0x0f) | ((qh & 0x0c) << 2)) - 32);
+                sums[2] += yl[4*l + 2] * (char((q1 >> 4) | (qh & 0x30)) - 32);
+                sums[3] += yl[4*l + 3] * (char((q2 >> 4) | ((qh & 0xc0) >> 2)) - 32);
+            }
+            sum[row] += q.d * (sums[0] * q.scales[is] + sums[1] * q.scales[is+2] +
+                              sums[2] * q.scales[is+4] + sums[3] * q.scales[is+6]);
+        }
+    }
+    threadgroup float values[4];
+    threadgroup uint indices[4];
+    threadgroup uint invalids[4];
+    for (ushort row = 0; row < 2; ++row) {
+        const float value = simd_sum(sum[row]);
+        if (lane == 0) {
+            const uint slot = 2*simd + row;
+            const uint index = first_row + row;
+            values[slot] = index < rows ? value : -INFINITY;
+            indices[slot] = index < rows ? index : 0xffffffffu;
+            invalids[slot] = index < rows && !isfinite(value);
+        }
+    }
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    if (thread_index == 0) {
+        float best = -INFINITY; uint best_index = 0xffffffffu, invalid = 0;
+        for (uint j = 0; j < 4; ++j) {
+            invalid |= invalids[j];
+            if (indices[j] != 0xffffffffu && isfinite(values[j]) &&
+                (values[j] > best || (values[j] == best && indices[j] < best_index))) {
+                best = values[j]; best_index = indices[j];
+            }
+        }
+        parts[group] = {best, best_index, invalid};
+    }
+}
+
+kernel void q6_top_finish(
+    device const TopPart *parts [[buffer(0)]],
+    device uint *result [[buffer(1)]],
+    constant uint &count [[buffer(2)]],
+    uint tid [[thread_index_in_threadgroup]]) {
+    threadgroup float values[256];
+    threadgroup uint indices[256];
+    threadgroup uint invalids[256];
+    float best = -INFINITY; uint index = 0xffffffffu, invalid = 0;
+    for (uint j = tid; j < count; j += 256) {
+        TopPart part = parts[j];
+        invalid |= part.invalid;
+        if (part.index != 0xffffffffu &&
+            (part.value > best || (part.value == best && part.index < index))) {
+            best = part.value; index = part.index;
+        }
+    }
+    values[tid] = best; indices[tid] = index; invalids[tid] = invalid;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (tid < stride) {
+            invalids[tid] |= invalids[tid + stride];
+            const float other = values[tid + stride];
+            const uint other_index = indices[tid + stride];
+            if (other > values[tid] || (other == values[tid] && other_index < indices[tid])) {
+                values[tid] = other; indices[tid] = other_index;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (tid == 0) result[0] = invalids[0] ? 0xffffffffu : indices[0];
+}
 )METAL";
 
 static void require(bool condition, const char *message) {
@@ -153,6 +262,8 @@ static void install_trace() {
     original_commit = reinterpret_cast<void (*)(id, SEL)>(method_setImplementation(method, (IMP)recorded_commit));
 }
 struct Timing { double wall_ms, gpu_ms; size_t commands; };
+struct TopPartHost { float value; uint32_t index, invalid; };
+static_assert(sizeof(TopPartHost) == 12, "Metal partial ABI changed");
 static void begin_trace(bool trace) {
     if (trace) { @synchronized(trace_lock) { trace_commands = [NSMutableArray new]; } }
 }
@@ -181,11 +292,12 @@ static std::string optional_ms(double value) {
 }
 
 int main(int argc, char **argv) {
-    require(argc >= 3 && argc <= 5, "usage: bench-metal-q6-projection PLUGIN CAPTURE_DIR [--check-only] [--gpu-trace]");
-    bool check_only = false, trace = false;
+    require(argc >= 3 && argc <= 6, "usage: bench-metal-q6-projection PLUGIN CAPTURE_DIR [--check-only] [--gpu-trace] [--fused-top]");
+    bool check_only = false, trace = false, fused_top = false;
     for (int i = 3; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--check-only") && !check_only) check_only = true;
         else if (!std::strcmp(argv[i], "--gpu-trace") && !trace) trace = true;
+        else if (!std::strcmp(argv[i], "--fused-top") && !fused_top) fused_top = true;
         else require(false, "unknown or duplicate option");
     }
     std::ifstream geometry(path(argv[2], "geometry.txt"));
@@ -215,16 +327,18 @@ int main(int argc, char **argv) {
         auto reg = ggml_backend_load(argv[1]); require(reg, "pinned Metal plugin load failed");
         auto backend = ggml_backend_dev_init(ggml_backend_reg_dev_get(reg, 0), nullptr);
         require(backend, "ggml device initialization failed");
-        auto ctx = ggml_init({ggml_tensor_overhead() * 32 + 2 * ggml_graph_overhead_custom(16, false), nullptr, true});
+        auto ctx = ggml_init({ggml_tensor_overhead() * 40 + 2 * ggml_graph_overhead_custom(16, false), nullptr, true});
         require(ctx, "ggml context initialization failed");
         auto w = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, width, rows);
         auto x = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, width);
         auto tail_w = ggml_view_2d(ctx, w, width, tail_rows, w->nb[1], 0);
         ggml_tensor *outputs[2] = {ggml_mul_mat(ctx, w, x), ggml_mul_mat(ctx, tail_w, x)};
+        ggml_tensor *choices[2] = {nullptr, nullptr};
         ggml_cgraph *graphs[2];
         for (int i = 0; i < 2; ++i) {
+            if (fused_top) choices[i] = ggml_argmax(ctx, outputs[i]);
             graphs[i] = ggml_new_graph_custom(ctx, 16, false);
-            ggml_build_forward_expand(graphs[i], outputs[i]);
+            ggml_build_forward_expand(graphs[i], fused_top ? choices[i] : outputs[i]);
         }
         auto buffer = ggml_backend_alloc_ctx_tensors(ctx, backend); require(buffer, "ggml allocation failed");
         require(ggml_nbytes(w) == weight_bytes, "Q6_K layout disagrees with capture");
@@ -239,11 +353,26 @@ int main(int argc, char **argv) {
             [library newFunctionWithName:@"q6_pair_load"] error:&error];
         require(pipeline != nil && pipeline.threadExecutionWidth == 32 && pipeline.maxTotalThreadsPerThreadgroup >= 64,
                 "native pipeline geometry unavailable");
+        id<MTLComputePipelineState> top_pipeline = nil, finish_pipeline = nil;
+        if (fused_top) {
+            top_pipeline = [metal newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"q6_pair_top"] error:&error];
+            finish_pipeline = [metal newComputePipelineStateWithFunction:
+                [library newFunctionWithName:@"q6_top_finish"] error:&error];
+            require(top_pipeline != nil && top_pipeline.threadExecutionWidth == 32 &&
+                    top_pipeline.maxTotalThreadsPerThreadgroup >= 64 && finish_pipeline != nil &&
+                    finish_pipeline.maxTotalThreadsPerThreadgroup >= 256,
+                    "fused top pipeline geometry unavailable");
+        }
         id<MTLCommandQueue> queue = [metal newCommandQueue];
         id<MTLBuffer> mw = [metal newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
         id<MTLBuffer> mx = [metal newBufferWithLength:size_t(width) * 4 options:MTLResourceStorageModeShared];
-        id<MTLBuffer> my = [metal newBufferWithLength:size_t(rows) * 4 options:MTLResourceStorageModeShared];
-        require(queue && mw && mx && my, "native allocation failed");
+        id<MTLBuffer> my = fused_top ? nil : [metal newBufferWithLength:size_t(rows) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> parts = fused_top ? [metal newBufferWithLength:size_t((rows + 3) / 4) * 12
+            options:MTLResourceStorageModeShared] : nil;
+        id<MTLBuffer> token = fused_top ? [metal newBufferWithLength:4 options:MTLResourceStorageModeShared] : nil;
+        require(queue && mw && mx && (fused_top ? (parts != nil && token != nil) : my != nil),
+                "native allocation failed");
         auto weights = file(path(argv[2], "weights.bin"), weight_bytes);
         for (size_t offset = 0; offset < weight_bytes;) {
             size_t bytes = std::min(size_t(1024 * 1024), weight_bytes - offset);
@@ -255,11 +384,12 @@ int main(int argc, char **argv) {
         if (trace) install_trace();
         std::printf("{\"event\":\"setup\",\"width\":%u,\"rows\":%u,\"tail_rows\":%u,\"weight_bytes\":%zu,"
                     "\"ggml_buffer_bytes\":%zu,\"native_buffer_bytes\":%zu,\"simd_width\":%lu,"
-                    "\"threads\":64,\"pipeline_max_threads\":%lu,\"wall_instrumented\":%s,"
+                    "\"threads\":64,\"pipeline_max_threads\":%lu,\"fused_top\":%s,\"wall_instrumented\":%s,"
                     "\"warmups\":%d,\"pairs\":%d,\"iterations_per_pair\":%d}\n", width, rows, tail_rows,
-                    weight_bytes, ggml_backend_buffer_get_size(buffer), weight_bytes + size_t(width + rows) * 4,
+                    weight_bytes, ggml_backend_buffer_get_size(buffer), weight_bytes + size_t(width) * 4 +
+                    (fused_top ? size_t((rows + 3) / 4) * 12 + 4 : size_t(rows) * 4),
                     (unsigned long)pipeline.threadExecutionWidth, (unsigned long)pipeline.maxTotalThreadsPerThreadgroup,
-                    trace ? "true" : "false", WARMUPS, PAIRS, ITERATIONS);
+                    fused_top ? "true" : "false", trace ? "true" : "false", WARMUPS, PAIRS, ITERATIONS);
         auto run = [&](int arm, int shape) -> Timing {
             begin_trace(trace);
             auto start = std::chrono::steady_clock::now();
@@ -267,20 +397,37 @@ int main(int argc, char **argv) {
             id<MTLCommandBuffer> command = nil;
             if (arm == 0) {
                 require(ggml_backend_graph_compute(backend, graphs[shape]) == GGML_STATUS_SUCCESS, "ggml compute failed");
+                if (fused_top) {
+                    int32_t selected = -1;
+                    ggml_backend_tensor_get(choices[shape], &selected, 0, sizeof(selected));
+                    require(selected >= 0 && selected < (shape == 0 ? rows : tail_rows), "ggml argmax invalid");
+                }
             } else {
                 command = [queue commandBuffer];
                 id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
                 require(command && encoder, "native command allocation failed");
                 uint32_t active_rows = shape == 0 ? rows : tail_rows;
-                [encoder setComputePipelineState:pipeline];
+                [encoder setComputePipelineState:fused_top ? top_pipeline : pipeline];
                 [encoder setBuffer:mw offset:0 atIndex:0]; [encoder setBuffer:mx offset:0 atIndex:1];
-                [encoder setBuffer:my offset:0 atIndex:2];
+                [encoder setBuffer:fused_top ? parts : my offset:0 atIndex:2];
                 [encoder setBytes:&width length:sizeof(width) atIndex:3];
                 [encoder setBytes:&active_rows length:sizeof(active_rows) atIndex:4];
                 [encoder dispatchThreadgroups:MTLSizeMake((active_rows + 3) / 4, 1, 1)
                          threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+                if (fused_top) {
+                    uint32_t groups = (active_rows + 3) / 4;
+                    [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                    [encoder setComputePipelineState:finish_pipeline];
+                    [encoder setBuffer:parts offset:0 atIndex:0];
+                    [encoder setBuffer:token offset:0 atIndex:1];
+                    [encoder setBytes:&groups length:sizeof(groups) atIndex:2];
+                    [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+                             threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                }
                 [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
                 require(command.status == MTLCommandBufferStatusCompleted, "native command failed");
+                if (fused_top) require(*static_cast<uint32_t *>(token.contents) < active_rows,
+                                       "fused top output invalid");
             }
             double wall = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
             if (trace) {
@@ -306,8 +453,52 @@ int main(int argc, char **argv) {
                 ggml_backend_tensor_get(outputs[shape], reference.data(), 0, n * sizeof(float));
                 const char *label = shape == 0 ? "full" : "tail";
                 compare(expected[activation].data(), reference.data(), n, activation, label, "captured_vs_ggml");
-                compare(reference.data(), static_cast<const float *>(my.contents), n, activation, label, "ggml_vs_native");
+                if (fused_top) {
+                    int32_t reference_top = -1;
+                    ggml_backend_tensor_get(choices[shape], &reference_top, 0, sizeof(reference_top));
+                    size_t expected_top = 0;
+                    for (size_t row = 1; row < n; ++row) {
+                        if (expected[activation][row] > expected[activation][expected_top]) expected_top = row;
+                    }
+                    require(reference_top == int32_t(expected_top) &&
+                            *static_cast<uint32_t *>(token.contents) == expected_top,
+                            "fused top differs from full-logit oracle");
+                    std::printf("{\"event\":\"top_check\",\"activation\":%d,\"shape\":\"%s\",\"token\":%zu}\n",
+                                activation, label, expected_top);
+                } else {
+                    compare(reference.data(), static_cast<const float *>(my.contents), n,
+                            activation, label, "ggml_vs_native");
+                }
             }
+        }
+        if (fused_top) {
+            // The data-path buffer can contain only one partial for a valid
+            // three- or four-row capture; edge cases always need two entries.
+            id<MTLBuffer> edge_parts = [metal newBufferWithLength:2 * sizeof(TopPartHost)
+                options:MTLResourceStorageModeShared];
+            require(edge_parts != nil, "final-reduction check allocation failed");
+            auto partial = static_cast<TopPartHost *>(edge_parts.contents);
+            partial[0] = {10.0f, 4, 0}; partial[1] = {10.0f, 3, 0};
+            auto check_finish = [&]() -> uint32_t {
+                uint32_t groups = 2;
+                id<MTLCommandBuffer> command = [queue commandBuffer];
+                id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+                require(command && encoder, "final-reduction check allocation failed");
+                [encoder setComputePipelineState:finish_pipeline];
+                [encoder setBuffer:edge_parts offset:0 atIndex:0];
+                [encoder setBuffer:token offset:0 atIndex:1];
+                [encoder setBytes:&groups length:sizeof(groups) atIndex:2];
+                [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+                         threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
+                require(command.status == MTLCommandBufferStatusCompleted,
+                        "final-reduction check failed");
+                return *static_cast<uint32_t *>(token.contents);
+            };
+            require(check_finish() == 3, "final-reduction first-index tie failed");
+            partial[1].invalid = 1;
+            require(check_finish() == 0xffffffffu, "final-reduction nonfinite refusal failed");
+            std::printf("{\"event\":\"top_edge_check\",\"tie\":3,\"nonfinite_refused\":true}\n");
         }
         if (!check_only) for (int activation = 0; activation < 3; ++activation) {
             input(activation);
@@ -320,7 +511,8 @@ int main(int argc, char **argv) {
                     if (t.gpu_ms < 0) gpu_present[arm] = false; else gpus[arm] += t.gpu_ms;
                     std::printf("{\"event\":\"sample\",\"activation\":%d,\"kind\":%d,\"pair\":%d,\"iteration\":%d,"
                                 "\"arm\":\"%s\",\"wall_ms\":%.9f,\"gpu_union_ms\":%s,\"commands\":%zu}\n",
-                                activation, kinds[activation], pair, iteration, arm ? "native" : "ggml",
+                                activation, kinds[activation], pair, iteration,
+                                arm ? (fused_top ? "fused_top" : "native") : "ggml",
                                 t.wall_ms, optional_ms(t.gpu_ms).c_str(), t.commands);
                 }
                 std::printf("{\"event\":\"pair\",\"activation\":%d,\"pair\":%d,\"ggml_wall_ms\":%.9f,\"native_wall_ms\":%.9f,"

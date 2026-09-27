@@ -1,0 +1,15 @@
+{"event":"setup","width":2048,"rows":3,"tail_rows":2,"weight_bytes":5040,"ggml_buffer_bytes":13376,"native_buffer_bytes":13248,"simd_width":32,"threads":64,"pipeline_max_threads":1024,"fused_top":true,"wall_instrumented":false,"warmups":12,"pairs":5,"iterations_per_pair":20}
+{"event":"check","activation":0,"shape":"full","comparison":"captured_vs_ggml","count":3,"max_abs":0,"argmax":1}
+{"event":"top_check","activation":0,"shape":"full","token":1}
+{"event":"check","activation":0,"shape":"tail","comparison":"captured_vs_ggml","count":2,"max_abs":0,"argmax":1}
+{"event":"top_check","activation":0,"shape":"tail","token":1}
+{"event":"check","activation":1,"shape":"full","comparison":"captured_vs_ggml","count":3,"max_abs":0,"argmax":0}
+{"event":"top_check","activation":1,"shape":"full","token":0}
+{"event":"check","activation":1,"shape":"tail","comparison":"captured_vs_ggml","count":2,"max_abs":0,"argmax":0}
+{"event":"top_check","activation":1,"shape":"tail","token":0}
+{"event":"check","activation":2,"shape":"full","comparison":"captured_vs_ggml","count":3,"max_abs":0,"argmax":0}
+{"event":"top_check","activation":2,"shape":"full","token":0}
+{"event":"check","activation":2,"shape":"tail","comparison":"captured_vs_ggml","count":2,"max_abs":0,"argmax":0}
+{"event":"top_check","activation":2,"shape":"tail","token":0}
+{"event":"top_edge_check","tie":3,"nonfinite_refused":true}
+{"event":"complete","check_only":true}

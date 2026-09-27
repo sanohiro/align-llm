@@ -435,6 +435,43 @@ within 900 seconds. The earlier independent trials supply hypotheses, not an
 assumption that their gains add. Retain the graph-only arm to distinguish the
 new operation from existing options.
 
+### Q6_K producer-side partial-maximum screen (2026-09-27)
+
+The in-graph reduction removes host logit readback but adds two GPU dispatches;
+its final-binary 330/64 graph phase is slower even where request wall time
+improves. Screen a distinct fused producer epilogue: the actual Q6_K output
+projection emits the best finite value and first index for each small output
+tile, then one compact reduction selects the token. This is a local screen
+before any runtime integration. The comparison is the current patched ggml
+Q6_K projection followed by hierarchical argmax, using the same captured 2B
+weights and final-prefill/decode activations. The fused arm must not omit work,
+change quantization, suppress an invalid value, or use a separate command
+buffer between projection and final reduction.
+
+Cost ceiling: retain the existing Q6_K row arithmetic and 64-thread mapping
+for this first screen; at most 12 bytes per four vocabulary rows of partial
+storage plus four output bytes; no full-logit output in the fused arm; only a
+four-byte result readback after synchronization in the timed operation. Qualify
+all three captured activations and a
+257-row tail against the existing full-logit oracle, requiring the exact
+first-index greedy token and finite-input validity before timing. Use twelve
+warmups and five alternating pairs with twenty synchronized operations per
+arm and activation; finish the local screen within 900 seconds. The existing
+full-logit ggml path remains the rollback. Only a reproducible connected local
+advantage justifies an opt-in real-model integration; adoption still depends
+on real 2B/0.8B output/state/serving and whole-request results, without a
+fixed percentage floor. A local loss rejects this mapping, not producer-side
+fusion in general.
+
+Result: the captured 2B full and 257-row tail tokens, first-index tie and
+nonfinite refusal passed. Five paired local wall medians for the three actual
+activations were -0.011, -0.048 and +0.021 ms (ggml minus fused), with 2/5,
+1/5 and 5/5 fused wins. Instrumented GPU intervals were also mixed. This
+specific four-row mapping is withdrawn before real-model integration; the
+complete local record is in `docs/qwen35-q6-fused-top-screen.md`. Continue
+GPU work on a larger FFN or graph boundary. No fixed improvement floor was
+applied.
+
 ### Shared Metal row SIMD greedy trial (2026-09-27)
 
 The previous borrowed-row path proves the real Qwen3.5 output is shared Metal

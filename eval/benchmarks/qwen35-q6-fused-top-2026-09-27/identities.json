@@ -1,0 +1,18 @@
+{
+  "sha256": {
+    "capture/geometry.txt": "2bdfbd4b9e5df7b8063dac9806677d922c3426c17f15d5f25e91a4e84d5086a4",
+    "capture/complete.txt": "1121cfccd5913f0a63fec40a6ffd44ea64f9dc135c66634ba001d10bcf4302a2",
+    "capture/weights.bin": "06e53b86ebe6f3e7a4b83110fd717e847404acd4bbc4670be1c80f241ff4830e",
+    "capture/0-kind.txt": "9a271f2a916b0b6ee6cecb2426f0b3206ef074578be55d9bc94f6f3fe3ab86aa",
+    "capture/0-input.bin": "a3a5ec389a0a1af0d76eb5a951aaf20539c09bf159cea4aabfa0a2fa828cc0ce",
+    "capture/0-output.bin": "1883760d6c55814ae77496aae421897141831eb329e1b8ce8ed0d4949f1cda99",
+    "capture/1-kind.txt": "53c234e5e8472b6ac51c1ae1cab3fe06fad053beb8ebfd8977b010655bfdd3c3",
+    "capture/1-input.bin": "3781c5249501aab263b73b3f56f89eba2a8b23a962cd44cbc9afacffe7378009",
+    "capture/1-output.bin": "bbb120bd05d31b387c651fd941027ac9a9943aed620c353b6593945ae7321bac",
+    "capture/2-kind.txt": "4355a46b19d348dc2f57c046f8ef63d4538ebb936000f3c9ee954a27460dd865",
+    "capture/2-input.bin": "0a8e5bfe0af1f4ba7079aea07f03459b052387ef8559c1b6c8848d2315234212",
+    "capture/2-output.bin": "8282380daf93d31c42f74986d55036c8a7e4a430da0cd4cbbf35e06602f1a335",
+    "plugin/libggml-metal.so": "ea6baa896aebeb7e9d3294bb40f872dd2f93d5a7c018830d680dc9437c78fdfa",
+    "probe/bench-q6-fused-top": "7295438677675f0120846e58526743bf8be2ec472fa855fa02b2532265306fa3"
+  }
+}
