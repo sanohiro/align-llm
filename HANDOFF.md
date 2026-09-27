@@ -2,7 +2,25 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active native Metal Q4_0 complete-FFN capture screen (2026-09-28)
+## Active Align-owned native Metal execution-plan consumer (2026-09-28)
+
+Branch `agent/native-metal-ffn-align-owner` starts from merged `main` at
+`d67e224a` (PR #315). GPU optimization remains the priority. The complete
+Q4_0 FFN kernel is locally faster, but Qwen3.5 currently builds all 24 layers
+as one ggml graph and `align_gpu_graph_compute` calls synchronous
+`ggml_backend_graph_compute`. Per-FFN graph partition with a host wait loses
+more than the kernel saves. Next: settle the smallest Align-owned resident
+Metal plan that can keep dependent operations queued, with model semantics and
+selection in Align and only device kernels/minimal ABI in native code. Before
+writing Align source, inspect the relevant checked-in Align language examples
+and compiler tests. Then implement a real captured 2B FFN consumer with
+explicit buffer ownership and checked completion; expand the ownership unit
+toward real decode rather than adding a permanent ggml patch. The existing
+ggml graph remains the rollback. Do not claim a request gain until full
+logits/state and prefill/decode/request comparisons pass. Other Metal hosts,
+CUDA, Q4_1 down and Gemma remain deferred.
+
+## Completed native Metal Q4_0 complete-FFN capture screen (2026-09-28)
 
 Branch `agent/native-metal-q4-full-ffn-capture` starts from merged `main` at
 `b17ba6ce` (PR #314). GPU optimization remains the priority. The independent
@@ -15,11 +33,11 @@ Captured and rebuilt ggml gated/final outputs are byte-identical; native
 outputs pass the declared bound and complete native FFN wins 20/20 local pairs
 with 0.057–0.068 ms paired median gain. An intermediate CPU wait in
 two commands adds 0.362–0.423 ms, while ordered same-queue submission with
-only a final wait passes both arms' output checks and adds 0.030–0.059 ms. This is not
-a request gain. Next: owner verification, one comprehensive review,
-exact-head preflight, CI and merge; then prototype an Align-owned asynchronous
-Metal schedule or larger execution unit that avoids per-FFN host waits before
-any real-model adoption claim. Keep captures/weights out of Git. Other Metal
+only a final wait passes both arms' output checks and adds 0.030–0.059 ms. This
+is not a request gain. One comprehensive review found an unchecked alternating
+arm; the narrow repair in `59a8af8d` separates its buffers and checks both
+outputs after every pair. Exact-head preflight and all three CI checks passed;
+PR #315 merged as `d67e224a`. Keep captures/weights out of Git. Other Metal
 hosts, CUDA, Q4_1 down and Gemma are deferred.
 
 ## Completed native Metal Q4_0 down split-K screen (2026-09-28)
