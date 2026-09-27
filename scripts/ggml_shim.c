@@ -1028,6 +1028,7 @@ struct align_gpu_device_state {
     ggml_backend_dev_t device;
     ggml_backend_t backend;
     char bundle_id[65];
+    int ingraph_argmax_supported;
     struct ggml_context *metadata_ctx;
     void *metadata_storage;
     unsigned char *metadata_base;
@@ -1266,6 +1267,16 @@ static const char *align_gpu_registry_name(const char *backend) {
     return NULL;
 }
 
+static int align_gpu_ingraph_argmax_marker(const char *backend_path) {
+    void *library = dlopen(backend_path, RTLD_NOW | RTLD_NOLOAD);
+    if (library == NULL) { return 0; }
+    int (*version)(void) = (int (*)(void)) dlsym(library,
+        "align_llm_metal_ingraph_argmax_v1");
+    int supported = version != NULL && version() == 1;
+    dlclose(library);
+    return supported;
+}
+
 static int align_gpu_bundle_id_ok(const char *bundle_id) {
     size_t index = 0;
     if (bundle_id == NULL) {
@@ -1369,6 +1380,9 @@ int32_t align_gpu_device_open(
     state->device = selected_device;
     state->backend = ggml_backend_dev_init(selected_device, NULL);
     memcpy(state->bundle_id, bundle_id, 65);
+    if (strcmp(backend_name, "metal") == 0) {
+        state->ingraph_argmax_supported = align_gpu_ingraph_argmax_marker(backend_path);
+    }
     state->host_budget_bytes = host_budget_bytes;
     state->device_budget_bytes = device_budget_bytes;
     state->staging_consumed = registry_state == 0;
@@ -1407,6 +1421,11 @@ int32_t align_gpu_device_bundle_id(void *owner, void *out, int32_t cap) {
     }
     memcpy(out, state->bundle_id, 64);
     return 64;
+}
+
+int32_t align_gpu_device_ingraph_argmax_supported(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state != NULL && state->backend != NULL && state->ingraph_argmax_supported;
 }
 
 void *align_gpu_device_handle(void *owner) {
@@ -4489,6 +4508,16 @@ int32_t align_ggml_op_mul_mat(void *ctx, void *slots, int64_t out, int64_t a, in
     if (result == NULL) {
         return ALIGN_GGML_INIT;
     }
+    return align_ggml_slot_store(slots, out, (void *) result);
+}
+
+int32_t align_ggml_op_argmax_row(void *ctx, void *slots, int64_t out, int64_t a) {
+    ALIGN_GGML_OP_PROLOGUE_1(ctx, slots, a)
+    if (sa->type != GGML_TYPE_F32) { return ALIGN_GGML_TYPE; }
+    if (!ggml_is_contiguous(sa) || ggml_nrows(sa) != 1 || sa->ne[0] < 1
+        || sa->ne[0] > INT32_MAX || !ggml_is_matrix(sa)) { return ALIGN_GGML_SHAPE; }
+    result = ggml_argmax((struct ggml_context *) ctx, sa);
+    if (result == NULL) { return ALIGN_GGML_INIT; }
     return align_ggml_slot_store(slots, out, (void *) result);
 }
 

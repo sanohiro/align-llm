@@ -2,6 +2,43 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Qwen3.5 in-graph Metal greedy trial (2026-09-27)
+
+Branch `agent/native-metal-ffn-integration`, exact prechange head `9dae952a`;
+the implementation/evidence checkpoint is this branch's HEAD. The local opt-in
+`ALIGN_LLM_GRAPH_GREEDY=1` candidate is implemented against a
+separate pinned ggml Metal patch and a marker-checked Align graph. The old
+full-logit graph is the default and rollback. Real 2B/0.8B generation, 2B
+serving, 336 exact resident-state hashes, captured-row tie/nonfinite cases,
+invalid-mode refusal, stub/real shim builds and Python boundary checks pass.
+The 200/3 boundary trace changes three full-row gets (2,979,840 bytes) to
+three scalar gets (12 bytes) with the same 1,377 total command buffers.
+
+Five alternating local captured-row pairs reduce synchronized argmax by a
+median 0.505 ms. Final repaired-binary same-binary 2B worker paired request
+changes are −1.644, +1.691 and +5.035 ms at 64/16, 200/32, 330/64; long
+worker wins 4/5. Final HTTP/SSE long paired gains are +13.916/+5.769 ms, but
+HTTP has one −70.021 ms pair; pinned llama.cpp remains faster at every worker
+median. The pre-repair worker's +21.843 ms long gain did not reproduce. The
+pre-repair combined existing sync-upload/final-FFN-row arm improves warm-start
+construction by about 0.5 s under the measured cache conditions but also
+remains slower than llama.cpp for warm requests. Keep graph greedy default-off.
+The exact conditions, adverse samples, raw receipts and next hypothesis are in
+`docs/qwen35-ingraph-greedy-trial.md`.
+
+One fresh host-native review covered the full candidate and found two valid
+issues: early short-vocabulary refusal and bundle-bound patch identity. Both
+were repaired; the final 2B/0.8B generation and 2B serving owners, exact
+short-vocabulary pre-upload refusal, patch-tamper refusal, stub owner, strict
+Python boundary and final-binary worker/HTTP campaigns pass. The review and
+repair diagnostics are in the Git common directory. Next: for further speed work,
+screen a Q6_K output projection that emits partial maxima directly in its
+producing graph against captured real weights and activations; admit it to the
+real model only if the exact full-logit/state oracle survives. Do not repeat
+the one-to-one Q6_K mapping or post-sync GPU argmax. CPU/CUDA Qwen3.5 and Gemma
+semantic admission remain deferred in the backend parity register. No PR,
+preflight or merge is claimed for this local trial.
+
 ## Qwen3.5 Metal private-storage screen (2026-09-27)
 
 Branch `agent/native-metal-ffn-integration`, starting from NEON checkpoint

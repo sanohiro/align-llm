@@ -1,5 +1,8 @@
 * text=auto eol=lf
 
+# A unified diff contains significant single-space context lines. Preserve them.
+scripts/metal-ingraph-argmax.patch -whitespace
+
 # The canonical corpus file-set manifest is byte-identity-bearing framed data.
 eval/prompt/canonical-v1/corpus-file-set.manifest -text
 

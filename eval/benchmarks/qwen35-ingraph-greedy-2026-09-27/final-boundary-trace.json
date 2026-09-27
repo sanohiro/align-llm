@@ -1,0 +1,32 @@
+{
+  "host-control": {
+    "gets": [
+      993280,
+      993280,
+      993280
+    ],
+    "total_bytes": 2979840,
+    "output": "1 2"
+  },
+  "host-candidate": {
+    "gets": [
+      4,
+      4,
+      4
+    ],
+    "total_bytes": 12,
+    "output": "1 2"
+  },
+  "command-control": {
+    "command_buffers": 1377,
+    "graph_begins": 4,
+    "graph_ends": 4,
+    "output": "1 2"
+  },
+  "command-candidate": {
+    "command_buffers": 1377,
+    "graph_begins": 4,
+    "graph_ends": 4,
+    "output": "1 2"
+  }
+}

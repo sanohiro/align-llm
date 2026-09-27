@@ -13,6 +13,7 @@ pub TOKEN := 19
 pub POSITION := 21
 pub MASK := 22
 pub OUTPUT := 92
+pub GREEDY_OUTPUT := 93
 
 // Build a complete one-token Qwen3.5 graph. Publication of the staged recurrent and
 // attention state belongs to the caller after successful execution and output readback.
@@ -23,8 +24,19 @@ pub fn build_one_token(
   position: i64, kind: i64, index_input: i64,
   ctx: raw, graph: raw, borrow slots: slice<u8>,
 ) -> Result<(), Error> {
-  return build_tokens(owner, g, state, position, 1, kind, index_input,
-    ctx, graph, slots)
+  return build_one_token_greedy(owner, g, state, position, kind, index_input,
+    ctx, graph, slots, false)
+}
+
+pub fn build_one_token_greedy(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  borrow state: runtime_qwen35_state.State,
+  position: i64, kind: i64, index_input: i64,
+  ctx: raw, graph: raw, borrow slots: slice<u8>, graph_greedy: bool,
+) -> Result<(), Error> {
+  return build_tokens_final_row_greedy(owner, g, state, position, 1, kind, index_input,
+    ctx, graph, slots, true, false, graph_greedy)
 }
 
 pub fn build_tokens(
@@ -59,11 +71,24 @@ pub fn build_tokens_final_row(
   ctx: raw, graph: raw, borrow slots: slice<u8>, emit_logits: bool,
   last_ffn_row: bool,
 ) -> Result<(), Error> {
+  return build_tokens_final_row_greedy(owner, g, state, position, count, kind, index_input,
+    ctx, graph, slots, emit_logits, last_ffn_row, false)
+}
+
+pub fn build_tokens_final_row_greedy(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  borrow state: runtime_qwen35_state.State,
+  position: i64, count: i64, kind: i64, index_input: i64,
+  ctx: raw, graph: raw, borrow slots: slice<u8>, emit_logits: bool,
+  last_ffn_row: bool, graph_greedy: bool,
+) -> Result<(), Error> {
   if !runtime_qwen35_geometry.valid_layer_pattern(g)
     || position < 0 || count < 1 || count > runtime_attention.MAX_PREFILL
     || count > g.context_length - position
     || (count > 1 && kind != ggml_ffi.GPU_GRAPH_PREFILL)
     || (!emit_logits && kind != ggml_ffi.GPU_GRAPH_PREFILL)
+    || (graph_greedy && (!emit_logits || g.n_vocab < 8192))
     || (last_ffn_row && (!emit_logits || kind != ggml_ffi.GPU_GRAPH_PREFILL || count <= 1))
     || ggml_ffi.handle_absent(ctx) || ggml_ffi.handle_absent(graph)
     || ggml_ffi.slot_ne(slots, TOKEN, 0) != count
@@ -146,11 +171,22 @@ pub fn build_tokens_final_row(
   ggml_ffi.op_mul_mat(ctx, slots, OUTPUT, 0, 91, "q35_output_projection") else {
     return Err(Error.Invalid)
   }
-  ggml_ffi.slot_mark_output(slots, OUTPUT, "q35_logits") else {
-    return Err(Error.Invalid)
-  }
-  ggml_ffi.graph_expand(graph, slots, OUTPUT, "q35_logits") else {
-    return Err(Error.Invalid)
+  if graph_greedy {
+    ggml_ffi.op_argmax_row(ctx, slots, GREEDY_OUTPUT, OUTPUT,
+      "q35_in_graph_greedy") else { return Err(Error.Invalid) }
+    ggml_ffi.slot_mark_output(slots, GREEDY_OUTPUT, "q35_greedy_token") else {
+      return Err(Error.Invalid)
+    }
+    ggml_ffi.graph_expand(graph, slots, GREEDY_OUTPUT, "q35_greedy_token") else {
+      return Err(Error.Invalid)
+    }
+  } else {
+    ggml_ffi.slot_mark_output(slots, OUTPUT, "q35_logits") else {
+      return Err(Error.Invalid)
+    }
+    ggml_ffi.graph_expand(graph, slots, OUTPUT, "q35_logits") else {
+      return Err(Error.Invalid)
+    }
   }
   return Ok(())
 }

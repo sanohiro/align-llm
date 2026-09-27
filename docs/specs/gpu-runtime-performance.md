@@ -383,6 +383,58 @@ The integration was withdrawn; the default path is unchanged. See
 `docs/qwen35-hierarchical-greedy-trial.md` and its raw receipts. This result
 tests that boundary only; it does not rule out an in-graph reduction.
 
+### In-graph hierarchical greedy trial (2026-09-27)
+
+The post-sync Metal reduction passed real-row semantics but added a command
+buffer and a wait. Test the same two-stage reduction as an opt-in ggml Metal
+`ARGMAX` implementation in the command buffer that produces the logits. Align
+selects the graph and token and retains the existing full-logit graph as the
+control. The specialization is selected by contiguous F32 row shape, with
+ordinary ggml behavior for other shapes and backends. The temporary partial
+buffer belongs to the graph output allocation, so it lives through both
+dispatches without a separate queue or host copy. The kernel must choose the
+first maximum and return an invalid sentinel for any nonfinite input; Align
+checks the four-byte result before publishing state.
+
+Cost ceiling: one additional graph node, two Metal dispatches, at most
+12 bytes per 1,024 logits of graph scratch, no extra full-row allocation,
+one build attempt within 3,600 seconds and one alternating real-model campaign
+within 900 seconds. Compare captured real rows and tie/nonfinite cases before
+timing; then compare exact real 2B/0.8B tokens and resident state, worker and
+HTTP/SSE requests, prefill, decode, load, and pinned llama.cpp. Use multiple
+alternating samples at 64/16, 200/32, and 330/64. A local result is an
+integration screen, not a production adoption criterion; observed variability,
+memory, regressions and maintenance decide whether the opt-in should remain.
+
+Closure: configuration rejects malformed/unsupported modes before allocation;
+the Align graph builder and shim validate contiguous F32 shape and mode-specific
+graph keys; ggml allocates scratch with the output; both Metal stages run in
+the producing graph; generation validates the result in ordinary and streaming
+paths; failed requests retain existing unhealthy-session cleanup. Existing
+full-logit captures serve as the unchanged numeric oracle because the new
+node consumes the same projection without changing its arithmetic.
+Before weight allocation, the Qwen3.5 session asks the thin shim whether the
+selected Metal plugin exports the `align_llm_metal_ingraph_argmax_v1` marker.
+Mode `1` refuses an unpatched bundle or a vocabulary shorter than 8,192;
+absent/`0` keeps the old graph. The threshold matches the backend's
+hierarchical dispatch admission, so the opt-in cannot silently use the older
+tie behavior.
+The build recipe's `--ingraph-argmax` Metal-only option applies and retains
+`scripts/metal-ingraph-argmax.patch` separately from `--native-swiglu`; each
+patch digest enters the bundle build flags. Neither option changes persisted
+model or session formats. Qualification and timing use the patched bundle
+identity recorded with each receipt.
+
+After the single-mode comparison, test the already implemented synchronous
+weight upload and final-layer FFN-row options together with graph greedy against
+the exact prechange Align binary and the fixed llama.cpp reference. Keep the
+128-token prefill chunk, GGUF, quantization, prompt IDs and generated counts
+equal. Report each of startup, prefill, decode and whole request from five
+alternating pairs at the three representative lengths; finish each campaign
+within 900 seconds. The earlier independent trials supply hypotheses, not an
+assumption that their gains add. Retain the graph-only arm to distinguish the
+new operation from existing options.
+
 ### Shared Metal row SIMD greedy trial (2026-09-27)
 
 The previous borrowed-row path proves the real Qwen3.5 output is shared Metal

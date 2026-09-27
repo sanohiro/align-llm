@@ -19,6 +19,20 @@ def digest(path):
     with open(path, 'rb') as stream:
         return hashlib.file_digest(stream, 'sha256').hexdigest()
 
+def bundle_patch_digest(bundle, flag_name, file_name):
+    bundle = Path(bundle)
+    manifest = json.loads((bundle/'manifest.json').read_text())
+    prefix = '-D' + flag_name + '='
+    values = [flag[len(prefix):] for flag in manifest['build_flags'] if flag.startswith(prefix)]
+    if not values:
+        return None
+    if len(values) != 1 or not re.fullmatch('[0-9a-f]{64}', values[0]):
+        raise ValueError('invalid bundle patch digest flag')
+    retained = bundle.parent/file_name
+    if not retained.is_file() or digest(retained) != values[0]:
+        raise ValueError('retained bundle patch does not match build flag')
+    return values[0]
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True,
@@ -39,11 +53,11 @@ def main():
         cfg['control']=dict(cfg['candidate'])
         cfg['control_commit']=None
     arms=('control','candidate') if args.native_ab else ('control','candidate','llama')
-    env = {k:v for k,v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_', 'ALIGN_LLM_SYNC_WEIGHT_UPLOAD', 'ALIGN_LLM_PREFILL_', 'ALIGN_LLM_MAPPED_WEIGHTS', 'ALIGN_LLM_SHARED_LOGITS', 'ALIGN_LLM_NEON_GREEDY'))}
+    env = {k:v for k,v in os.environ.items() if not k.startswith(('DYLD_', 'GGML_', 'ALIGN_LLM_NATIVE_', 'ALIGN_FFN_', 'ALIGN_LLM_SYNC_WEIGHT_UPLOAD', 'ALIGN_LLM_PREFILL_', 'ALIGN_LLM_MAPPED_WEIGHTS', 'ALIGN_LLM_SHARED_LOGITS', 'ALIGN_LLM_NEON_GREEDY', 'ALIGN_LLM_GRAPH_GREEDY'))}
     execution = {}
     for arm in ('control', 'candidate'):
         selected = cfg[arm].get('execution', {})
-        if set(selected) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights', 'shared_logits', 'neon_greedy', 'private_buffers'}:
+        if set(selected) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights', 'shared_logits', 'neon_greedy', 'graph_greedy', 'private_buffers'}:
             raise ValueError('unknown execution setting')
         sync = selected.get('sync_weight_upload', '0')
         chunk = selected.get('prefill_chunk', '128')
@@ -52,11 +66,25 @@ def main():
         mapped = selected.get('mapped_weights', '0')
         shared = selected.get('shared_logits', '0')
         neon = selected.get('neon_greedy', '0')
+        graph = selected.get('graph_greedy', '0')
         private = selected.get('private_buffers', '0')
-        if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or shared not in ('0', '1') or neon not in ('0', '1') or private not in ('0', '1') or (shared == '1' and neon == '1') or (mapped == '1' and sync == '1') or (private == '1' and (mapped == '1' or shared == '1' or neon == '1')):
+        if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or shared not in ('0', '1') or neon not in ('0', '1') or graph not in ('0', '1') or private not in ('0', '1') or sum((shared == '1', neon == '1', graph == '1')) > 1 or (mapped == '1' and sync == '1') or (private == '1' and (mapped == '1' or shared == '1' or neon == '1' or graph == '1')):
             raise ValueError('invalid execution setting')
-        execution[arm] = dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped, shared_logits=shared, neon_greedy=neon, private_buffers=private)
-    report = dict(schema_version=2, artifact_kind='NATIVE_SWIGLU_MEASUREMENT',
+        execution[arm] = dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped, shared_logits=shared, neon_greedy=neon, graph_greedy=graph, private_buffers=private)
+    graph_trial = any(execution[arm]['graph_greedy'] == '1' for arm in ('control', 'candidate'))
+    native_patches = {arm:bundle_patch_digest(cfg[arm]['lib'],
+                         'ALIGN_LLM_NATIVE_SWIGLU_PATCH_SHA256',
+                         'native-metal-swiglu.patch')
+                      for arm in ('control', 'candidate')}
+    argmax_patches = {arm:bundle_patch_digest(cfg[arm]['lib'],
+                        'ALIGN_LLM_INGRAPH_ARGMAX_PATCH_SHA256',
+                        'metal-ingraph-argmax.patch')
+                      for arm in ('control', 'candidate')}
+    if any(execution[arm]['graph_greedy'] == '1' and argmax_patches[arm] is None
+           for arm in ('control', 'candidate')):
+        raise ValueError('graph greedy requires a verified argmax bundle patch')
+    report = dict(schema_version=2,
+                  artifact_kind='INGRAPH_ARGMAX_MEASUREMENT' if graph_trial else 'NATIVE_SWIGLU_MEASUREMENT',
                   align_revision=Path('.align-revision').read_text().strip(),
                   policy='2026-09-26-no-percentage-floor', status='INCOMPLETE',
                   control_kind='same_binary_same_bundle_native_off' if args.native_ab else ('both_native_disabled' if args.native_disabled else ('prior_native_source' if args.native_control else 'unchanged_align_source')),
@@ -65,7 +93,12 @@ def main():
                   reference_sha256=digest(cfg['llama']), trace_sha256=digest(cfg['trace']),
                   backend_identities={arm:json.loads((Path(cfg[arm]['lib'])/'manifest.json').read_text())['bundle_id'] for arm in ('control','candidate')},
                   options_sha256={arm:digest(cfg[arm]['options']) for arm in ('control','candidate')},
-                  control_commit=cfg['control_commit'], candidate_patch_sha256=digest('scripts/native-metal-swiglu.patch'),
+                  control_commit=cfg['control_commit'],
+                  candidate_patch_sha256=native_patches['candidate'],
+                  native_patch_sha256_by_arm=native_patches,
+                  argmax_patch_sha256=(argmax_patches['candidate'] if execution['candidate']['graph_greedy'] == '1'
+                      else argmax_patches['control'] if graph_trial else None),
+                  argmax_patch_sha256_by_arm=argmax_patches if graph_trial else None,
                   note='Startup is construction-to-ready with OS file cache uncontrolled. Graph phase includes synchronization; not shader-only time.',
                   phase_instrumented=not args.wall_only, execution=execution, cases=[], adoption='ASSESSMENT_REQUIRED')
     def save(): args.output.write_text(json.dumps(report,indent=2)+'\n')
@@ -86,6 +119,9 @@ def main():
                     if len(ids)==target_prompt:break
                     repeat_count+=target_prompt-len(ids)
                 if len(ids)!=target_prompt:raise ValueError('prompt length construction failed')
+                candidate_ids=json.loads(subprocess.check_output(
+                    [cfg['candidate']['binary'],'--prepare-prompt',cfg['model'],str(system),str(user_path)],env=env))
+                if candidate_ids!=ids:raise ValueError('candidate prompt token IDs differ')
                 prompt_path.write_bytes(prompt)
                 rendered=work/'rendered'
                 rendered.write_bytes(subprocess.check_output([cfg['control']['binary'],'--detokenize',cfg['model'],str(prompt_path),'render-control'],env=env))
@@ -103,6 +139,7 @@ def main():
                     e['ALIGN_LLM_MAPPED_WEIGHTS']=execution[arm]['mapped_weights']
                     e['ALIGN_LLM_SHARED_LOGITS']=execution[arm]['shared_logits']
                     e['ALIGN_LLM_NEON_GREEDY']=execution[arm]['neon_greedy']
+                    e['ALIGN_LLM_GRAPH_GREEDY']=execution[arm]['graph_greedy']
                     if execution[arm]['private_buffers'] == '1':
                         e['GGML_METAL_SHARED_BUFFERS_DISABLE']='1'
                     started=time.monotonic_ns()

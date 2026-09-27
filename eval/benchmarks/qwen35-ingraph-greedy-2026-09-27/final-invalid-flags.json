@@ -1,0 +1,20 @@
+[
+  {
+    "case": "malformed",
+    "returncode": 2,
+    "ready": false,
+    "stderr_tail": "gml_metal_init: allocating\nggml_metal_init: picking default device: Apple M1\nggml_metal_init: use fusion         = true\nggml_metal_init: use concurrency    = true\nggml_metal_init: use graph optimize = true\nggml_metal_free: deallocating\nerror: code 2\n"
+  },
+  {
+    "case": "conflict",
+    "returncode": 2,
+    "ready": false,
+    "stderr_tail": "gml_metal_init: allocating\nggml_metal_init: picking default device: Apple M1\nggml_metal_init: use fusion         = true\nggml_metal_init: use concurrency    = true\nggml_metal_init: use graph optimize = true\nggml_metal_free: deallocating\nerror: code 2\n"
+  },
+  {
+    "case": "unpatched",
+    "returncode": 2,
+    "ready": false,
+    "stderr_tail": "error: code 2\n"
+  }
+]

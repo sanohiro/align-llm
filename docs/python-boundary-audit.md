@@ -24,6 +24,8 @@ The shared-logits setting only selects an explicit native trial arm; Python
 never reads a product logit or chooses a token.
 The NEON greedy setting also selects only an explicit native trial arm; the
 native numeric kernel and Align generation own every inference decision.
+The graph-greedy setting likewise selects only a native trial arm for HTTP/SSE
+measurement; no Python code reads logits or chooses tokens.
 `scripts/test-host-reuse-config` is `CI_OR_DEVELOPER_TOOL`: it checks measurement-input refusal without loading a model or starting a server.
 
 `scripts/test-development-preflight` remains `BUILD_OR_DEVELOPER_TOOL`; its hosted
@@ -31,8 +33,9 @@ native numeric kernel and Align generation own every inference decision.
 automation and do not enter normal product execution.
 
 `scripts/gpu_backend_recipe.py` remains `CI_OR_DEVELOPER_TOOL`; the optional
-native SwiGLU patch is a build input, retained with its digest, never a Python
-inference dependency. `scripts/run-prefix-ttft`, `scripts/run-decode-step` and
+native SwiGLU patch and separate in-graph argmax patch are build inputs,
+retained with their digests, never Python inference dependencies.
+`scripts/run-prefix-ttft`, `scripts/run-decode-step` and
 `scripts/run-moe-decode-step` retain their independent qualification/measurement
 roles; latency is reported for assessment without a fixed shipping percentage.
 
@@ -42,6 +45,9 @@ paired changes and wins instead of a percentage-based adoption verdict.
 
 `scripts/measure-native-swiglu` is `BENCHMARK_OR_MEASUREMENT`: it launches
 native products/reference executables, captures timing and checks output/counts.
+It also checks the native arms' exact prompt token IDs before timing.
+Its optional graph-greedy setting only selects a native Align/Metal trial arm;
+the script never chooses a product token or builds a model graph.
 Per-arm upload/batch/mapped-weight environment, first-request timing and optional uninstrumented wall-only runs remain independent measurement inputs; expected graph counts follow the recorded batch width.
 Its shared-logits setting remains a measurement input to explicit native
 binaries, outside normal product execution.

@@ -1068,6 +1068,7 @@ int64_t align_ptr_offset(const void *a, const void *b) {
 #define ALIGN_STUB_OP_CPY        19
 #define ALIGN_STUB_OP_INDEXED_PREFIX 20
 #define ALIGN_STUB_OP_WRITE_PREFIX 21
+#define ALIGN_STUB_OP_ARGMAX_ROW 22
 
 typedef struct align_stub_tensor {
     int metadata_only_external;
@@ -1308,6 +1309,15 @@ static void align_stub_run(align_stub_tensor *t) {
                 }
             }
         }
+    } break;
+    case ALIGN_STUB_OP_ARGMAX_ROW: {
+        int32_t best_index = -1;
+        float best = -INFINITY;
+        for (i0 = 0; i0 < a->ne[0]; i0++) {
+            if (!isfinite(x[i0])) { best_index = -1; break; }
+            if (x[i0] > best) { best = x[i0]; best_index = (int32_t) i0; }
+        }
+        memcpy(t->data, &best_index, sizeof(best_index));
     } break;
     case ALIGN_STUB_OP_RESHAPE:
     case ALIGN_STUB_OP_CONT: {
@@ -2084,6 +2094,11 @@ int32_t align_gpu_device_bundle_id(void *owner, void *out, int32_t cap) {
     }
     memcpy(out, state->bundle_id, 64);
     return 64;
+}
+
+int32_t align_gpu_device_ingraph_argmax_supported(void *owner) {
+    (void) owner;
+    return 0;
 }
 
 void *align_gpu_device_handle(void *owner) {
@@ -4504,6 +4519,17 @@ int32_t align_ggml_op_mul_mat(void *ctx, void *slots, int64_t out, int64_t a, in
     return align_stub_bind(slots, out,
         align_stub_new(ctx, ALIGN_STUB_TYPE_F32, sa->ne[1], sb->ne[1], sb->ne[2], sb->ne[3]),
         sa, sb, ALIGN_STUB_OP_MUL_MAT);
+}
+
+int32_t align_ggml_op_argmax_row(void *ctx, void *slots, int64_t out, int64_t a) {
+    align_stub_tensor *sa = align_stub_slot(slots, a);
+    if (sa == NULL) { return ALIGN_GGML_SLOT; }
+    if (sa->type != ALIGN_STUB_TYPE_F32) { return ALIGN_GGML_TYPE; }
+    if (sa->ne[0] < 1 || sa->ne[0] > INT32_MAX || sa->ne[1] != 1 ||
+        sa->ne[2] != 1 || sa->ne[3] != 1) { return ALIGN_GGML_SHAPE; }
+    return align_stub_bind(slots, out,
+        align_stub_new(ctx, ALIGN_STUB_TYPE_I32, 1, 1, 1, 1),
+        sa, NULL, ALIGN_STUB_OP_ARGMAX_ROW);
 }
 
 /* Align explicitly requests this fusion; other backends retain the original op. */
