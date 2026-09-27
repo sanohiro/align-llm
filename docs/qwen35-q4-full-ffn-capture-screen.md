@@ -7,9 +7,9 @@ dependent GPU work without an intermediate CPU wait. The native two-dispatch
 gate/up/SiLU/down command passed actual captured Qwen3.5-2B intermediate and
 final output checks and beat the unmodified pinned ggml complete FFN in all
 20 paired local comparisons across two layers and runs. Its paired median
-advantage was `0.039–0.069 ms` per FFN. Separating those same kernels into two
-commands with a CPU wait between them added `0.313–0.382 ms`; submitting both
-on one queue and waiting only after down added `0.014–0.043 ms`. The latter is
+advantage was `0.057–0.068 ms` per FFN. Separating those same kernels into two
+commands with a CPU wait between them added `0.362–0.423 ms`; submitting both
+on one queue and waiting only after down added `0.030–0.059 ms`. The latter is
 near the entire local compute gain, so no request-speed claim or production
 adoption follows. The production graph and selectable native routes are
 unchanged.
@@ -27,6 +27,9 @@ gated/final vectors match the captures byte for byte. Native weights and input
 are uploaded once before timing. The A/B arms own separate exact-weight
 buffers. No timed operation copies data between CPU and GPU or reads output on
 the CPU.
+The combined and two-command native schedules share read-only weights/input
+but have separate gated and final buffers, so each timed arm's output survives
+the alternating order and is checked after every pair.
 
 For the queued two-command arm, both buffers use Metal's default resource
 hazard tracking on one command queue. Gate/up is committed before down, and
@@ -55,12 +58,12 @@ Apple M1, macOS 27.0, pinned ggml
 `a901a131109e42de39919c74562947ad8783b32d63c2ce88be13e9812b07fdf5`,
 GGUF SHA256 `cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1`.
 Probe source SHA256:
-`e3f2092a0ab22226c00ab39d73644f5ca0a34662f5dadb6fd7313a61f746a89e`.
+`fee498f7671e7026b02f0a49084238a0279ff198fdb1ab71262174d650abc0c9`.
 The captured file hashes and weight-identity validation are bound in the
 [earlier complete FFN receipt](../eval/benchmarks/qwen35-native-q4-tile-ffn-2026-09-28.json);
 this probe verifies every file size and rebuilt ggml output. The
-[run H](../eval/benchmarks/qwen35-q4-full-ffn-capture-2026-09-28-h.txt) and
-[run I](../eval/benchmarks/qwen35-q4-full-ffn-capture-2026-09-28-i.txt) receipts
+[run J](../eval/benchmarks/qwen35-q4-full-ffn-capture-2026-09-28-j.txt) and
+[run K](../eval/benchmarks/qwen35-q4-full-ffn-capture-2026-09-28-k.txt) receipts
 retain every sample, setup time, and correctness result.
 
 Twelve warmups per arm preceded each campaign. Each of two process runs
@@ -71,21 +74,21 @@ command timestamps. The separate GPU interval sums the two command
 intervals and excludes the gap; wall clocks include the final completion
 wait, and the CPU-wait arm includes its intermediate wait.
 
-| Layer / measure | Run H paired median | Run I paired median | Positive pairs |
+| Layer / measure | Run J paired median | Run K paired median | Positive pairs |
 | --- | ---: | ---: | ---: |
-| 3 gated, ggml minus native | +0.0445 ms | +0.0402 ms | 10/10 |
-| 23 gated, ggml minus native | +0.0524 ms | +0.0536 ms | 10/10 |
-| 3 complete FFN, ggml minus native | +0.0401 ms | +0.0677 ms | 10/10 |
-| 23 complete FFN, ggml minus native | +0.0391 ms | +0.0686 ms | 10/10 |
-| 3 separate with CPU wait minus combined | +0.3681 ms | +0.3134 ms | 10/10 |
-| 23 separate with CPU wait minus combined | +0.3822 ms | +0.3799 ms | 10/10 |
-| 3 queued, final wait only, minus combined | +0.0416 ms | +0.0141 ms | 8/10 |
-| 23 queued, final wait only, minus combined | +0.0426 ms | +0.0422 ms | 10/10 |
+| 3 gated, ggml minus native | +0.0543 ms | +0.0292 ms | 10/10 |
+| 23 gated, ggml minus native | +0.0276 ms | +0.0637 ms | 10/10 |
+| 3 complete FFN, ggml minus native | +0.0572 ms | +0.0679 ms | 10/10 |
+| 23 complete FFN, ggml minus native | +0.0672 ms | +0.0647 ms | 10/10 |
+| 3 separate with CPU wait minus combined | +0.3615 ms | +0.3654 ms | 10/10 |
+| 23 separate with CPU wait minus combined | +0.3680 ms | +0.4228 ms | 10/10 |
+| 3 queued, final wait only, minus combined | +0.0592 ms | +0.0298 ms | 10/10 |
+| 23 queued, final wait only, minus combined | +0.0425 ms | +0.0474 ms | 10/10 |
 
 The combined complete native command's GPU interval medians were
-`0.654–0.665 ms` in full-FFN pairs. The queued two-command arm's summed GPU
-interval medians were `0.659–0.683 ms`; the CPU-wait arm's were
-`0.670–0.677 ms`. Most of the CPU-wait arm's extra wall time is outside the
+`0.654–0.657 ms` in full-FFN pairs. The queued two-command arm's summed GPU
+interval medians were `0.666–0.679 ms`; the CPU-wait arm's were
+`0.665–0.672 ms`. Most of the CPU-wait arm's extra wall time is outside the
 GPU intervals. The queued arm removes most of that host gap while still
 paying for a second command. Warm setup clocks varied with library/pipeline
 caches and are not comparable cold-start numbers. The isolated process holds

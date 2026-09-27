@@ -10,12 +10,12 @@ two-dispatch gate/up/SiLU plus unsplit-down screen on real captured 2B layers
 3 and 23 is implemented; contract, report and raw final pairs are in
 `docs/specs/gpu-runtime-performance.md`,
 `docs/qwen35-q4-full-ffn-capture-screen.md`, and
-`eval/benchmarks/qwen35-q4-full-ffn-capture-2026-09-28-{h,i}.txt`.
+`eval/benchmarks/qwen35-q4-full-ffn-capture-2026-09-28-{j,k}.txt`.
 Captured and rebuilt ggml gated/final outputs are byte-identical; native
 outputs pass the declared bound and complete native FFN wins 20/20 local pairs
-with 0.039–0.069 ms paired median gain. A necessary intermediate CPU wait in
-two commands adds 0.313–0.382 ms, while ordered same-queue submission with
-only a final wait passes output checks and adds 0.014–0.043 ms. This is not
+with 0.057–0.068 ms paired median gain. An intermediate CPU wait in
+two commands adds 0.362–0.423 ms, while ordered same-queue submission with
+only a final wait passes both arms' output checks and adds 0.030–0.059 ms. This is not
 a request gain. Next: owner verification, one comprehensive review,
 exact-head preflight, CI and merge; then prototype an Align-owned asynchronous
 Metal schedule or larger execution unit that avoids per-FFN host waits before

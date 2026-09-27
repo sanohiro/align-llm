@@ -258,7 +258,12 @@ int main(int argc, char ** argv) {
             options:MTLResourceStorageModeShared];
         id<MTLBuffer> mz = [metal newBufferWithLength:WIDTH * sizeof(float)
             options:MTLResourceStorageModeShared];
-        if (!queue || !mg || !mu || !md || !mx || !my || !mz)
+        id<MTLBuffer> my_separate = [metal newBufferWithLength:HIDDEN * sizeof(float)
+            options:MTLResourceStorageModeShared];
+        id<MTLBuffer> mz_separate = [metal newBufferWithLength:WIDTH * sizeof(float)
+            options:MTLResourceStorageModeShared];
+        if (!queue || !mg || !mu || !md || !mx || !my || !mz ||
+            !my_separate || !mz_separate)
             fail("Metal buffer allocation failed");
 
         double setup_ms = elapsed_ms(setup_start);
@@ -306,14 +311,14 @@ int main(int argc, char ** argv) {
                     [encoder setBuffer:mg offset:0 atIndex:0];
                     [encoder setBuffer:mu offset:0 atIndex:1];
                     [encoder setBuffer:mx offset:0 atIndex:2];
-                    [encoder setBuffer:my offset:0 atIndex:3];
+                    [encoder setBuffer:my_separate offset:0 atIndex:3];
                     [encoder dispatchThreads:MTLSizeMake(HIDDEN * 8, 1, 1)
                         threadsPerThreadgroup:MTLSizeMake(group_size, 1, 1)];
                 } else {
                     [encoder setComputePipelineState:down_pipeline];
                     [encoder setBuffer:md offset:0 atIndex:0];
-                    [encoder setBuffer:my offset:0 atIndex:1];
-                    [encoder setBuffer:mz offset:0 atIndex:2];
+                    [encoder setBuffer:my_separate offset:0 atIndex:1];
+                    [encoder setBuffer:mz_separate offset:0 atIndex:2];
                     [encoder dispatchThreads:MTLSizeMake(WIDTH * 8, 1, 1)
                         threadsPerThreadgroup:MTLSizeMake(group_size, 1, 1)];
                 }
@@ -413,8 +418,10 @@ int main(int argc, char ** argv) {
             combined_gpu_times.push_back(combined_gpu / ITERATIONS);
             separate_gpu_times.push_back(separate_gpu / ITERATIONS);
             boundary_differences.push_back(sm - cm);
-            check_output(gated, my, HIDDEN, "post-boundary gated");
-            check_output(down, mz, WIDTH, "post-boundary down");
+            check_output(gated, my, HIDDEN, "post-boundary combined gated");
+            check_output(down, mz, WIDTH, "post-boundary combined down");
+            check_output(gated, my_separate, HIDDEN, "post-boundary separate gated");
+            check_output(down, mz_separate, WIDTH, "post-boundary separate down");
             std::printf("boundary_pair layer=%d mode=%s index=%d combined_ms=%.6f separate_ms=%.6f combined_gpu_ms=%.6f separate_gpu_ms=%.6f extra_wall_ms=%.6f\n",
                         layer, wait_between ? "wait" : "queued", pair, cm, sm, combined_gpu_times.back(),
                         separate_gpu_times.back(), boundary_differences.back());

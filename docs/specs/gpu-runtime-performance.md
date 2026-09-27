@@ -273,6 +273,8 @@ Check both command statuses and the complete output after each pair, using the
 same warmup/alternation. This tests whether queue order and hazard tracking
 can retain correctness while avoiding the intermediate host wait; it does
 not imply that the current ggml graph API can use that schedule.
+The combined and separate native schedules keep distinct gated/result buffers
+so every pair verifies both arms regardless of execution order.
 
 Closure: checked capture identity, construction/allocation and command failure;
 complete gated/final and reuse checks; paired samples and honest decision.
@@ -285,11 +287,11 @@ Result: rebuilt ggml gated/final vectors matched the captures byte for byte;
 independent Metal outputs passed the declared local bound. Across the final
 two five-pair runs and both actual layers, the combined native complete FFN
 beat isolated ggml in 20/20 wall pairs with paired median advantages of
-0.039–0.069 ms. Two commands with an intermediate CPU wait added
-0.313–0.382 ms; ordered same-queue submission with only a final wait added
-0.014–0.043 ms and passed every output check. The latter remains close to the
-local compute gain, so do not claim request improvement or enable the
-candidate. Continue with an Align-owned asynchronous schedule or larger
+0.057–0.068 ms. Two commands with an intermediate CPU wait added
+0.362–0.423 ms; ordered same-queue submission with only a final wait added
+0.030–0.059 ms and passed every output check for both timed arms. The latter
+remains close to the local compute gain, so do not claim request improvement or
+enable the candidate. Continue with an Align-owned asynchronous schedule or larger
 execution unit that avoids per-FFN host waits. Full conditions and samples
 are in `docs/qwen35-q4-full-ffn-capture-screen.md`.
 
