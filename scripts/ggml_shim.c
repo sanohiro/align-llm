@@ -1070,7 +1070,9 @@ struct align_gpu_device_state {
     int native_state_copy;
     int native_conv_copy;
     int native_prefill_state_copy;
+    int native_copy_greedy;
     void *native_state_copy_context;
+    struct ggml_tensor *native_copy_greedy_source[ALIGN_GPU_GRAPH_KINDS];
     int native_state_copy_count[ALIGN_GPU_GRAPH_KINDS];
     struct ggml_tensor *native_state_copy_sources[ALIGN_GPU_GRAPH_KINDS][64];
     struct ggml_tensor *native_state_copy_destinations[ALIGN_GPU_GRAPH_KINDS][64];
@@ -2634,6 +2636,44 @@ int32_t align_gpu_native_prefill_state_copy_enabled(void *owner) {
     return state != NULL && state->native_prefill_state_copy == 1 ? 1 : 0;
 }
 
+int32_t align_gpu_native_copy_greedy_mode(void *owner, int32_t mode) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || (mode != 0 && mode != 1) || state->weights_finished
+        || state->workspace_prepared) return ALIGN_GPU_CONFIG;
+    if (mode == 0) return state->native_copy_greedy ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+#if defined(__APPLE__)
+    if (!state->native_state_copy || !state->native_conv_copy
+        || state->native_state_copy_context == NULL) return ALIGN_GPU_CONFIG;
+    if (!align_native_metal_copy_enable_greedy(state->native_state_copy_context)) {
+        return ALIGN_GPU_UNSUPPORTED;
+    }
+    state->native_copy_greedy = 1;
+    return ALIGN_GPU_OK;
+#else
+    return ALIGN_GPU_UNSUPPORTED;
+#endif
+}
+
+int32_t align_gpu_native_copy_greedy_enabled(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state != NULL && state->native_copy_greedy == 1 ? 1 : 0;
+}
+
+int32_t align_gpu_native_copy_greedy_register(void *owner, int32_t kind,
+        void *slots, int64_t source) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = align_ggml_slot_load(slots, source);
+    if (state == NULL || !state->native_copy_greedy
+        || (kind != ALIGN_GPU_GRAPH_DECODE && kind != ALIGN_GPU_GRAPH_DECODE_ALT)
+        || state->graph_prepared[kind] || state->native_copy_greedy_source[kind] != NULL
+        || tensor == NULL || tensor->type != GGML_TYPE_F32
+        || tensor->ne[0] < 1 || tensor->ne[0] > 1048576
+        || tensor->ne[1] != 1 || tensor->ne[2] != 1 || tensor->ne[3] != 1
+        || !ggml_is_contiguous(tensor)) return ALIGN_GPU_CONFIG;
+    state->native_copy_greedy_source[kind] = tensor;
+    return ALIGN_GPU_OK;
+}
+
 int32_t align_gpu_native_state_copy_register(void *owner, int32_t kind,
         void *slots, int64_t source, int64_t destination) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
@@ -3397,6 +3437,7 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
 #endif
     state->native_state_copy_count[kind] = 0;
     state->native_conv_copy_count[kind] = 0;
+    state->native_copy_greedy_source[kind] = NULL;
     if (kind == ALIGN_GPU_GRAPH_PREFILL) { state->prefill_rows_registered = 0; state->prefill_rows_valid = 0; }
     state->graph_prepared[kind] = 0;
     state->workspace_graphs[kind] = NULL;
@@ -3477,8 +3518,12 @@ static int align_gpu_native_copy_commit(struct align_gpu_device_state *state, in
     size_t source_size = 0, destination_size = 0;
     int count = state->native_state_copy_count[kind];
     int strided_count = state->native_conv_copy_count[kind];
+    struct align_native_metal_greedy_input greedy = {0};
+    const struct align_native_metal_greedy_input *greedy_ptr = NULL;
     int at;
-    if (count == 0 && strided_count == 0) return 1;
+    if (count == 0 && strided_count == 0) {
+        return !(state->native_copy_greedy && kind != ALIGN_GPU_GRAPH_PREFILL);
+    }
     if (!state->native_state_copy || state->native_state_copy_context == NULL) return 0;
     if (strided_count > 0 && !state->native_conv_copy) return 0;
     // ggml_backend_graph_compute synchronizes before returning. The native
@@ -3533,11 +3578,48 @@ static int align_gpu_native_copy_commit(struct align_gpu_device_state *state, in
             (uint32_t) src->nb[1], (uint32_t) dst->nb[1]
         };
     }
-    return align_native_metal_copy_submit(state->native_state_copy_context,
+    if (state->native_copy_greedy && kind != ALIGN_GPU_GRAPH_PREFILL) {
+        struct ggml_tensor *tensor = state->native_copy_greedy_source[kind];
+        void *base;
+        size_t capacity;
+        uint64_t offset;
+        if (tensor == NULL || tensor->type != GGML_TYPE_F32
+            || tensor->ne[0] < 1 || tensor->ne[0] > 1048576
+            || tensor->ne[1] != 1 || tensor->ne[2] != 1 || tensor->ne[3] != 1
+            || !align_gpu_native_copy_extent(tensor, 1, &base, &capacity, &offset)) {
+            fprintf(stderr, "native_copy_greedy output extent rejected\n");
+            return 0;
+        }
+        if (base != source_base || capacity != source_size) {
+            fprintf(stderr, "native_copy_greedy output is outside producer workspace\n");
+            return 0;
+        }
+        greedy = (struct align_native_metal_greedy_input) {
+            base, capacity, offset, (uint32_t) tensor->ne[0]
+        };
+        greedy_ptr = &greedy;
+    }
+    int submitted = align_native_metal_copy_submit(state->native_state_copy_context,
         source_base, source_size, destination_base, destination_size,
-        copies, (size_t) count, strided, (size_t) strided_count);
+        copies, (size_t) count, strided, (size_t) strided_count, greedy_ptr);
+    if (!submitted && greedy_ptr != NULL) {
+        fprintf(stderr, "native_copy_greedy submit rejected\n");
+    }
+    return submitted;
 }
 #endif
+
+int64_t align_gpu_native_copy_greedy_result(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+#if defined(__APPLE__)
+    if (state == NULL || !state->native_copy_greedy || state->workspace_failed
+        || state->native_state_copy_context == NULL) return -1;
+    return align_native_metal_copy_greedy_result(state->native_state_copy_context);
+#else
+    (void) state;
+    return -1;
+#endif
+}
 
 int32_t align_gpu_native_state_copy_finish(void *owner) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;

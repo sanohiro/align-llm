@@ -15,6 +15,7 @@ pub Config {
   native_state_copy: bool,
   native_conv_copy: bool,
   native_prefill_state_copy: bool,
+  native_copy_greedy: bool,
 }
 
 pub fn read() -> Result<Config, Error> {
@@ -29,6 +30,7 @@ pub fn read() -> Result<Config, Error> {
   mut native_state_copy := false
   mut native_conv_copy := false
   mut native_prefill_state_copy := false
+  mut native_copy_greedy := false
   match env.get("ALIGN_LLM_SYNC_WEIGHT_UPLOAD") {
     Some(value) => {
       if value == "1" { synchronous = true
@@ -111,6 +113,15 @@ pub fn read() -> Result<Config, Error> {
   if native_prefill_state_copy && (!native_state_copy || !native_conv_copy) {
     return Err(Error.Invalid)
   }
+  match env.get("ALIGN_LLM_NATIVE_COPY_GREEDY") {
+    Some(value) => {
+      if value == "1" { native_copy_greedy = true
+      } else if value != "0" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
+  if native_copy_greedy && (!native_state_copy || !native_conv_copy
+      || shared_logits || neon_greedy || graph_greedy) { return Err(Error.Invalid) }
   if (shared_logits && neon_greedy) || (shared_logits && graph_greedy)
     || (neon_greedy && graph_greedy) { return Err(Error.Invalid) }
   return Ok(Config { synchronous_weights: synchronous, prefill_chunk: chunk,
@@ -118,5 +129,6 @@ pub fn read() -> Result<Config, Error> {
       mapped_weights: mapped_weights, shared_logits: shared_logits,
       neon_greedy: neon_greedy, graph_greedy: graph_greedy,
       native_state_copy: native_state_copy, native_conv_copy: native_conv_copy,
-      native_prefill_state_copy: native_prefill_state_copy })
+      native_prefill_state_copy: native_prefill_state_copy,
+      native_copy_greedy: native_copy_greedy })
 }

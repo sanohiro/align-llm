@@ -2914,6 +2914,26 @@ int32_t align_gpu_native_prefill_state_copy_enabled(void *owner) {
     return 0;
 }
 
+int32_t align_gpu_native_copy_greedy_mode(void *owner, int32_t mode) {
+    return owner != NULL && mode == 0 ? ALIGN_GPU_OK : ALIGN_GPU_UNSUPPORTED;
+}
+
+int32_t align_gpu_native_copy_greedy_enabled(void *owner) {
+    (void) owner;
+    return 0;
+}
+
+int32_t align_gpu_native_copy_greedy_register(void *owner, int32_t kind,
+        void *slots, int64_t source) {
+    (void) owner; (void) kind; (void) slots; (void) source;
+    return ALIGN_GPU_UNSUPPORTED;
+}
+
+int64_t align_gpu_native_copy_greedy_result(void *owner) {
+    (void) owner;
+    return -1;
+}
+
 int32_t align_gpu_native_state_copy_register(void *owner, int32_t kind,
         void *slots, int64_t source, int64_t destination) {
     (void) owner; (void) kind; (void) slots; (void) source; (void) destination;

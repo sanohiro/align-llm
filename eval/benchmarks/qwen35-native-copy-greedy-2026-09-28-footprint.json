@@ -1,0 +1,205 @@
+{
+  "schema_version": 1,
+  "status": "PASS",
+  "host": "Darwin Metal",
+  "metric_scope": "process footprint, not system/GPU total",
+  "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+  "binary_sha256": "cc2ef89cdf5dfdf4391f903ad892ddc829b0dfd732d3e0e880764b9bc1ae93c8",
+  "native_shim_sha256": {
+    "control": "7ccb01d08d08407c3274121e4531196a18186e7c42052691621ff8b417467dd9",
+    "candidate": "7ccb01d08d08407c3274121e4531196a18186e7c42052691621ff8b417467dd9"
+  },
+  "prompt_ids_sha256": "a18c64cf986676700a342404bc46ae41f64aca3507a0824775efd80b1cd4f719",
+  "execution": {
+    "control": {
+      "sync_weight_upload": "0",
+      "prefill_chunk": "128",
+      "final_prefill_logits": "1",
+      "final_ffn_row": "0",
+      "mapped_weights": "0",
+      "shared_logits": "0",
+      "neon_greedy": "0",
+      "graph_greedy": "0",
+      "native_state_copy": "1",
+      "native_conv_copy": "1",
+      "native_prefill_state_copy": "0",
+      "native_copy_greedy": "0"
+    },
+    "candidate": {
+      "sync_weight_upload": "0",
+      "prefill_chunk": "128",
+      "final_prefill_logits": "1",
+      "final_ffn_row": "0",
+      "mapped_weights": "0",
+      "shared_logits": "0",
+      "neon_greedy": "0",
+      "graph_greedy": "0",
+      "native_state_copy": "1",
+      "native_conv_copy": "1",
+      "native_prefill_state_copy": "0",
+      "native_copy_greedy": "1"
+    }
+  },
+  "bundles": {
+    "control": "0a472538ef35e2722fb9488d677196081ab8f726eff825a4e7837ddade57814b",
+    "candidate": "0a472538ef35e2722fb9488d677196081ab8f726eff825a4e7837ddade57814b"
+  },
+  "pairs": [
+    {
+      "control": {
+        "startup_ns": 1145428917,
+        "ready": {
+          "physical_bytes": 144261960,
+          "physical_peak_bytes": 147211080,
+          "rss_bytes": 172900352
+        },
+        "after_three_requests": {
+          "physical_bytes": 153437240,
+          "physical_peak_bytes": 155468880,
+          "rss_bytes": 182829056
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      },
+      "candidate": {
+        "startup_ns": 1001950000,
+        "ready": {
+          "physical_bytes": 144327496,
+          "physical_peak_bytes": 147391304,
+          "rss_bytes": 172998656
+        },
+        "after_three_requests": {
+          "physical_bytes": 153601104,
+          "physical_peak_bytes": 154616912,
+          "rss_bytes": 183009280
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      }
+    },
+    {
+      "candidate": {
+        "startup_ns": 1052653125,
+        "ready": {
+          "physical_bytes": 144327520,
+          "physical_peak_bytes": 146785120,
+          "rss_bytes": 172982272
+        },
+        "after_three_requests": {
+          "physical_bytes": 153683000,
+          "physical_peak_bytes": 154715216,
+          "rss_bytes": 183107584
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      },
+      "control": {
+        "startup_ns": 956803500,
+        "ready": {
+          "physical_bytes": 144311112,
+          "physical_peak_bytes": 147243848,
+          "rss_bytes": 172949504
+        },
+        "after_three_requests": {
+          "physical_bytes": 153535544,
+          "physical_peak_bytes": 155616312,
+          "rss_bytes": 182992896
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      }
+    },
+    {
+      "control": {
+        "startup_ns": 911764167,
+        "ready": {
+          "physical_bytes": 144261936,
+          "physical_peak_bytes": 147325744,
+          "rss_bytes": 172916736
+        },
+        "after_three_requests": {
+          "physical_bytes": 155993144,
+          "physical_peak_bytes": 158008376,
+          "rss_bytes": 185384960
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      },
+      "candidate": {
+        "startup_ns": 928685083,
+        "ready": {
+          "physical_bytes": 144409416,
+          "physical_peak_bytes": 172016480,
+          "rss_bytes": 173080576
+        },
+        "after_three_requests": {
+          "physical_bytes": 153666640,
+          "physical_peak_bytes": 172016480,
+          "rss_bytes": 183074816
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      }
+    },
+    {
+      "candidate": {
+        "startup_ns": 1047685292,
+        "ready": {
+          "physical_bytes": 144360264,
+          "physical_peak_bytes": 148357960,
+          "rss_bytes": 173031424
+        },
+        "after_three_requests": {
+          "physical_bytes": 153601080,
+          "physical_peak_bytes": 154616888,
+          "rss_bytes": 183025664
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      },
+      "control": {
+        "startup_ns": 935292125,
+        "ready": {
+          "physical_bytes": 144196400,
+          "physical_peak_bytes": 146899760,
+          "rss_bytes": 172851200
+        },
+        "after_three_requests": {
+          "physical_bytes": 153568288,
+          "physical_peak_bytes": 155599928,
+          "rss_bytes": 182976512
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      }
+    },
+    {
+      "control": {
+        "startup_ns": 1032795417,
+        "ready": {
+          "physical_bytes": 144278320,
+          "physical_peak_bytes": 146637616,
+          "rss_bytes": 172933120
+        },
+        "after_three_requests": {
+          "physical_bytes": 153551928,
+          "physical_peak_bytes": 155567160,
+          "rss_bytes": 182943744
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      },
+      "candidate": {
+        "startup_ns": 1045730458,
+        "ready": {
+          "physical_bytes": 144343904,
+          "physical_peak_bytes": 146375520,
+          "rss_bytes": 172998656
+        },
+        "after_three_requests": {
+          "physical_bytes": 153601080,
+          "physical_peak_bytes": 154616888,
+          "rss_bytes": 183025664
+        },
+        "output_sha256": "a21408da93d875a3cf65256d217b7e4dde22c1706ca453d7829212244b2c1925"
+      }
+    }
+  ],
+  "paired_control_minus_candidate_median_bytes": {
+    "ready_physical_bytes": -65584,
+    "after_three_requests_physical_bytes": -49152,
+    "after_three_requests_physical_peak_bytes": 901096
+  },
+  "startup_control_minus_candidate_median_ns": -16920916
+}

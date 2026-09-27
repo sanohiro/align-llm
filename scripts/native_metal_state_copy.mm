@@ -19,12 +19,21 @@ struct align_native_metal_copy_context {
     id<MTLBuffer> destination_view;
     id<MTLBuffer> strided_descriptors;
     id<MTLComputePipelineState> strided_pipeline;
+    id<MTLBuffer> greedy_view;
+    id<MTLBuffer> greedy_parts;
+    id<MTLBuffer> greedy_result;
+    id<MTLComputePipelineState> greedy_partial_pipeline;
+    id<MTLComputePipelineState> greedy_final_pipeline;
     id<MTLCommandBuffer> pending;
     void *source_base;
     void *destination_base;
     size_t source_length;
     size_t destination_length;
+    void *greedy_base;
+    size_t greedy_length;
     size_t pending_count;
+    bool pending_greedy;
+    bool greedy_ready;
     uint64_t preparation_ns;
     uint64_t submitted_ns;
     bool trace;
@@ -50,9 +59,11 @@ extern "C" void *align_native_metal_copy_open(const char *selected_device_descri
         id<MTLCommandQueue> queue = [device newCommandQueue];
         if (queue == nil) return nullptr;
         const char *trace = getenv("ALIGN_LLM_NATIVE_COPY_TRACE");
-        return new align_native_metal_copy_context{
-            device, queue, nil, nil, nil, nil, nil, nullptr, nullptr, 0, 0, 0, 0, 0,
-            trace != nullptr && trace[0] == '1' && trace[1] == '\0'};
+        auto *context = new align_native_metal_copy_context{};
+        context->device = device;
+        context->queue = queue;
+        context->trace = trace != nullptr && trace[0] == '1' && trace[1] == '\0';
+        return context;
     }
 }
 
@@ -118,6 +129,116 @@ kernel void copy_strided(device const uchar *source [[buffer(0)]],
     }
 }
 
+extern "C" int align_native_metal_copy_enable_greedy(void *opaque) {
+    auto *context = static_cast<align_native_metal_copy_context *>(opaque);
+    if (context == nullptr || context->pending != nil) return 0;
+    if (context->greedy_partial_pipeline != nil && context->greedy_final_pipeline != nil
+        && context->greedy_parts != nil && context->greedy_result != nil) return 1;
+    static const char *source = R"metal(
+#include <metal_stdlib>
+using namespace metal;
+struct Part { float value; uint index; uint invalid; };
+kernel void greedy_partial(device const float *input [[buffer(0)]],
+                           device Part *parts [[buffer(1)]],
+                           constant uint &length [[buffer(2)]],
+                           uint group [[threadgroup_position_in_grid]],
+                           uint lane [[thread_index_in_threadgroup]]) {
+    threadgroup float values[256];
+    threadgroup uint indices[256];
+    threadgroup uint invalids[256];
+    float best = -INFINITY;
+    uint index = 0xffffffffu;
+    uint invalid = 0;
+    for (uint j = group * 1024 + lane; j < min(length, (group + 1) * 1024); j += 256) {
+        float value = input[j];
+        if (!isfinite(value)) invalid = 1;
+        else if (value > best || (value == best && j < index)) {
+            best = value;
+            index = j;
+        }
+    }
+    values[lane] = best;
+    indices[lane] = index;
+    invalids[lane] = invalid;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lane < stride) {
+            invalids[lane] |= invalids[lane + stride];
+            float value = values[lane + stride];
+            uint other = indices[lane + stride];
+            if (value > values[lane] || (value == values[lane] && other < indices[lane])) {
+                values[lane] = value;
+                indices[lane] = other;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (lane == 0) parts[group] = {values[0], indices[0], invalids[0]};
+}
+kernel void greedy_final(device const Part *parts [[buffer(0)]],
+                         device uint *result [[buffer(1)]],
+                         constant uint &count [[buffer(2)]],
+                         uint lane [[thread_index_in_threadgroup]]) {
+    threadgroup float values[256];
+    threadgroup uint indices[256];
+    threadgroup uint invalids[256];
+    float best = -INFINITY;
+    uint index = 0xffffffffu;
+    uint invalid = 0;
+    for (uint j = lane; j < count; j += 256) {
+        Part part = parts[j];
+        invalid |= part.invalid;
+        if (part.value > best || (part.value == best && part.index < index)) {
+            best = part.value;
+            index = part.index;
+        }
+    }
+    values[lane] = best;
+    indices[lane] = index;
+    invalids[lane] = invalid;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    for (uint stride = 128; stride > 0; stride >>= 1) {
+        if (lane < stride) {
+            invalids[lane] |= invalids[lane + stride];
+            float value = values[lane + stride];
+            uint other = indices[lane + stride];
+            if (value > values[lane] || (value == values[lane] && other < indices[lane])) {
+                values[lane] = value;
+                indices[lane] = other;
+            }
+        }
+        threadgroup_barrier(mem_flags::mem_threadgroup);
+    }
+    if (lane == 0) result[0] = invalids[0] ? 0xffffffffu : indices[0];
+}
+)metal";
+    @autoreleasepool {
+        NSError *error = nil;
+        id<MTLLibrary> library = [context->device
+            newLibraryWithSource:[NSString stringWithUTF8String:source] options:nil error:&error];
+        if (library == nil) return 0;
+        id<MTLFunction> partial = [library newFunctionWithName:@"greedy_partial"];
+        id<MTLFunction> final = [library newFunctionWithName:@"greedy_final"];
+        if (partial == nil || final == nil) return 0;
+        id<MTLComputePipelineState> first =
+            [context->device newComputePipelineStateWithFunction:partial error:&error];
+        id<MTLComputePipelineState> second =
+            [context->device newComputePipelineStateWithFunction:final error:&error];
+        if (first == nil || second == nil || first.maxTotalThreadsPerThreadgroup < 256
+            || second.maxTotalThreadsPerThreadgroup < 256) return 0;
+        id<MTLBuffer> parts = [context->device newBufferWithLength:1024 * 12
+            options:MTLResourceStorageModeShared];
+        id<MTLBuffer> result = [context->device newBufferWithLength:sizeof(uint32_t)
+            options:MTLResourceStorageModeShared];
+        if (parts == nil || result == nil || result.contents == nullptr) return 0;
+        context->greedy_partial_pipeline = first;
+        context->greedy_final_pipeline = second;
+        context->greedy_parts = parts;
+        context->greedy_result = result;
+        return 1;
+    }
+}
+
 extern "C" int align_native_metal_copy_wait(void *opaque) {
     auto *context = static_cast<align_native_metal_copy_context *>(opaque);
     if (context == nullptr) return 0;
@@ -137,14 +258,26 @@ extern "C" int align_native_metal_copy_wait(void *opaque) {
     }
     context->pending = nil;
     context->pending_count = 0;
+    context->greedy_ready = succeeded && context->pending_greedy;
+    context->pending_greedy = false;
 #if defined(ALIGN_NATIVE_METAL_FORCE_COMPLETION_FAILURE)
     // Test build: report a failed completion after draining the real command.
     if (succeeded) {
+        context->greedy_ready = false;
         fprintf(stderr, "native_state_copy forced completion failure\n");
         return 0;
     }
 #endif
     return succeeded ? 1 : 0;
+}
+
+extern "C" int64_t align_native_metal_copy_greedy_result(void *opaque) {
+    auto *context = static_cast<align_native_metal_copy_context *>(opaque);
+    if (context == nullptr || context->pending != nil || !context->greedy_ready
+        || context->greedy_result == nil || context->greedy_result.contents == nullptr) return -1;
+    context->greedy_ready = false;
+    uint32_t token = *static_cast<const uint32_t *>(context->greedy_result.contents);
+    return token == UINT32_MAX ? -2 : int64_t(token);
 }
 
 extern "C" int align_native_metal_copy_reset_views(void *opaque) {
@@ -153,10 +286,14 @@ extern "C" int align_native_metal_copy_reset_views(void *opaque) {
     int completed = align_native_metal_copy_wait(context);
     context->source_view = nil;
     context->destination_view = nil;
+    context->greedy_view = nil;
     context->source_base = nullptr;
     context->destination_base = nullptr;
     context->source_length = 0;
     context->destination_length = 0;
+    context->greedy_base = nullptr;
+    context->greedy_length = 0;
+    context->greedy_ready = false;
     return completed;
 }
 
@@ -164,22 +301,41 @@ extern "C" int align_native_metal_copy_submit(void *opaque,
         void *source_base, size_t source_size,
         void *destination_base, size_t destination_size,
         const struct align_native_metal_copy *copies, size_t count,
-        const struct align_native_metal_strided_copy *strided, size_t strided_count) {
+        const struct align_native_metal_strided_copy *strided, size_t strided_count,
+        const struct align_native_metal_greedy_input *greedy) {
     auto *context = static_cast<align_native_metal_copy_context *>(opaque);
     size_t page = size_t(getpagesize());
-    if (context == nullptr || context->pending != nil
+    if (context == nullptr || context->pending != nil || page == 0
         || source_base == nullptr || destination_base == nullptr
         || count > 64 || strided_count > 64 || count + strided_count == 0
         || (count > 0 && copies == nullptr) || (strided_count > 0 && strided == nullptr)
         || (strided_count > 0
             && (context->strided_pipeline == nil || context->strided_descriptors == nil))
-        || page == 0
+        || (greedy != nullptr && (context->greedy_partial_pipeline == nil
+            || context->greedy_final_pipeline == nil || context->greedy_parts == nil
+            || context->greedy_result == nil || greedy->base == nullptr
+            || greedy->count == 0 || greedy->count > 1048576
+            || uintptr_t(greedy->base) % page != 0))
         || uintptr_t(source_base) % page != 0 || uintptr_t(destination_base) % page != 0) return 0;
     size_t source_length = source_size - source_size % page;
     size_t destination_length = destination_size - destination_size % page;
     if (source_length == 0 || destination_length == 0
         || source_length > context->device.maxBufferLength
         || destination_length > context->device.maxBufferLength) return 0;
+    size_t greedy_length = 0;
+    if (greedy != nullptr) {
+        // The selected pinned ggml Metal shared allocator allocates and wraps
+        // its logical buffer size rounded up to a page. Decode logits end at
+        // the logical workspace tail, so a floor-length view would exclude
+        // part of the row even though ggml's own Metal view covers it.
+        size_t padding = (page - greedy->size % page) % page;
+        if (greedy->size > SIZE_MAX - padding) return 0;
+        greedy_length = greedy->size + padding;
+        uint64_t bytes = uint64_t(greedy->count) * sizeof(float);
+        if (greedy_length == 0 || greedy_length > context->device.maxBufferLength
+            || greedy->offset % sizeof(float) != 0 || greedy->offset > greedy_length
+            || bytes > greedy_length - greedy->offset) return 0;
+    }
     for (size_t i = 0; i < count; ++i) {
         const auto &item = copies[i];
         uint64_t bytes = uint64_t(item.elements) * sizeof(float);
@@ -226,7 +382,18 @@ extern "C" int align_native_metal_copy_submit(void *opaque,
             context->destination_base = destination_base;
             context->destination_length = destination_length;
         }
+        if (greedy != nullptr && (context->greedy_view == nil
+            || context->greedy_base != greedy->base
+            || context->greedy_length != greedy_length)) {
+            context->greedy_view = [context->device
+                newBufferWithBytesNoCopy:greedy->base length:greedy_length
+                options:MTLResourceStorageModeShared deallocator:^(void *, NSUInteger) {}];
+            context->greedy_base = greedy->base;
+            context->greedy_length = greedy_length;
+        }
         if (context->source_view == nil || context->destination_view == nil
+            || (greedy != nullptr && context->greedy_view == nil)
+            || (greedy != nullptr && context->greedy_view.contents != greedy->base)
             || context->source_view.contents != source_base
             || context->destination_view.contents != destination_base) return 0;
 #if defined(ALIGN_NATIVE_METAL_FORCE_SUBMIT_FAILURE)
@@ -247,24 +414,45 @@ extern "C" int align_native_metal_copy_submit(void *opaque,
             }
             [encoder endEncoding];
         }
-        if (strided_count > 0) {
-            memcpy(context->strided_descriptors.contents, strided,
-                   strided_count * sizeof(align_native_metal_strided_copy));
+        if (strided_count > 0 || greedy != nullptr) {
             id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
             if (encoder == nil) return 0;
-            [encoder setComputePipelineState:context->strided_pipeline];
-            [encoder setBuffer:context->source_view offset:0 atIndex:0];
-            [encoder setBuffer:context->destination_view offset:0 atIndex:1];
-            [encoder setBuffer:context->strided_descriptors offset:0 atIndex:2];
-            NSUInteger threads = context->strided_pipeline.maxTotalThreadsPerThreadgroup;
-            if (threads > 256) threads = 256;
-            [encoder dispatchThreads:MTLSizeMake(max_strided_elements, strided_count, 1)
-                threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+            if (strided_count > 0) {
+                memcpy(context->strided_descriptors.contents, strided,
+                       strided_count * sizeof(align_native_metal_strided_copy));
+                [encoder setComputePipelineState:context->strided_pipeline];
+                [encoder setBuffer:context->source_view offset:0 atIndex:0];
+                [encoder setBuffer:context->destination_view offset:0 atIndex:1];
+                [encoder setBuffer:context->strided_descriptors offset:0 atIndex:2];
+                NSUInteger threads = context->strided_pipeline.maxTotalThreadsPerThreadgroup;
+                if (threads > 256) threads = 256;
+                [encoder dispatchThreads:MTLSizeMake(max_strided_elements, strided_count, 1)
+                    threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+            }
+            if (greedy != nullptr) {
+                uint32_t groups = (greedy->count + 1023) / 1024;
+                *static_cast<uint32_t *>(context->greedy_result.contents) = UINT32_MAX;
+                [encoder setComputePipelineState:context->greedy_partial_pipeline];
+                [encoder setBuffer:context->greedy_view offset:greedy->offset atIndex:0];
+                [encoder setBuffer:context->greedy_parts offset:0 atIndex:1];
+                [encoder setBytes:&greedy->count length:sizeof(greedy->count) atIndex:2];
+                [encoder dispatchThreadgroups:MTLSizeMake(groups, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+                [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+                [encoder setComputePipelineState:context->greedy_final_pipeline];
+                [encoder setBuffer:context->greedy_parts offset:0 atIndex:0];
+                [encoder setBuffer:context->greedy_result offset:0 atIndex:1];
+                [encoder setBytes:&groups length:sizeof(groups) atIndex:2];
+                [encoder dispatchThreadgroups:MTLSizeMake(1, 1, 1)
+                    threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+            }
             [encoder endEncoding];
         }
         [command commit];
         context->pending = command;
-        context->pending_count = count + strided_count;
+        context->pending_count = count + strided_count + (greedy == nullptr ? 0 : 1);
+        context->pending_greedy = greedy != nullptr;
+        context->greedy_ready = false;
         if (context->trace) {
             context->preparation_ns = clock_ns() - preparation_start;
             context->submitted_ns = clock_ns();
