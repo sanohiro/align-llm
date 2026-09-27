@@ -4347,6 +4347,12 @@ void *align_gpu_slot_shared_view(void *owner, void *slots, int64_t index, int64_
     return NULL;
 }
 
+int64_t align_gpu_slot_neon_greedy(void *owner, void *slots, int64_t index,
+        int64_t expected_bytes) {
+    (void) owner; (void) slots; (void) index; (void) expected_bytes;
+    return -1;
+}
+
 int32_t align_ggml_slot_mark_output(void *slots, int64_t index) {
     align_stub_tensor *t = align_stub_slot(slots, index);
     if (t == NULL) {

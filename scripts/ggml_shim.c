@@ -31,6 +31,7 @@
 #endif
 #include <dlfcn.h>
 #include <fcntl.h>
+#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stddef.h>
@@ -42,6 +43,9 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(__APPLE__) && defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 #include "ggml.h"
 #include "ggml-alloc.h"
@@ -4249,18 +4253,15 @@ int32_t align_gpu_slot_get(void *owner, void *slots, int64_t index,
     return ALIGN_GGML_OK;
 }
 
-/* The caller borrows this synchronized shared Metal output only until its immediate greedy scan
- * completes. Private Metal, other backends, stale graphs, non-F32 rows and bad extents refuse. */
-void *align_gpu_slot_shared_view(void *owner, void *slots, int64_t index, int64_t expected_bytes) {
-    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+/* Shared Metal row admission for both immediate Align and SIMD scans. */
+static struct ggml_tensor *align_gpu_slot_shared_tensor(
+        struct align_gpu_device_state *state, void *slots, int64_t index, int64_t expected_bytes) {
     struct ggml_tensor *tensor = align_ggml_slot_tensor(slots, index);
     ggml_backend_buffer_t buffer;
     const char *type_name;
     void *base;
     size_t capacity, offset;
     if (state == NULL || tensor == NULL || expected_bytes < 4 || expected_bytes > INT32_MAX
-        || state->observation_read_bytes > INT64_MAX - expected_bytes
-        || state->observation_read_calls == INT64_MAX
         || !align_gpu_slot_ready(state, tensor)
         || tensor->type != GGML_TYPE_F32 || tensor->ne[0] != expected_bytes / 4
         || expected_bytes % 4 != 0 || tensor->ne[1] != 1 || tensor->ne[2] != 1
@@ -4276,9 +4277,83 @@ void *align_gpu_slot_shared_view(void *owner, void *slots, int64_t index, int64_
     if (base == NULL || (uintptr_t) tensor->data < (uintptr_t) base) { return NULL; }
     offset = (size_t) ((uintptr_t) tensor->data - (uintptr_t) base);
     if (offset > capacity || (size_t) expected_bytes > capacity - offset) { return NULL; }
+    return tensor;
+}
+
+/* The caller borrows this synchronized shared Metal output only until its immediate greedy scan
+ * completes. Private Metal, other backends, stale graphs, non-F32 rows and bad extents refuse. */
+void *align_gpu_slot_shared_view(void *owner, void *slots, int64_t index, int64_t expected_bytes) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = align_gpu_slot_shared_tensor(state, slots, index, expected_bytes);
+    if (tensor == NULL || state->observation_read_bytes > INT64_MAX - expected_bytes
+        || state->observation_read_calls == INT64_MAX) { return NULL; }
     state->observation_read_bytes += expected_bytes;
     state->observation_read_calls += 1;
     return tensor->data;
+}
+
+#if defined(__APPLE__) && defined(__aarch64__)
+/* Numeric device-storage kernel only: Align still owns the session and greedy policy. */
+static int64_t align_neon_finite_argmax(const float *values, size_t count) {
+    float32x4_t best = vdupq_n_f32(-INFINITY);
+    uint32x4_t index = vdupq_n_u32(UINT32_MAX);
+    uint32x4_t invalid = vdupq_n_u32(0);
+    size_t i = 0;
+    for (; i + 4 <= count; i += 4) {
+        float32x4_t lane = vld1q_f32(values + i);
+        uint32x4_t valid = vcleq_f32(vabsq_f32(lane), vdupq_n_f32(FLT_MAX));
+        uint32x4_t greater = vcgtq_f32(lane, best);
+        uint32_t ids[4] = {(uint32_t) i, (uint32_t) i + 1,
+                           (uint32_t) i + 2, (uint32_t) i + 3};
+        invalid = vorrq_u32(invalid, vmvnq_u32(valid));
+        best = vbslq_f32(greater, lane, best);
+        index = vbslq_u32(greater, vld1q_u32(ids), index);
+    }
+    uint32_t flags[4], indices[4];
+    float maxima[4];
+    vst1q_u32(flags, invalid);
+    vst1q_u32(indices, index);
+    vst1q_f32(maxima, best);
+    for (int lane = 0; lane < 4; lane++) {
+        if (flags[lane]) { return -2; }
+    }
+    float maximum = -INFINITY;
+    uint32_t result = UINT32_MAX;
+    for (int lane = 0; lane < 4; lane++) {
+        if (maxima[lane] > maximum ||
+            (maxima[lane] == maximum && indices[lane] < result)) {
+            maximum = maxima[lane];
+            result = indices[lane];
+        }
+    }
+    for (; i < count; i++) {
+        uint32_t bits;
+        memcpy(&bits, values + i, sizeof(bits));
+        if ((bits & 0x7f800000u) == 0x7f800000u) { return -2; }
+        if (values[i] > maximum) {
+            maximum = values[i];
+            result = (uint32_t) i;
+        }
+    }
+    return result == UINT32_MAX ? -2 : (int64_t) result;
+}
+#endif
+
+int64_t align_gpu_slot_neon_greedy(void *owner, void *slots, int64_t index,
+        int64_t expected_bytes) {
+#if defined(__APPLE__) && defined(__aarch64__)
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = align_gpu_slot_shared_tensor(state, slots, index, expected_bytes);
+    if (tensor == NULL || expected_bytes > 4194304
+        || state->observation_read_bytes > INT64_MAX - expected_bytes
+        || state->observation_read_calls == INT64_MAX) { return -1; }
+    state->observation_read_bytes += expected_bytes;
+    state->observation_read_calls += 1;
+    return align_neon_finite_argmax((const float *) tensor->data, (size_t) expected_bytes / 4);
+#else
+    (void) owner; (void) slots; (void) index; (void) expected_bytes;
+    return -1;
+#endif
 }
 
 

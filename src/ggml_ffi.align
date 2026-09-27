@@ -422,6 +422,8 @@ extern "C" link("align_ggml_shim") {
     bytes: slice<u8>, offset: i64, size: i64) -> i32
   fn align_gpu_slot_shared_view(owner: raw, slots: slice<u8>, index: i64,
     expected_bytes: i64) -> raw
+  fn align_gpu_slot_neon_greedy(owner: raw, slots: slice<u8>, index: i64,
+    expected_bytes: i64) -> i64
   fn align_gpu_device_close(owner: raw) -> ()
   // R5C section 3.4. The registry's own device selection for either kind, its numeric properties,
   // its buffer type's maximum length, and its two names.
@@ -1927,6 +1929,33 @@ pub fn gpu_slot_shared_greedy(borrow owner: GpuDevice, borrow slots: slice<u8>,
         return Err(fault("SHAPE", label))
       },
     }
+  }
+}
+
+pub fn gpu_slot_neon_greedy(borrow owner: GpuDevice, borrow slots: slice<u8>,
+  index: i64, expected_bytes: i64, label: str,
+) -> Result<i64, Fault> {
+  gpu_failure_activity(GPU_STAGE_READBACK)
+  if expected_bytes < 4 || expected_bytes > 4194304 || expected_bytes % 4 != 0 {
+    gpu_note_failure(GPU_STATUS_CONFIG, GPU_STAGE_READBACK)
+    return Err(fault("CONFIG", label))
+  }
+  unsafe {
+    token := align_gpu_slot_neon_greedy(resource.raw(resource.borrow(owner)), slots,
+      index, expected_bytes)
+    if token == -1 {
+      gpu_note_failure(GPU_STATUS_UNSUPPORTED, GPU_STAGE_READBACK)
+      return Err(fault("UNSUPPORTED", label))
+    }
+    if token == -2 {
+      gpu_note_failure(GPU_STATUS_COMPUTE, GPU_STAGE_READBACK)
+      return Err(fault("SHAPE", label))
+    }
+    if token < 0 || token >= expected_bytes / 4 {
+      gpu_note_failure(GPU_STATUS_CONFIG, GPU_STAGE_READBACK)
+      return Err(fault("CONFIG", label))
+    }
+    return Ok(token)
   }
 }
 

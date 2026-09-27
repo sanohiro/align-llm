@@ -2,6 +2,38 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Qwen3.5 shared-row greedy follow-up (2026-09-27)
+
+Branch `agent/native-metal-ffn-integration`, based on shared-logits checkpoint
+`32ad975e`; the NEON experiment and evidence are the active local candidate.
+The hierarchical GPU argmax integration passed real correctness but lost its
+connected speed case because each token required a second Metal command buffer;
+its runtime code was withdrawn. `docs/qwen35-hierarchical-greedy-trial.md`
+retains the decision, source patch and complete receipts.
+
+The new default-off `ALIGN_LLM_NEON_GREEDY=1` path uses the same validated
+shared F32 output row, but runs a bounded AArch64 NEON finite/first-index
+argmax scan without another GPU queue or full-row copy. Align still controls
+model, session and generation; ggml still controls graph computation. The
+local actual-row screen won 96–98/100 pairs by about 0.25 ms. Real 2B/0.8B
+generation, 2B serving, 336 exact state hashes, invalid flag refusal, odd
+lengths and real/stub shim builds pass. Five-pair 2B worker and two same-binary
+HTTP/SSE campaigns are complete. Worker paired request medians improve by
+1.167, 0.074 and 21.514 ms at 64/16, 200/32 and 330/64, but HTTP/SSE and
+the scalar-shared comparison have adverse conditions; pinned llama.cpp is
+faster on all worker medians. Keep this mode default-off. Read
+`docs/qwen35-neon-greedy-trial.md` and the checked-in raw receipts for exact
+conditions, phase clocks and limits. No cross-backend speed claim is made.
+
+Next: finish one comprehensive review and affected owner verification, then
+record a local checkpoint. For further speed work, first screen a fused
+Q6_K output projection plus partial-top-token consumer using captured real
+weights/activations and an in-graph execution boundary; retain the full-logit
+oracle and existing ggml path. Do not repeat the prior one-to-one Q6_K kernel
+mapping or post-sync GPU argmax. CPU/CUDA Qwen3.5 and Gemma graph admission
+remain deferred in the backend parity register. No PR/preflight/merge is
+claimed at this checkpoint.
+
 ## Qwen3.5 shared-logits boundary trial (2026-09-27)
 
 Branch `agent/native-metal-ffn-integration`, old-binary control `57fd7a6b`,

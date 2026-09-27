@@ -10,6 +10,7 @@ pub Config {
   last_ffn_row: bool,
   mapped_weights: bool,
   shared_logits: bool,
+  neon_greedy: bool,
 }
 
 pub fn read() -> Result<Config, Error> {
@@ -19,6 +20,7 @@ pub fn read() -> Result<Config, Error> {
   mut last_ffn_row := false
   mut mapped_weights := false
   mut shared_logits := false
+  mut neon_greedy := false
   match env.get("ALIGN_LLM_SYNC_WEIGHT_UPLOAD") {
     Some(value) => {
       if value == "1" { synchronous = true
@@ -62,7 +64,16 @@ pub fn read() -> Result<Config, Error> {
     },
     None => {},
   }
+  match env.get("ALIGN_LLM_NEON_GREEDY") {
+    Some(value) => {
+      if value == "1" { neon_greedy = true
+      } else if value != "0" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
+  if shared_logits && neon_greedy { return Err(Error.Invalid) }
   return Ok(Config { synchronous_weights: synchronous, prefill_chunk: chunk,
       final_prefill_logits: final_logits, last_ffn_row: last_ffn_row,
-      mapped_weights: mapped_weights, shared_logits: shared_logits })
+      mapped_weights: mapped_weights, shared_logits: shared_logits,
+      neon_greedy: neon_greedy })
 }

@@ -22,6 +22,8 @@ counts, and retains alternating timing samples. Explicit per-arm upload/batch/ma
 logic or participates in product startup. Workload collections are validated before launching servers.
 The shared-logits setting only selects an explicit native trial arm; Python
 never reads a product logit or chooses a token.
+The NEON greedy setting also selects only an explicit native trial arm; the
+native numeric kernel and Align generation own every inference decision.
 `scripts/test-host-reuse-config` is `CI_OR_DEVELOPER_TOOL`: it checks measurement-input refusal without loading a model or starting a server.
 
 `scripts/test-development-preflight` remains `BUILD_OR_DEVELOPER_TOOL`; its hosted
@@ -43,6 +45,8 @@ native products/reference executables, captures timing and checks output/counts.
 Per-arm upload/batch/mapped-weight environment, first-request timing and optional uninstrumented wall-only runs remain independent measurement inputs; expected graph counts follow the recorded batch width.
 Its shared-logits setting remains a measurement input to explicit native
 binaries, outside normal product execution.
+The NEON greedy setting is likewise an independent measurement input and does
+not move token selection into Python.
 Its optional `--native-control` compares two explicit native developer builds
 without changing the product interface. `--native-disabled` fixes both builds
 to the unfused path for host-only comparisons. It is never imported or launched by product execution.

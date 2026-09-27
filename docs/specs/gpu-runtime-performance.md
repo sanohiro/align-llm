@@ -310,6 +310,119 @@ full-logits mode spans chunks. The copied mode retains its earlier intermediate
 readback, while only final-chunk logits are sampled in both modes; the 200/16
 same-binary HTTP/SSE and longer real generation owners pass after repair.
 
+### Hierarchical Metal greedy screen (2026-09-27)
+
+The pinned Metal `kernel_argmax_f32` dispatches one threadgroup for a
+248,320-value Qwen3.5 output row and assigns each thread roughly 970 serial
+values. It also selects the highest index on ties and does not match Align's
+nonfinite refusal. Test a two-stage native Metal reduction over real captured
+2B logits before adding another runtime path. Stage one reduces disjoint row
+tiles; stage two reduces the tile results. Both carry a nonfinite flag and
+select the lowest index among equal finite maxima. No model name or fixed
+vocabulary count enters the kernel; row length and launch geometry are inputs.
+
+The independent diagnostic may use Objective-C++ to create Metal buffers and
+command buffers, but it must not become a product generation path. Compare
+the exact same real F32 output against Align's first-index finite greedy rule,
+including tied maxima, NaN and infinity refusal before timing. For each arm,
+a GPU blit writes a fresh shared result buffer to approximate a graph-produced
+output. The control synchronizes then scans that buffer on CPU. The candidate
+blits, dispatches both reductions in the same command buffer, synchronizes,
+then reads one I32 result. Report GPU-only and synchronized wall intervals
+separately; this is a boundary screen, not a connected request benchmark.
+
+At most two 993,280-byte logit buffers and one tile buffer; no weights or
+inference state allocation. Build <=900 seconds, campaign <=900 seconds,
+100 warmup and 100 alternating measured iterations per actual vector, with
+every sample retained and no percentage floor. A local loss ends this kernel
+strategy. A local win only warrants a selectable real-model integration with
+the old ggml graph/readback path intact, exact logits/state and alternating
+prefill/decode/request measurements; it is not a production adoption result.
+
+Local screen: all three actual 2B vectors, first-index ties, NaN and infinity
+cases passed. With GPU production and both reductions in one command buffer,
+the paired median wall reductions were 0.230–0.283 ms over CPU scanning, with
+96–97 of 100 pairs faster. With an extra post-synchronization command buffer,
+the reduction was only 0.071–0.103 ms, with 90–94 of 100 pairs faster.
+Measured GPU execution increased by about 0.10 ms; the gain comes from moving
+the scan off the CPU critical path. Raw samples and source are retained in
+local diagnostics. These are screening numbers, not an inference speedup.
+
+### Post-sync hierarchical greedy real-model trial (2026-09-27)
+
+The local screen justifies one selectable real-model integration, including
+its extra command buffer. It does not justify replacing ggml graph execution
+or skipping graph synchronization. The current output is shared Metal memory;
+the pinned Metal plugin exposes the backing `MTLBuffer` and offset through
+`ggml_metal_buffer_get_id`. A narrow Metal helper may use that exact buffer,
+without copying or rewrapping its pointer, to dispatch the two reductions
+after `runtime_execution.compute` has synchronized. The ordinary full-logit
+readback and Align greedy remain the default and rollback.
+
+| Contract | Definition |
+| --- | --- |
+| Selection / ownership | `ALIGN_LLM_HIER_GREEDY=0` or absent uses the existing copied readback; `1` selects this Qwen3.5 session experiment. `ALIGN_LLM_HIER_GREEDY_LIBRARY` supplies an absolute path to the trial Metal helper only in mode `1`; invalid flags or missing/relative paths refuse before session allocation. Align owns the mode, token, normal/streaming generation loop and session lifetime. This mode and shared-CPU-logits mode cannot both be selected. |
+| Thin ABI | `align_gpu_slot_hier_greedy` accepts the GPU owner, completed graph output slot, exact expected F32 row bytes and helper path; it checks executed-node identity, contiguous extent, shared Metal buffer and bounds as the borrowed-view trial does. It passes the actual ggml Metal buffer handle/offset to the helper. The helper contains only Metal device/queue/pipelines, two reduction dispatches, bounded scratch and synchronous four-byte result; no model/weight/prompt/tokenizer or generation logic. |
+| Lifetime / failure | One helper instance per `GpuDevice` is created lazily and reused across requests, then destroyed before the device and ggml plugin unload. The graph output and backing MTL buffer remain live through helper completion. A failed load, wrong backend/storage/extent, kernel error, nonfinite value or out-of-range index refuses the opt-in request; no silent fallback or partial state publication. Existing unhealthy-session cleanup remains. No persisted format or graph key change. |
+| Semantics / evidence | The helper must select the lowest index among equal finite maxima and reject every NaN/infinity. Compare actual 2B/0.8B generation and SSE output with pinned llama.cpp and the old binary, exact 2B full logits and resident state, repeated requests, and malformed flag/path refusal. The helper does not alter any F32 model computation. |
+| Measurement / ceiling | Same 2B GGUF, pack, geometry, backend bundle, token IDs and generated counts. At least five alternating control/candidate/pinned-llama worker pairs and same-binary HTTP/SSE pairs at 64/16, 200/32 and 330/64; two warmups. Report standalone, connected decode/prefill, startup, request and memory, including the new command-buffer boundary. One build <=900 s, one campaign <=900 s, request <=180 s; <=16 KiB scratch plus pipeline/queue state, no extra full-logit allocation. Decide with observed variability and maintenance cost, without a percentage floor. |
+
+Closure: Align configuration handles construction and invalid settings;
+the shim validates graph/state/storage before helper use; the Metal helper owns
+pipeline setup, per-device scratch, completion and error; normal/streaming
+generation own token publication; device close owns cleanup on success, early
+exit and failure. Real-model owners and paired receipts own correctness and
+performance. CPU/CUDA and Gemma remain outside this Metal trial pending their
+own semantic and storage admission.
+
+Trial closure: the integrated helper passed 2B/0.8B generation, 2B HTTP/SSE,
+336 exact state-plane hashes and zero full-logit `tensor_get` calls. Its extra
+post-sync command buffer won the local real-row screen by 0.071–0.103 ms,
+but five-pair worker and same-binary HTTP/SSE results were mixed or adverse.
+The integration was withdrawn; the default path is unchanged. See
+`docs/qwen35-hierarchical-greedy-trial.md` and its raw receipts. This result
+tests that boundary only; it does not rule out an in-graph reduction.
+
+### Shared Metal row SIMD greedy trial (2026-09-27)
+
+The previous borrowed-row path proves the real Qwen3.5 output is shared Metal
+memory and removes an unnecessary full-row readback, but its scalar Align scan
+did not yield a repeatable request gain. A bounded independent screen over
+three actual 2B output rows found that an AArch64 NEON finite/argmax scan,
+after an equivalent GPU blit and synchronization, saves about 0.25 ms per row
+in 96–98 of 100 alternating pairs. The next candidate replaces only that
+numeric scan. Align still selects the mode, validates model/session policy,
+owns greedy generation, state and cleanup; the C shim contains a bounded
+device-storage admission and SIMD numeric kernel. It does not add a second
+inference engine or change F32 graph math.
+
+| Contract | Definition |
+| --- | --- |
+| Input / selection | `ALIGN_LLM_NEON_GREEDY=0` or absent uses the existing copied output and Align greedy; `1` selects the experimental shared-row SIMD scan for the Qwen3.5 session. Invalid values refuse before weights are allocated. It cannot be combined with `ALIGN_LLM_SHARED_LOGITS=1`; both modes and rollback remain explicit. Normal and streaming generation use one Align-owned choice function. |
+| ABI / admission | A new `ggml_ffi` thin call accepts the completed output slot and expected F32 row bytes. Reuse the existing checked shared-view admission: exact output node, contiguous one-row F32, shared `MTL` buffer, correct bounds and completed graph. The AArch64 NEON kernel reads the borrowed pointer immediately and returns only one index; no copied row, new Metal command buffer, temporary GPU buffer or wait. Unsupported architecture/storage refuses the opt-in request. |
+| Numeric semantics | Before performance timing, actual 2B F32 rows and constructed first-index ties, NaN and infinities must agree with the unchanged Align finite greedy rule. For every finite row select the lowest index of its maximum. Return nonfinite as a distinct error; never silently choose a token. The graph, logits, recurrent/KV state and F32 operation order are unchanged. |
+| Lifecycle / regression | No retained pointer or new per-owner allocation. Repeated normal and SSE requests, early disconnect, model close and invalid configuration must preserve cleanup. Confirm 2B/0.8B generation against pinned llama.cpp, exact 2B state-plane hashes, and default/shared-mode regression. |
+| Measurement / ceiling | Same 2B GGUF, pack, IR, backend, prompt IDs, actual token counts and generation settings. Compare old Align, trial Align and pinned llama.cpp in at least five alternating worker pairs, and same-binary OFF/ON HTTP/SSE after two warmups at 64/16, 200/32 and 330/64. Also compare the scalar shared-row mode with SIMD locally to attribute the scan change. Record startup, prefill, decode, request and TTFT, including adverse pairs. One build <=900 s, campaign <=900 s, request <=180 s. No new device allocation, at most one 4-byte Align scratch instead of a full row, and no fixed percentage floor. |
+
+Closure map before coding: Align config owns construction and malformed input;
+`ggml_ffi`/shim own ABI validation and supported-host admission; the numeric
+kernel owns finite/tie correctness; generation owns normal/SSE publication;
+the existing session owner handles failure, early exit and cleanup. The old
+copied path is the exact rollback. CPU/CUDA and Gemma remain separately admitted
+by their semantic graph and storage contracts; a Qwen-specific model name must
+not enter the kernel.
+
+Trial closure: the opt-in NEON path passed 2B/0.8B generation, 2B HTTP/SSE,
+336 exact state-plane hashes, malformed-mode refusal, odd-length local numeric
+checks and zero full-logit `tensor_get` calls. The local real-row scan improved
+by about 0.25 ms in 96–98/100 pairs. Connected worker, same-binary copied-path
+HTTP/SSE and same-binary scalar-shared HTTP/SSE results were mixed: some
+200/32 pairs improved, while 330/64 SSE regressed. Pinned llama.cpp stayed
+faster on all worker request medians. Keep `ALIGN_LLM_NEON_GREEDY=0` by default
+and retain `1` for bounded follow-up; do not claim production adoption or a
+competitive win. See `docs/qwen35-neon-greedy-trial.md` and its complete raw
+receipts. A larger output-projection consumer is the next hypothesis.
+
 ### Controlled upload and prefill trial (2026-09-26)
 
 Hypotheses: synchronous tensor upload removes the Metal shared-buffer staging,
