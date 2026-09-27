@@ -2,10 +2,29 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active independent Metal state-copy failure qualification (2026-09-27)
+## Active native Metal convolution-state copy trial (2026-09-27)
 
-Branch `agent/native-metal-state-copy-failure` from merged `main` at
-`efa3e07c` (PR #308). `fc9ffa7417` introduced the initial native copy seam.
+Branch `agent/native-metal-conv-state-copy` from `main` at `9ff42d21` (PR #309
+merged). GPU inference remains the priority. Extend the Align-selected native
+decode boundary to the 18 strided convolution-state copies while preserving
+the already qualified Delta-only mode and ordinary ggml graph as controls.
+The plan and cost ceiling are in `docs/specs/gpu-runtime-performance.md`.
+
+A temporary real-model shim diagnostic (removed from source after capture)
+found all 18 2B decode convolution sources shaped `[3,6144,1,1]` with F32
+strides `[4,16,98304,98304]`, versus contiguous destination strides
+`[4,12,73728,73728]`. Source reachable span was 98,300 bytes, destination
+logical size 73,728 bytes; a real two-token provider request completed. The
+raw trace is uncommitted diagnostic data under the Git common directory.
+Next: implement bounded strided descriptors and one Metal compute dispatch in
+the existing native command, connect Align source roots behind a second opt-in,
+then prove exact real-model state/logits and measure paired requests. Another
+Metal device remains unavailable on this M1 host and is deferred.
+
+## Completed independent Metal state-copy failure qualification (2026-09-27)
+
+Branch `agent/native-metal-state-copy-failure` merged as PR #309 at
+`9ff42d21`; `fc9ffa7417` introduced the initial native copy seam.
 The user requires an Align-owned
 independent GPU execution path, with ggml retained only as a selectable
 fallback/temporary producer. Do not promote the ggml F32 source patch as the
@@ -44,10 +63,9 @@ Both fault builds returned the exact `failed` envelope without a result/token
 and exited 2 on 2B mode `1`; their mode-`0` two-token controls completed.
 `python3 scripts/check-python-boundary --strict`, real forced shim builds and
 both focused failure owner runs passed. The normal real-shim build and 2B
-generation owner also passed after fault injection was compiled out. Next:
-complete preflight/review/merge, then test a larger native decode segment on
-M1. Qualify another Metal device when available; keep the route opt-in until
-that qualification.
+generation owner also passed after fault injection was compiled out. The
+reviewed candidate passed final preflight and all three PR checks. Qualify
+another Metal device when available; keep the route opt-in until then.
 CPU/CUDA Qwen3.5 and Gemma semantic admission remain deferred in
 `docs/backend-parity.md`. Keep model weights, binaries, raw traces and source
 builds outside Git; checked-in benchmark JSON and the report are intentional.
