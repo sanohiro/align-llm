@@ -71,6 +71,18 @@ speed result. Historical measurements remain in their owning reports.
   Pipeline compilation is additional setup and startup medians were slower;
   its isolated contribution remains unmeasured. This matters for short-lived
   sessions. See [the convolution-copy trial](qwen35-native-conv-copy-trial.md).
+- The same copy operation can reverse sign when moved to a different execution
+  boundary. On M1, adding 36 native state copies to each Qwen3.5 prefill graph
+  shortened the synchronized producer graph/submission call but added a separate native
+  command and a required completion wait before the next chunk. At 200/32 and
+  330/64, the five-pair untraced request medians regressed against the already
+  native decode route. A single real 199-token request measured 1.861 and
+  0.900 ms of GPU work for its two prefill native commands, while host waits
+  were 9.479 and 6.392 ms. These intervals are diagnostic, not additive savings
+  or a universal Metal rule. Keep command submission, queue scheduling and
+  dependency publication in the cost model; test a larger producer/consumer
+  unit if an isolated replacement loses. See the
+  [prefill state-copy trial](qwen35-native-prefill-copy-trial.md).
 
 ## Current Qwen3.5-2B evidence and next test
 

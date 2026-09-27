@@ -52,6 +52,9 @@ fn key(borrow owner: ggml_ffi.GpuDevice, borrow options: runtime_options.Runtime
   if graph_greedy { b.write(":graph-greedy") }
   if ggml_ffi.gpu_native_state_copy_enabled(owner) { b.write(":native-state-copy") }
   if ggml_ffi.gpu_native_conv_copy_enabled(owner) { b.write(":native-conv-copy") }
+  if ggml_ffi.gpu_native_prefill_state_copy_enabled(owner) {
+    b.write(":native-prefill-state-copy")
+  }
   digest := crypto.sha256(b.to_string())
   return encoding.hex_encode(digest[0..digest.len()]).clone()
 }
@@ -209,6 +212,7 @@ pub Session {
   neon_greedy: bool,
   graph_greedy: bool,
   native_state_copy: bool,
+  native_prefill_state_copy: bool,
   decode_a_slots: buffer,
   decode_b_slots: buffer,
   decode_a_key: string,
@@ -278,6 +282,9 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
     return Err(Error.Invalid)
   }
   ggml_ffi.gpu_native_conv_copy_select(owner, config.native_conv_copy) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_native_prefill_state_copy_select(owner, config.native_prefill_state_copy) else {
     return Err(Error.Invalid)
   }
   // The retained planes must cover the fixed-width decode graph's padded view.
@@ -373,6 +380,7 @@ pub fn create_session(owner: ggml_ffi.GpuDevice,
       neon_greedy: config.neon_greedy,
       graph_greedy: config.graph_greedy,
       native_state_copy: config.native_state_copy,
+      native_prefill_state_copy: config.native_prefill_state_copy,
       decode_a_slots: buffer.filled(SLOT_BYTES, 0 as u8),
       decode_b_slots: buffer.filled(SLOT_BYTES, 0 as u8),
       decode_a_key: "".clone(), decode_b_key: "".clone(),
@@ -463,6 +471,9 @@ fn execute(borrow mut session: Session,
           return Err(Error.Invalid)
         }
       }
+    }
+    if session.native_prefill_state_copy {
+      ggml_ffi.gpu_native_state_copy_finish(session.owner) else { return Err(Error.Invalid) }
     }
     runtime_qwen35_state.finish(state, true)
     offset = offset + count
@@ -611,6 +622,9 @@ pub fn begin_stream(borrow mut session: Session,
           return Err(Error.Invalid)
         }
       }
+    }
+    if session.native_prefill_state_copy {
+      ggml_ffi.gpu_native_state_copy_finish(session.owner) else { return Err(Error.Invalid) }
     }
     runtime_qwen35_state.finish(state, true)
     offset = offset + count

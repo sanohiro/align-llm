@@ -30,14 +30,24 @@ def main() -> None:
                                                    os.environ["QWEN35_LOGIT_TRACE"]))
     base["ALIGN_STATE_COUNT"] = "84"
     base["ALIGN_LOGIT_BYTES"] = "993280"
+    base["ALIGN_LLM_PREFILL_CHUNK"] = "128"
+    base["ALIGN_LLM_PREFILL_FINAL_LOGITS"] = "1"
+    prefill = os.environ.get("QWEN35_NATIVE_PREFILL_COPY", "0")
+    if prefill not in ("0", "1"):
+        raise RuntimeError("expected 0 or 1 for native prefill copy")
     request = dict(schema_version=1,
                    system="You are a coding assistant. Return a concise patch-oriented answer.",
                    user="List the integers from 1 to 1000 in ascending order, separated by single spaces. Output only the integers.",
                    max_tokens=16, temperature=0.0, seed=None)
 
-    for state, conv in (("0", "1"), ("bad", "0")):
+    invalid_modes = (("0", "1", "0"), ("bad", "0", "0"))
+    if prefill == "1":
+        invalid_modes += (("0", "0", "1"), ("1", "0", "1"),
+                          ("1", "1", "bad"))
+    for state, conv, selected_prefill in invalid_modes:
         environment = dict(base, ALIGN_LLM_NATIVE_STATE_COPY=state,
-                           ALIGN_LLM_NATIVE_CONV_COPY=conv)
+                           ALIGN_LLM_NATIVE_CONV_COPY=conv,
+                           ALIGN_LLM_NATIVE_PREFILL_STATE_COPY=selected_prefill)
         try:
             with Session(command, timeout=180, env=environment):
                 raise RuntimeError("invalid copy mode acknowledged session construction")
@@ -45,11 +55,19 @@ def main() -> None:
             pass
 
     observations = {}
-    for name, state, conv in (("delta", "1", "0"), ("mixed", "1", "1")):
+    arms = (("delta", "1", "0", "0"), ("mixed", "1", "1", "0"))
+    requests = [request, request]
+    if prefill == "1":
+        arms = (("mixed", "1", "1", "0"), ("prefill", "1", "1", "1"))
+        requests = [request,
+                    dict(request, user="hello " * 169),
+                    request]
+    for name, state, conv, selected_prefill in arms:
         environment = dict(base, ALIGN_LLM_NATIVE_STATE_COPY=state,
-                           ALIGN_LLM_NATIVE_CONV_COPY=conv)
+                           ALIGN_LLM_NATIVE_CONV_COPY=conv,
+                           ALIGN_LLM_NATIVE_PREFILL_STATE_COPY=selected_prefill)
         with Session(command, timeout=180, env=environment) as session:
-            results = [session.generate(request), session.generate(request)]
+            results = [session.generate(item) for item in requests]
             session.log.seek(0)
             diagnostic = session.log.read().decode("utf-8", "replace")
         if any(row["prompt_tokens"] < 1 or row["completion_tokens"] != 16 for row in results):
@@ -73,30 +91,39 @@ def main() -> None:
             elif line.startswith("Q35_LOGIT "):
                 row = json.loads(line[len("Q35_LOGIT "):])
                 logits.append(row["sha256"])
-        if len(logits) != 32 or len(graph) != 32 or len(complete) != 32:
+        expected_graphs = sum((row["prompt_tokens"] + 127) // 128 + 15 for row in results)
+        expected_logits = 16 * len(results)
+        if len(logits) != expected_logits or len(graph) != expected_graphs or len(complete) != expected_graphs:
             raise RuntimeError(f"{name}: incomplete diagnostic trace: "
                                f"{len(logits)} logits, {len(graph)} graphs, {len(complete)} complete")
-        if complete != list(range(32)) or len(states) != 32 * 84:
+        if complete != list(range(expected_graphs)) or len(states) != expected_graphs * 84:
             raise RuntimeError(f"{name}: resident-state trace is incomplete")
         if name == "mixed":
             decode = [row for row in graph if row["kind"] != 0]
-            if len(decode) != 30 or any(row["ops"]["CPY"] != graph[1]["ops"]["CPY"]
+            if len(decode) != 15 * len(results) or any(row["ops"]["CPY"] != decode[0]["ops"]["CPY"]
                                        for row in decode):
                 raise RuntimeError("mixed: decode graph topology changed within session")
         outputs = [(row["output"], row["prompt_tokens"], row["completion_tokens"])
                    for row in results]
         observations[name] = (outputs, states, logits, graph)
-    control = observations["delta"]
-    mixed = observations["mixed"]
-    if control[:3] != mixed[:3]:
-        raise RuntimeError("mixed native convolution copy changed output, state, or full logits")
-    for ordinary, candidate in zip(control[3], mixed[3]):
-        if ordinary["kind"] != candidate["kind"]:
+    control = observations["mixed" if prefill == "1" else "delta"]
+    candidate = observations["prefill" if prefill == "1" else "mixed"]
+    if prefill == "1" and ([row[1] for row in control[0]][1] != 199
+                           or [row[1] for row in control[0]][0]
+                           != [row[1] for row in control[0]][2]):
+        raise RuntimeError(f"native prefill owner did not exercise 128/71 chunks: {control[0]}")
+    if control[:3] != candidate[:3]:
+        raise RuntimeError("native copy changed output, state, or full logits")
+    for ordinary, selected in zip(control[3], candidate[3]):
+        if ordinary["kind"] != selected["kind"]:
             raise RuntimeError("graph kinds differ")
-        if ordinary["kind"] != 0 and ordinary["ops"]["CPY"] - candidate["ops"]["CPY"] != 18:
-            raise RuntimeError("native convolution mode did not remove 18 decode CPY nodes")
-    print("invalid modes refused; 32 full logits and 2688 resident planes match exactly")
-    print("30 decode graphs each remove 18 convolution CPY nodes")
+        removed = ordinary["ops"]["CPY"] - selected["ops"]["CPY"]
+        expected_removed = 36 if prefill == "1" and ordinary["kind"] == 0 else (
+            18 if prefill == "0" and ordinary["kind"] != 0 else 0)
+        if removed != expected_removed:
+            raise RuntimeError(f"native copy removed {removed} CPY nodes, expected {expected_removed}")
+    print(f"invalid modes refused; {len(control[2])} full logits and {len(control[1])} resident planes match exactly")
+    print(f"{len(control[3])} graphs match; native copy removed the expected CPY nodes")
 
 
 if __name__ == "__main__":

@@ -57,7 +57,7 @@ def main():
     execution = {}
     for arm in ('control', 'candidate'):
         selected = cfg[arm].get('execution', {})
-        if set(selected) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights', 'shared_logits', 'neon_greedy', 'graph_greedy', 'private_buffers', 'native_state_copy', 'native_conv_copy'}:
+        if set(selected) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights', 'shared_logits', 'neon_greedy', 'graph_greedy', 'private_buffers', 'native_state_copy', 'native_conv_copy', 'native_prefill_state_copy'}:
             raise ValueError('unknown execution setting')
         sync = selected.get('sync_weight_upload', '0')
         chunk = selected.get('prefill_chunk', '128')
@@ -70,13 +70,19 @@ def main():
         private = selected.get('private_buffers', '0')
         state_copy = selected.get('native_state_copy', '0')
         conv_copy = selected.get('native_conv_copy', '0')
-        if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or shared not in ('0', '1') or neon not in ('0', '1') or graph not in ('0', '1') or private not in ('0', '1') or state_copy not in ('0', '1') or conv_copy not in ('0', '1') or (conv_copy == '1' and state_copy != '1') or sum((shared == '1', neon == '1', graph == '1')) > 1 or (mapped == '1' and sync == '1') or (private == '1' and (mapped == '1' or shared == '1' or neon == '1' or graph == '1' or state_copy == '1')):
+        prefill_copy = selected.get('native_prefill_state_copy', '0')
+        if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or shared not in ('0', '1') or neon not in ('0', '1') or graph not in ('0', '1') or private not in ('0', '1') or state_copy not in ('0', '1') or conv_copy not in ('0', '1') or prefill_copy not in ('0', '1') or (conv_copy == '1' and state_copy != '1') or (prefill_copy == '1' and (state_copy != '1' or conv_copy != '1')) or sum((shared == '1', neon == '1', graph == '1')) > 1 or (mapped == '1' and sync == '1') or (private == '1' and (mapped == '1' or shared == '1' or neon == '1' or graph == '1' or state_copy == '1')):
             raise ValueError('invalid execution setting')
-        execution[arm] = dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped, shared_logits=shared, neon_greedy=neon, graph_greedy=graph, private_buffers=private, native_state_copy=state_copy, native_conv_copy=conv_copy)
+        execution[arm] = dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped, shared_logits=shared, neon_greedy=neon, graph_greedy=graph, private_buffers=private, native_state_copy=state_copy, native_conv_copy=conv_copy, native_prefill_state_copy=prefill_copy)
     graph_trial = any(execution[arm]['graph_greedy'] == '1' for arm in ('control', 'candidate'))
     state_copy_trial = any(execution[arm]['native_state_copy'] == '1' for arm in ('control', 'candidate'))
     conv_copy_trial = execution['candidate']['native_conv_copy'] == '1'
-    if conv_copy_trial and execution['control']['native_conv_copy'] != '0':
+    prefill_copy_trial = execution['candidate']['native_prefill_state_copy'] == '1'
+    if prefill_copy_trial and execution['control']['native_prefill_state_copy'] != '0':
+        raise ValueError('prefill-copy trial requires control off and candidate on')
+    if prefill_copy_trial and execution['control']['native_state_copy'] != execution['control']['native_conv_copy']:
+        raise ValueError('prefill-copy control must select ordinary or mixed decode copy')
+    if conv_copy_trial and not prefill_copy_trial and execution['control']['native_conv_copy'] != '0':
         raise ValueError('convolution-copy trial requires control off and candidate on')
     if conv_copy_trial:
         for arm in ('control', 'candidate'):
@@ -84,7 +90,7 @@ def main():
             if not shim or shim not in subprocess.check_output(
                     ['otool', '-L', cfg[arm]['binary']], text=True):
                 raise ValueError(f'{arm} native shim is not bound to the measured binary')
-    if state_copy_trial and not conv_copy_trial and (execution['control']['native_state_copy'] != '0'
+    if state_copy_trial and not conv_copy_trial and not prefill_copy_trial and (execution['control']['native_state_copy'] != '0'
                              or execution['candidate']['native_state_copy'] != '1'):
         raise ValueError('state-copy trial requires control off and candidate on')
     native_patches = {arm:bundle_patch_digest(cfg[arm]['lib'],
@@ -99,10 +105,12 @@ def main():
            for arm in ('control', 'candidate')):
         raise ValueError('graph greedy requires a verified argmax bundle patch')
     report = dict(schema_version=2,
-                  artifact_kind='NATIVE_CONV_COPY_MEASUREMENT' if conv_copy_trial else ('NATIVE_STATE_COPY_MEASUREMENT' if state_copy_trial else ('INGRAPH_ARGMAX_MEASUREMENT' if graph_trial else 'NATIVE_SWIGLU_MEASUREMENT')),
+                  artifact_kind='NATIVE_PREFILL_STATE_COPY_MEASUREMENT' if prefill_copy_trial else ('NATIVE_CONV_COPY_MEASUREMENT' if conv_copy_trial else ('NATIVE_STATE_COPY_MEASUREMENT' if state_copy_trial else ('INGRAPH_ARGMAX_MEASUREMENT' if graph_trial else 'NATIVE_SWIGLU_MEASUREMENT'))),
                   align_revision=Path('.align-revision').read_text().strip(),
                   policy='2026-09-26-no-percentage-floor', status='INCOMPLETE',
                   control_kind=(('same_binary_same_bundle_' if cfg['control']['binary'] == cfg['candidate']['binary'] and cfg['control']['lib'] == cfg['candidate']['lib'] else 'explicit_')
+                                + ('mixed_decode' if execution['control']['native_conv_copy'] == '1' else 'ordinary_ggml')) if prefill_copy_trial else
+                               (('same_binary_same_bundle_' if cfg['control']['binary'] == cfg['candidate']['binary'] and cfg['control']['lib'] == cfg['candidate']['lib'] else 'explicit_')
                                 + ('delta_only' if execution['control']['native_state_copy'] == '1' else 'ordinary_ggml')) if conv_copy_trial else
                                (('same_binary_same_bundle_state_copy_off' if cfg['control']['binary'] == cfg['candidate']['binary'] and cfg['control']['lib'] == cfg['candidate']['lib'] else 'explicit_state_copy_off') if state_copy_trial else
                                 ('same_binary_same_bundle_native_off' if args.native_ab else ('both_native_disabled' if args.native_disabled else ('prior_native_source' if args.native_control else 'unchanged_align_source')))),
@@ -119,7 +127,7 @@ def main():
                   argmax_patch_sha256=(argmax_patches['candidate'] if execution['candidate']['graph_greedy'] == '1'
                       else argmax_patches['control'] if graph_trial else None),
                   argmax_patch_sha256_by_arm=argmax_patches if graph_trial else None,
-                  note='Startup is construction-to-ready with OS file cache uncontrolled. Graph phase includes synchronization; not shader-only time.',
+                  note='Startup is construction-to-ready with OS file cache uncontrolled. Phase totals include synchronized ggml graph calls (including native submission when selected) and measured native completion waits when recorded; they exclude CPU readback and sampling and are not shader-only time.',
                   phase_instrumented=not args.wall_only, execution=execution, cases=[], adoption='ASSESSMENT_REQUIRED')
     def save(): args.output.write_text(json.dumps(report,indent=2)+'\n')
     save()
@@ -162,6 +170,7 @@ def main():
                     e['ALIGN_LLM_GRAPH_GREEDY']=execution[arm]['graph_greedy']
                     e['ALIGN_LLM_NATIVE_STATE_COPY']=execution[arm]['native_state_copy']
                     e['ALIGN_LLM_NATIVE_CONV_COPY']=execution[arm]['native_conv_copy']
+                    e['ALIGN_LLM_NATIVE_PREFILL_STATE_COPY']=execution[arm]['native_prefill_state_copy']
                     if execution[arm]['private_buffers'] == '1':
                         e['GGML_METAL_SHARED_BUFFERS_DISABLE']='1'
                     started=time.monotonic_ns()
@@ -179,13 +188,28 @@ def main():
                                 raise ValueError('actual processed token count differs')
                         session.log.seek(0);log=session.log.read().decode('utf-8','replace')
                     graphs=[(int(k),int(t)) for k,t in re.findall(r'Q35_TIMING graph_kind=(\d+) elapsed_ns=(\d+) status=0',log)]
+                    waits=[(int(k),int(t)) for k,t in re.findall(r'Q35_TIMING native_wait_kind=(\d+) elapsed_ns=(\d+) status=0',log)]
                     if len(set(outputs))!=1:raise ValueError('repeated output disagreement')
                     chunk=int(execution[arm]['prefill_chunk'])
                     count=(len(ids)+chunk-1)//chunk+steps-1
                     if not args.wall_only and len(graphs)!=3*count:raise ValueError(f'phase graph count mismatch: {len(graphs)} != {3*count}')
+                    expected_waits=3*((steps-1 if execution[arm]['native_state_copy']=='1' else 0)
+                                      + ((len(ids)+chunk-1)//chunk if execution[arm]['native_prefill_state_copy']=='1' else 0))
+                    if prefill_copy_trial and not args.wall_only and len(waits)!=expected_waits:
+                        raise ValueError(f'native wait count mismatch: {len(waits)} != {expected_waits}')
                     recent=graphs[-count:]
-                    return dict(wall_ns=wall,startup_ns=startup,first_request_ns=first_wall,first_ready_ns=startup+first_wall,prefill_graphs=(len(ids)+chunk-1)//chunk,prefill_ns=None if args.wall_only else sum(t for k,t in recent if k==0),
-                                decode_ns=None if args.wall_only else sum(t for k,t in recent if k!=0),output=result['output'])
+                    recent_waits=waits[-expected_waits:] if expected_waits and waits else []
+                    graph_prefill=sum(t for k,t in recent if k==0)
+                    graph_decode=sum(t for k,t in recent if k!=0)
+                    wait_prefill=sum(t for k,t in recent_waits if k==0)
+                    wait_decode=sum(t for k,t in recent_waits if k!=0)
+                    return dict(wall_ns=wall,startup_ns=startup,first_request_ns=first_wall,first_ready_ns=startup+first_wall,prefill_graphs=(len(ids)+chunk-1)//chunk,prefill_ns=None if args.wall_only else graph_prefill+wait_prefill,
+                                decode_ns=None if args.wall_only else graph_decode+wait_decode,
+                                graph_submit_prefill_ns=None if args.wall_only else graph_prefill,
+                                graph_submit_decode_ns=None if args.wall_only else graph_decode,
+                                native_wait_prefill_ns=None if args.wall_only or not waits else wait_prefill,
+                                native_wait_decode_ns=None if args.wall_only or not waits else wait_decode,
+                                output=result['output'])
                 def llama():
                     started=time.monotonic_ns()
                     with tempfile.TemporaryFile(mode='w+') as errors:

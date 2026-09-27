@@ -11,15 +11,23 @@ command to prefill without changing the default ggml graph or the merged
 decode-only modes. The public option, failure/ownership closure, cost ceiling
 and evidence owners are in `docs/specs/gpu-runtime-performance.md`.
 
-A temporary real 2B Q4_0 graph diagnostic (under the Git common directory,
-not product source) found 18 F32 DeltaNet and 18 strided convolution resident
-copies per 128- and 71-token prefill chunk. DeltaNet is contiguous 1 MiB;
-convolution is `[3,6144,1,1]` with source row strides 524 and 296 bytes and
-12-byte contiguous destination rows. These actual layouts motivate using the
-existing checked native command. Next: connect prefill source roots and wait
-before parity publication, qualify exact full logits/state and failure paths,
-then compare same-binary real requests and memory. Another Metal host and CUDA
-remain deferred until available.
+The implementation and result are in `docs/qwen35-native-prefill-copy-trial.md`.
+The selectable prefill route removes 36 ggml state `CPY` nodes per prefill
+graph, and Align waits for the native command before parity publication in
+ordinary and streaming generation. The final 2B owner passed 48 exact full
+logits and 4,116 resident planes over short/128+71/short requests; 2B/0.8B
+generation, 0.8B SSE/recovery, invalid-mode and both native failure owners
+passed. The fixed-binary five-pair 2B untraced comparison versus the already
+native mixed-decode route found paired control-minus-prefill medians of
+-4.449, -17.033 and -17.426 ms at 64/16, 200/32 and 330/64, with the two
+longer conditions losing four of five pairs. Ordinary Align still lost all
+15 pairs because the candidate includes the earlier decode improvement.
+Instrumented prefill graph/submission call savings were outweighed by native completion
+waits; the process-footprint screen resolved no difference. Keep the prefill
+option default-off and retain mixed decode as the preferred tested route.
+Next: complete final owner/preflight, one independent review, PR checks and
+merge; then refresh `main` and begin the next GPU capability. Another Metal
+host and CUDA remain deferred until available.
 
 ## Completed native Metal convolution-state copy trial (2026-09-27)
 
