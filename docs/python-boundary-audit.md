@@ -47,6 +47,9 @@ Its shared-logits setting remains a measurement input to explicit native
 binaries, outside normal product execution.
 The NEON greedy setting is likewise an independent measurement input and does
 not move token selection into Python.
+The Metal private-buffer setting selects the pinned backend's existing storage
+mode per explicit measurement arm before session construction; it does not add a
+Python inference path or change the production default.
 Its optional `--native-control` compares two explicit native developer builds
 without changing the product interface. `--native-disabled` fixes both builds
 to the unfused path for host-only comparisons. It is never imported or launched by product execution.

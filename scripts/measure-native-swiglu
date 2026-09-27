@@ -43,7 +43,7 @@ def main():
     execution = {}
     for arm in ('control', 'candidate'):
         selected = cfg[arm].get('execution', {})
-        if set(selected) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights', 'shared_logits', 'neon_greedy'}:
+        if set(selected) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights', 'shared_logits', 'neon_greedy', 'private_buffers'}:
             raise ValueError('unknown execution setting')
         sync = selected.get('sync_weight_upload', '0')
         chunk = selected.get('prefill_chunk', '128')
@@ -52,9 +52,10 @@ def main():
         mapped = selected.get('mapped_weights', '0')
         shared = selected.get('shared_logits', '0')
         neon = selected.get('neon_greedy', '0')
-        if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or shared not in ('0', '1') or neon not in ('0', '1') or (shared == '1' and neon == '1') or (mapped == '1' and sync == '1'):
+        private = selected.get('private_buffers', '0')
+        if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or shared not in ('0', '1') or neon not in ('0', '1') or private not in ('0', '1') or (shared == '1' and neon == '1') or (mapped == '1' and sync == '1') or (private == '1' and (mapped == '1' or shared == '1' or neon == '1')):
             raise ValueError('invalid execution setting')
-        execution[arm] = dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped, shared_logits=shared, neon_greedy=neon)
+        execution[arm] = dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped, shared_logits=shared, neon_greedy=neon, private_buffers=private)
     report = dict(schema_version=2, artifact_kind='NATIVE_SWIGLU_MEASUREMENT',
                   align_revision=Path('.align-revision').read_text().strip(),
                   policy='2026-09-26-no-percentage-floor', status='INCOMPLETE',
@@ -102,6 +103,8 @@ def main():
                     e['ALIGN_LLM_MAPPED_WEIGHTS']=execution[arm]['mapped_weights']
                     e['ALIGN_LLM_SHARED_LOGITS']=execution[arm]['shared_logits']
                     e['ALIGN_LLM_NEON_GREEDY']=execution[arm]['neon_greedy']
+                    if execution[arm]['private_buffers'] == '1':
+                        e['GGML_METAL_SHARED_BUFFERS_DISABLE']='1'
                     started=time.monotonic_ns()
                     with Session([c['binary'],'--runtime-session',cfg['model'],cfg['pack'],cfg['geometry'],c['options'],'0'],timeout=180,env=e) as session:
                         startup=time.monotonic_ns()-started

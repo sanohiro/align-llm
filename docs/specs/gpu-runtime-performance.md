@@ -423,6 +423,24 @@ and retain `1` for bounded follow-up; do not claim production adoption or a
 competitive win. See `docs/qwen35-neon-greedy-trial.md` and its complete raw
 receipts. A larger output-projection consumer is the next hypothesis.
 
+### Metal private-storage screening (2026-09-27)
+
+Hypothesis: on the M1, private ggml Metal storage could lower warm decode GPU
+time despite identical Q6_K projection dispatches. This is a reversible backend
+allocation experiment using the pinned ggml `GGML_METAL_SHARED_BUFFERS_DISABLE`
+switch, not a model or precision change. The independent measurement caller may
+select it per explicit arm before device creation; the production default and
+Align session contract do not change. Compare identical binary, pack, geometry,
+bundle and request text with shared/private storage, preserve all output/count
+checks and compare against pinned llama.cpp. Scope is one local Q6_K real-row
+screen and up to three real-model workloads with five alternating pairs each;
+each process has two warmup requests and the third is measured, with a 180-second
+request timeout. The campaign budget is 900 seconds. Record startup, prefill,
+decode, whole request and all negative samples. Private storage may add input
+and output blits and memory pressure; a local projection win is insufficient for
+adoption. No production mode is added unless connected correctness, memory and
+request evidence justify it.
+
 ### Controlled upload and prefill trial (2026-09-26)
 
 Hypotheses: synchronous tensor upload removes the Metal shared-buffer staging,

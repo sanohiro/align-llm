@@ -2,6 +2,29 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Qwen3.5 Metal private-storage screen (2026-09-27)
+
+Branch `agent/native-metal-ffn-integration`, starting from NEON checkpoint
+`1ad16a24`. This local screen is complete. The pinned ggml all-private buffer
+switch passed the captured real Q6_K projection oracle and the same-binary 2B
+worker output/count checks, but did not improve the local projection across
+three activations. Five alternating worker pairs at 64/16, 200/32 and 330/64
+gave paired shared-minus-private request medians -16.351, -35.645 and
+-81.652 ms; private won 0/5, 2/5 and 2/5. Pinned llama.cpp remained faster
+on every candidate request median. The graph-external residual grew in every
+pair, consistent with pinned ggml's private input-setter blit and completion
+wait. Keep shared storage as default; no product buffer mode was added. Read
+`docs/qwen35-private-metal-trial.md` and the checked-in raw receipts for the
+conditions and uncertainty. Strict Python boundary, invalid-setting refusal,
+measurement completion and diff checks passed. No cross-backend claim.
+
+Next: screen an in-graph Q6_K projection plus partial-top-token consumer with
+actual captured weights/activations, preserving the exact full-logit/state
+oracle. It must reuse the producing command boundary; the post-sync GPU argmax
+and one-to-one Q6_K mapping have already lost. If the bounded local screen
+does not show a connected advantage, redirect to a larger fused recurrent/FFN
+layout. No PR/preflight/merge is claimed for this checkpoint.
+
 ## Qwen3.5 shared-row greedy follow-up (2026-09-27)
 
 Branch `agent/native-metal-ffn-integration`, based on shared-logits checkpoint
