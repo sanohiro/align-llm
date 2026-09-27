@@ -1,0 +1,76 @@
+#!/usr/bin/env python3
+"""Qualify real-model native Metal copy failures without product-side fault knobs."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+from pathlib import Path
+import struct
+import time
+
+from gpu_session_client import Session
+
+
+def main() -> None:
+    model = Path(os.environ["QWEN35_GGUF"]).resolve()
+    pack = Path(os.environ["QWEN35_ALIGNPACK"]).resolve()
+    geometry = Path(os.environ["QWEN35_MODEL_IR"]).resolve()
+    options = Path(os.environ["QWEN35_RUNTIME_OPTIONS"]).resolve()
+    binary = Path(os.environ["QWEN35_NATIVE_COPY_BINARY"]).resolve()
+    fault = os.environ["QWEN35_NATIVE_COPY_FAILURE"]
+    if fault not in ("submit", "complete"):
+        raise RuntimeError("expected submit or complete native copy failure")
+    expected = os.environ["QWEN35_EXPECTED_SHA256"]
+    digest = hashlib.sha256()
+    with model.open("rb") as source:
+        for part in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(part)
+    if digest.hexdigest() != expected:
+        raise RuntimeError("GGUF differs from the recorded real-model source")
+    settings = json.loads(options.read_text(encoding="utf-8"))
+    if settings.get("backend") != "metal" or settings.get("device") != "MTL0":
+        raise RuntimeError("native copy failure owner requires the admitted MTL0 bundle")
+    command = [str(binary), "--runtime-session", str(model), str(pack),
+               str(geometry), str(options), "0"]
+    environment = os.environ.copy()
+    environment["DYLD_LIBRARY_PATH"] = os.environ["QWEN35_LIB_PATH"]
+    request = dict(schema_version=1, system="You are a coding assistant. Return a concise patch-oriented answer.",
+                   user="Hello", max_tokens=2, temperature=0.0, seed=None)
+
+    # The forced native fault must be irrelevant when Align selects its ggml copy graph.
+    environment["ALIGN_LLM_NATIVE_STATE_COPY"] = "0"
+    with Session(command, timeout=180, env=environment) as session:
+        result = session.generate(request)
+        if result["completion_tokens"] != 2 or result["prompt_tokens"] != 31:
+            raise RuntimeError("ordinary graph control did not finish two real-model tokens")
+    print("mode 0: two-token control completed")
+
+    environment["ALIGN_LLM_NATIVE_STATE_COPY"] = "1"
+    session = Session(command, timeout=180, env=environment)
+    try:
+        raw = json.dumps(request, separators=(",", ":")).encode("utf-8")
+        frame = struct.pack("<I", len(raw)) + raw
+        written = os.write(session.process.stdin.fileno(), frame)
+        if written != len(frame):
+            raise RuntimeError("short failure-request write")
+        response = session._read(time.monotonic() + 180)
+        if response != {"schema_version": 1, "status": "failed"}:
+            raise RuntimeError(f"native copy failure published an unexpected envelope: {response!r}")
+        code = session.process.wait(timeout=180)
+        if code != 2:
+            raise RuntimeError(f"worker failure exit was {code}, expected the controlled exit 2")
+        session.log.seek(0)
+        diagnostic = session.log.read().decode("utf-8", "replace")
+        if f"native_state_copy forced {'completion' if fault == 'complete' else 'submit'} failure" not in diagnostic:
+            raise RuntimeError("the expected native failure injection was not reached")
+        if f"native_state_copy request {'completion' if fault == 'complete' else 'submit'} failure" not in diagnostic:
+            raise RuntimeError(f"the native fault was not reported by the request path: {diagnostic[-2000:]}")
+        print(f"mode 1: failed envelope, no result or token, worker exit {code}")
+    finally:
+        session.close(check=False)
+
+
+if __name__ == "__main__":
+    main()

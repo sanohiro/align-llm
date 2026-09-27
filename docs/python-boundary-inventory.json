@@ -3318,6 +3318,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/run-qwen35-native-copy-failure-smoke",
+      "classification": "INDEPENDENT_ORACLE",
+      "behavior": "Verify a real Qwen3.5 Metal session reports and exits on an injected native state-copy command failure, while its ordinary copy mode still completes.",
+      "reachability": "Focused developer qualification only; never part of normal product execution.",
+      "substitution": "Drives an external Align worker built with a test-only native fault; it does not implement shipping inference.",
+      "python_reason": "Real-model failure-envelope verification remains outside Align product execution.",
+      "target": "Retain as the native Metal command-failure qualification owner.",
+      "migration": "N/A",
+      "acceptance": "QWEN35_GGUF=... QWEN35_ALIGNPACK=... QWEN35_MODEL_IR=... QWEN35_RUNTIME_OPTIONS=... QWEN35_LIB_PATH=... QWEN35_NATIVE_COPY_BINARY=... QWEN35_NATIVE_COPY_FAILURE=submit|complete python3 scripts/run-qwen35-native-copy-failure-smoke; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/run-qwen35-tokenizer-smoke",
       "classification": "INDEPENDENT_ORACLE",
       "behavior": "Compare Qwen3.5 Align tokenizer CLI with the pinned llama.cpp tokenizer on a recorded local 0.8B or 2B GGUF.",

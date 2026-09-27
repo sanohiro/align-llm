@@ -3431,6 +3431,9 @@ int32_t align_gpu_native_state_copy_finish(void *owner) {
 #if defined(__APPLE__)
     if (state->native_state_copy_context != NULL
         && !align_native_metal_copy_wait(state->native_state_copy_context)) {
+#if defined(ALIGN_GGML_FORCE_NATIVE_COPY_COMPLETION_FAILURE)
+        fprintf(stderr, "native_state_copy request completion failure\n");
+#endif
         state->workspace_failed = 1;
         return ALIGN_GPU_COMPUTE;
     }
@@ -3487,6 +3490,9 @@ int32_t align_gpu_graph_compute(
     }
 #if defined(__APPLE__)
     if (!align_gpu_native_copy_commit(state, kind)) {
+#if defined(ALIGN_GGML_FORCE_NATIVE_COPY_SUBMIT_FAILURE)
+        fprintf(stderr, "native_state_copy request submit failure\n");
+#endif
         state->workspace_failed = 1;
         return ALIGN_GPU_COMPUTE;
     }

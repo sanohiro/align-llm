@@ -31,6 +31,41 @@ physical Metal device. An ambiguous device selection refuses mode `1`; mode
 `0` remains available. This guard was added after the measured M1 campaign,
 whose device meets those conditions.
 
+## Native command failure qualification
+
+On the same M1 and 2B Q4_0 GGUF, two test-only real-shim builds injected failure
+at distinct native boundaries. `ALIGN_LLM_GGML_FORCE=native-copy-submit` failed
+after validating the actual borrowed shared-buffer views and before committing
+a command. `native-copy-complete` committed and drained a real command, then
+reported failure after a successful Metal completion. For each build, the
+two-token mode-`0` control completed (31 prompt tokens); mode `1` returned the
+exact worker envelope `{"schema_version":1,"status":"failed"}`, published no
+generation result or token, and exited with code 2. The owner required the
+corresponding native fault and request-path markers in the worker diagnostic,
+so a failure during cleanup cannot satisfy it. This checks real-model failure
+propagation and cleanup at the process boundary. The first owner version checked
+only the native marker; review showed that marker could appear during teardown,
+so the tightened owner was rebuilt and rerun. It does not simulate a GPU hardware
+error or prove cross-device behavior. No inference timing claim is made from
+these instrumented builds.
+
+Reproduce with the same unmodified pinned ggml bundle used above. Set
+`QWEN35_GGUF`, `QWEN35_EXPECTED_SHA256`, `QWEN35_ALIGNPACK`, `QWEN35_MODEL_IR`,
+`QWEN35_RUNTIME_OPTIONS`, `QWEN35_LIB_PATH`, `ALIGN_LLM_GGML_INCLUDE`, and
+`ALIGN_LLM_GGML_LIB` to the matching recorded inputs. For each `fault` in
+`submit complete`, set `ALIGN_LLM_GGML_FORCE=native-copy-$fault` and a distinct
+absolute `ALIGN_LLM_GGML_SHIM_DIR=<scratch>/$fault` before `gmake build`.
+Save that `main` alongside the retained shim in its original scratch directory,
+then run:
+
+```sh
+QWEN35_NATIVE_COPY_FAILURE="$fault" QWEN35_NATIVE_COPY_BINARY="<saved-main>" \
+  python3 scripts/run-qwen35-native-copy-failure-smoke
+```
+
+The saved executable must remain paired with the shim path recorded in its
+dynamic-library identity; copying the shim to another directory is insufficient.
+
 ## Correctness
 
 - A borrowed-buffer probe copied 1,048,576 bytes bit-identically on the M1.
@@ -46,9 +81,10 @@ whose device meets those conditions.
 
 The diagnostic state tracer explicitly waits for the native command before
 hashing; otherwise an asynchronous graph return would inspect unpublished
-state. No forced Metal command-failure injection was performed. A native
-submission or completion failure marks the session unhealthy; the independent
-failure path still needs a focused fault-injection owner before default use.
+state. Test-only native submission and post-completion fault builds now verify
+that either failure returns the worker's `failed` envelope without publishing a
+result or token, followed by the controlled exit 2. The session remains
+unhealthy until exit; a real GPU hardware error was not simulated.
 The actual graph census has 66 `CPY` nodes for prefill in both modes, and 42
 versus 24 for each decode parity graph (off versus native). Native mode adds
 one Metal blit command buffer per decode step, containing 18 copies. This is
@@ -128,8 +164,8 @@ session; it does not allocate a duplicate resident plane.
 Retain the native route as an opt-in experiment. It is correct on the tested
 real-model paths and improves 15/15 reviewed paired warm requests on this M1 against
 both unchanged Align and pinned llama.cpp, with positive medians at all three
-lengths. Default use still needs focused native failure
-injection and qualification beyond this one host; startup remains materially
+lengths. Focused native failure propagation is qualified on this M1. Default
+use still needs qualification beyond this one host; startup remains materially
 slower than llama.cpp. The ggml copy-source patch stays a historical local
 result, not the operating plan.
 

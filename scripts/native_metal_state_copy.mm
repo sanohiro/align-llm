@@ -73,6 +73,13 @@ extern "C" int align_native_metal_copy_wait(void *opaque) {
     }
     context->pending = nil;
     context->pending_count = 0;
+#if defined(ALIGN_NATIVE_METAL_FORCE_COMPLETION_FAILURE)
+    // Test build: report a failed completion after draining the real command.
+    if (succeeded) {
+        fprintf(stderr, "native_state_copy forced completion failure\n");
+        return 0;
+    }
+#endif
     return succeeded ? 1 : 0;
 }
 
@@ -136,6 +143,11 @@ extern "C" int align_native_metal_copy_submit(void *opaque,
         if (context->source_view == nil || context->destination_view == nil
             || context->source_view.contents != source_base
             || context->destination_view.contents != destination_base) return 0;
+#if defined(ALIGN_NATIVE_METAL_FORCE_SUBMIT_FAILURE)
+        // Test build: exercise the caller's submit-failure path with real views.
+        fprintf(stderr, "native_state_copy forced submit failure\n");
+        return 0;
+#endif
         id<MTLCommandBuffer> command = [context->queue commandBuffer];
         id<MTLBlitCommandEncoder> encoder = [command blitCommandEncoder];
         if (command == nil || encoder == nil) return 0;

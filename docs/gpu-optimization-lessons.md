@@ -52,6 +52,12 @@ speed result. Historical measurements remain in their owning reports.
   removed 12 decode dispatches and likewise showed no request gain. These
   negative results narrow those particular boundaries; they do not rule out a
   larger fused graph or a different buffer layout.
+- For asynchronous native commands, a failure marker at device completion can
+  also be emitted during cleanup after an unrelated request error. A fault owner
+  should prove that both the device injection and the request's explicit finish
+  path ran, and require the expected worker envelope and controlled exit. The
+  [state-copy failure trial](qwen35-native-state-copy-trial.md) found this false
+  positive in its first owner version.
 
 ## Current Qwen3.5-2B evidence and next test
 
