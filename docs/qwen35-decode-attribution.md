@@ -67,7 +67,7 @@ identities. It again counted 663/682 dispatches and 613 matching signatures;
 five paired deltas were 6.813, 7.951, 8.535, 5.836 and 5.977 ms. All three
 campaigns are retained, with the third marked as the verified reproduction.
 
-Metal System Trace captured the real requests and command encoders. Its exported
+The original Metal System Trace captured the real requests and command encoders. Its exported
 recording states `Shader Timeline: Disabled` and has no shader interval rows.
 The local M1 reports stage-boundary timestamp sampling, but no dispatch-boundary
 counter sampling. The trace therefore cannot assign GPU time to individual
@@ -75,6 +75,42 @@ dispatches. The first 25-second recording was interrupted during saving and is
 invalid; the complete eight-second recording and exported TOC are retained in
 the resolved Git common directory. All intrusive diagnostics remain outside
 production and were excluded from the previous request-speed verdict.
+
+### Counter-enabled follow-up (2026-09-27)
+
+A new Metal System Trace added the `Metal GPU Counters` instrument and its TOC
+reports `Shader Timeline: Enabled`. The two Align arms used the same binary,
+Qwen3.5-2B Q4_0 GGUF, 200/32 request and pinned ggml revision; the candidate
+selected the opt-in adjacent-range Metal bundle. The pinned llama.cpp driver
+ran three iterations of the same prompt IDs and output count. The counter
+export was filtered by each worker PID. The instrumented intervals are samples
+of GPU activity, not exact per-dispatch clocks or a new untraced speed result.
+
+| Worker | Requests | F32 copy sampled (ms) | Q4_0 matvec sampled (ms) | Q6_K matvec sampled (ms) |
+| --- | ---: | ---: | ---: | ---: |
+| Align control | 2 | 200.573 | 777.591 | 499.636 |
+| Align adjacent-range | 2 | 198.177 | 768.807 | 492.176 |
+| Pinned llama.cpp | 3 | 105.947 | 1,161.739 | 736.497 |
+
+Per-request Q4_0 and Q6_K sampled totals are close between the Align candidate
+and reference. F32 copy is about 99.1 ms per Align candidate request and 35.3
+ms per reference request. The final decode graph has 18 convolution and 18
+DeltaNet state-copy dispatches on both paths. An independent Metal buffer
+binding interposer reported `storageMode=0` (shared) for both; the observed
+destination buffer lengths were 68,714,496 bytes for Align's two parity planes
+and 20,201,472 bytes for the reference's one state buffer. The destination
+interpretation follows the shader binding and graph copy operation; these
+buffer sizes alone do not prove the copy-time difference. A 2B trial that
+removed Align's 12 extra small K/V materializations had already shown no
+repeatable request gain, so it was not repeated.
+
+The retained raw traces, XML exports, PID summaries and buffer-binding logs
+are under the resolved Git common directory's
+`diagnostics/q35-ingraph-greedy-2026-09-27/counter-trace-20260927/`. They
+are local diagnostics, excluded from normal request timing. The follow-up
+trial and general method are recorded in
+[`gpu-runtime-performance.md`](specs/gpu-runtime-performance.md) and
+[`gpu-optimization-lessons.md`](gpu-optimization-lessons.md).
 
 ## Reproduction
 

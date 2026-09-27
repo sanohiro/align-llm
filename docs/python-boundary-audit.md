@@ -33,8 +33,9 @@ measurement; no Python code reads logits or chooses tokens.
 automation and do not enter normal product execution.
 
 `scripts/gpu_backend_recipe.py` remains `CI_OR_DEVELOPER_TOOL`; the optional
-native SwiGLU, in-graph argmax, and Metal adjacent-range patches are build inputs,
-retained with their digests, never Python inference dependencies.
+native SwiGLU, in-graph argmax, Metal adjacent-range, and contiguous F32 copy
+patches are build inputs, retained with their digests, never Python inference
+dependencies.
 `scripts/run-prefix-ttft`, `scripts/run-decode-step` and
 `scripts/run-moe-decode-step` retain their independent qualification/measurement
 roles; latency is reported for assessment without a fixed shipping percentage.

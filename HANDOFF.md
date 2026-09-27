@@ -4,38 +4,68 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## GPU-only optimization priority (2026-09-27)
 
-Branch `agent/native-metal-ffn-integration`, previous checkpoint `dfd5da2b`;
-this adjacent-range trial is the branch HEAD's local implementation checkpoint.
-The user directs current work toward GPU inference performance; HTTP transport
-optimization is deferred until the GPU options have been adequately tested.
-The Q6_K producer-side top-token screen completed at `dfd5da2b`; read
-`docs/qwen35-q6-fused-top-screen.md` for its negative local timing.
+Branch `agent/native-metal-ffn-integration`, starting HEAD `3df24158`. The user directs
+current work toward GPU inference performance; HTTP transport optimization is
+deferred until GPU options are adequately tested. The adjacent-range Metal
+scheduling patch remains default-off with no repeatable competitive request
+win; see `docs/qwen35-metal-adjacent-range-trial.md`.
 
-The active Metal graph scheduling trial corrects a half-open memory-range
-intersection in the pinned ggml backend through an opt-in build patch. The
-actual 2B final decode graph has 399 instead of 469 buffer barriers, with
-663 dispatches unchanged. The final recipe bundle reuses byte-identical core
-dylibs from the control bundle so the same Align binary can compare them.
-The 2B/0.8B generation owner, 744,960 exact 2B logit values, 336 exact
-state hashes, recipe smoke and strict Python boundary all pass. On the
-measured recipe bundle, five paired 330/64 phase requests improve by median
-22.264 ms. The final checked-in patch yields byte-identical Metal executable
-text and embedded shaders; its untraced wall requests improve by only
-12.966 ms with a -134.671 ms pair and one +586.905 ms control outlier.
-Shorter cases and startup remain variable. Pinned llama.cpp remains faster in
-the stable phase comparisons. Keep the trial default-off; do not claim a
-competitive win. See
-`docs/qwen35-metal-adjacent-range-trial.md` and complete checked-in receipts.
-One comprehensive host-native review found a valid missing-base-plugin
-validation issue. The recipe now verifies all five base artifacts; missing and
-modified plugin and modified core refusal probes, the recipe smoke, actual
-base-bundle check and strict Python boundary pass after the repair.
+The 2026-09-27 counter-enabled Metal System Trace has Shader Timeline enabled.
+On matched Qwen3.5-2B 200/32 work it sampled F32 copies at about 99 ms per
+Align request and 35 ms per pinned llama.cpp request; Q4_0 and Q6_K matvec
+samples per request were close. These are diagnostic attributions, not saved
+time. Independent bindings show both use shared Metal buffers and the same
+state-copy launch shapes. See `docs/qwen35-decode-attribution.md` and
+`docs/gpu-optimization-lessons.md`.
 
-Next: return to GPU attribution with an isolated Metal System Trace/counter
-capture for matched Align and llama.cpp decode commands; distinguish shader
-work, barrier stalls and command-buffer gaps before changing Q4_0/DeltaNet
-layout or fusion. CPU/CUDA/Gemma admission remains deferred as recorded in the
-parity register. No PR, preflight or merge is claimed for this local trial.
+The parity-major recurrent-state placement trial cut the last decode's
+36-copy destination start span from 38,305,792 to 19,152,896 bytes, matching
+the reference span. Its actual 2B full logits and semantic state hashes were
+exact; 2B/0.8B generation owners passed. Five-pair untraced request medians
+were +0.397, -3.195 and -18.414 ms at 64/16, 200/32 and 330/64, control
+minus trial. Separate phase clocks did not establish a repeatable gain.
+The source and root `main` were restored; the exact trial patch, binaries,
+owner logs, copy census and complete receipts remain under the resolved Git
+common directory's `diagnostics/q35-ingraph-greedy-2026-09-27/counter-trace-20260927/`.
+The result and cost ceiling are in `docs/specs/gpu-runtime-performance.md`.
+
+The next large contiguous-copy Metal specialization, built through the
+checked-in `--linear-copy` recipe, won all 30 2B control comparisons across
+two five-pair 64/16, 200/32 and 330/64 campaigns. The measured recipe
+bundle's paired control-minus-trial medians were +52.866, +99.577 and
++193.448 ms, and its
+warm request arm medians beat pinned llama.cpp at each length. The real 0.8B
+campaign won 14/15 comparisons and retained one -11.338 ms short-case pair.
+The 2B actual logits and resident state were byte-identical; both sizes'
+generation owners passed. The actual graph has 18 eligible contiguous 1 MiB
+DeltaNet copies and 18 ineligible strided convolution sources per decode token.
+The summed F32 copy Shader Timeline samples fell from 199.922 to 11.228 ms
+over two matching instrumented requests, an attribution result rather than
+an isolated marginal saving. Startup remains mixed and physical-memory peak
+is unmeasured. A clean checked-in-patch bundle was rebuilt after removing
+whitespace from patch context; its executable and embedded Metal library are
+byte-identical to the measured bundle, and both model generation owners pass.
+The default backend bundle remains unchanged; the opt-in bundles and full
+conditions are in `docs/qwen35-metal-linear-copy-trial.md`.
+
+Latest local verification: `scripts/run-gpu-backend-recipe-smoke` PASS;
+`python3 scripts/check-python-boundary --strict` PASS; clean pinned-source
+`git apply --check` PASS; 2B and 0.8B `scripts/run-qwen35-generation-smoke`
+PASS on the clean bundle; `git diff --cached --check` PASS. One fresh
+`codex review --uncommitted` found no actionable correctness regression;
+the separately found patch-context whitespace was repaired, the bundle was
+rebuilt and its executable sections compared before these final checks.
+
+Next GPU actions, in order: add a focused contiguous/strided copy fixture for
+unseen view geometries and a physical-memory/startup check before deciding
+whether this bundle should become the default on tested Metal hosts; inspect
+the remaining convolution copy and DeltaNet workspace-to-resident boundary
+for a larger optimization that retains success-only state publication; then
+attribute command-buffer waits and memory transactions if those tests do not
+explain the residual gap. Avoid repeating the rejected singleton K/V copy and
+parity placement trials without a new mechanism.
+CPU/CUDA/Gemma admission remains deferred in `docs/backend-parity.md`.
+No PR, preflight or merge is claimed for this local implementation checkpoint.
 
 ## Qwen3.5 in-graph Metal greedy trial (2026-09-27)
 

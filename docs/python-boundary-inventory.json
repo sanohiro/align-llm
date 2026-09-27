@@ -915,7 +915,7 @@
     {
       "path": "scripts/gpu_backend_recipe.py",
       "classification": "CI_OR_DEVELOPER_TOOL",
-      "behavior": "Build a pinned-ggml bundle with optional retained native SwiGLU patch; bind patch digest in build flags and bundle identity.",
+      "behavior": "Build a pinned-ggml bundle with optional retained Metal kernel and scheduler patches; bind patch digests in build flags and bundle identity.",
       "reachability": "No product call: independent developer/test entry or imported support; may launch the product under test.",
       "substitution": "No shipping substitution; exercises or prepares the named owner.",
       "python_reason": "Python is retained as portable developer/test orchestration outside product execution.",

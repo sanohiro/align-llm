@@ -914,7 +914,8 @@ def reusable_metal_core(
                 "version": GGML_COMMIT,
             } or manifest.get("toolchain") != toolchain_id \
             or manifest.get("build_flags") != [flag for flag in configure_flags
-                                               if not flag.startswith("-DALIGN_LLM_ADJACENT_RANGES_PATCH_SHA256=")]:
+                                               if not flag.startswith("-DALIGN_LLM_ADJACENT_RANGES_PATCH_SHA256=")
+                                               and not flag.startswith("-DALIGN_LLM_LINEAR_COPY_PATCH_SHA256=")]:
         raise RecipeError("base Metal bundle does not match the pinned core build")
     rows = manifest.get("artifacts")
     if not isinstance(rows, list) or len(rows) != 5:
@@ -959,10 +960,12 @@ def reusable_metal_core(
 
 
 def build(backend: str, source: pathlib.Path, output: pathlib.Path, *, native_swiglu: bool = False,
-          ingraph_argmax: bool = False, adjacent_ranges: bool = False,
+          ingraph_argmax: bool = False, adjacent_ranges: bool = False, linear_copy: bool = False,
           base_bundle: pathlib.Path | None = None) -> None:
-    if (native_swiglu or ingraph_argmax or adjacent_ranges) and backend != "metal":
+    if (native_swiglu or ingraph_argmax or adjacent_ranges or linear_copy) and backend != "metal":
         raise RecipeError("native Metal trials require Metal")
+    if linear_copy and not adjacent_ranges:
+        raise RecipeError("linear-copy trial requires the adjacent-range base bundle")
     if (base_bundle is None) != (adjacent_ranges is False):
         raise RecipeError("adjacent-range builds require one base Metal bundle")
     native_patch = (pathlib.Path(__file__).with_name("native-metal-swiglu.patch").read_bytes()
@@ -971,6 +974,8 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path, *, native_sw
                     if ingraph_argmax else None)
     adjacent_patch = (pathlib.Path(__file__).with_name("metal-adjacent-ranges.patch").read_bytes()
                       if adjacent_ranges else None)
+    linear_patch = (pathlib.Path(__file__).with_name("metal-linear-copy.patch").read_bytes()
+                    if linear_copy else None)
     source = source.resolve()
     output = pathlib.Path(os.path.abspath(output))
     try:
@@ -1017,6 +1022,11 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path, *, native_sw
             patch_path.write_bytes(adjacent_patch)
             command([executables["git"], "apply",
                      os.fspath(patch_path)], cwd=private_source, environment=environment)
+        if linear_patch is not None:
+            patch_path = work_dir / "metal-linear-copy.patch"
+            patch_path.write_bytes(linear_patch)
+            command([executables["git"], "apply",
+                     os.fspath(patch_path)], cwd=private_source, environment=environment)
         build_environment = dict(environment)
         build_environment["GIT_CEILING_DIRECTORIES"] = os.fspath(work_dir)
         configure_flags = [
@@ -1031,6 +1041,8 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path, *, native_sw
             configure_flags.append("-DALIGN_LLM_INGRAPH_ARGMAX_PATCH_SHA256=" + digest(argmax_patch))
         if adjacent_patch is not None:
             configure_flags.append("-DALIGN_LLM_ADJACENT_RANGES_PATCH_SHA256=" + digest(adjacent_patch))
+        if linear_patch is not None:
+            configure_flags.append("-DALIGN_LLM_LINEAR_COPY_PATCH_SHA256=" + digest(linear_patch))
         if backend == "cuda":
             configure_flags.append(f"-DCMAKE_CUDA_COMPILER={executables['platform']}")
         command(
@@ -1062,6 +1074,8 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path, *, native_sw
                 (stage / "metal-ingraph-argmax.patch").write_bytes(argmax_patch)
             if adjacent_patch is not None:
                 (stage / "metal-adjacent-ranges.patch").write_bytes(adjacent_patch)
+            if linear_patch is not None:
+                (stage / "metal-linear-copy.patch").write_bytes(linear_patch)
             write_source_snapshot(source_dir, manifest, source_bytes, raw_commit, blobs, "ggml")
             artifacts = copy_artifacts(sources, bundle_dir)
             bundle = {
@@ -1100,6 +1114,8 @@ def parse_args() -> argparse.Namespace:
                         help="experimental in-graph Metal argmax; retain its independent patch")
     parser.add_argument("--adjacent-ranges", action="store_true",
                         help="experimental Metal half-open range fix; retain its independent patch")
+    parser.add_argument("--linear-copy", action="store_true",
+                        help="experimental contiguous F32 Metal copy specialization")
     parser.add_argument("--base-bundle", type=pathlib.Path,
                         help="byte-identical core bundle for an adjacent-range Metal plugin trial")
     args = parser.parse_args()
@@ -1109,6 +1125,8 @@ def parse_args() -> argparse.Namespace:
         parser.error("--ingraph-argmax requires a Metal build")
     if args.adjacent_ranges and (args.backend != "metal" or args.print_plan):
         parser.error("--adjacent-ranges requires a Metal build")
+    if args.linear_copy and (args.backend != "metal" or args.print_plan or not args.adjacent_ranges):
+        parser.error("--linear-copy requires an adjacent-range Metal build")
     if (args.base_bundle is None) != (not args.adjacent_ranges):
         parser.error("--adjacent-ranges requires --base-bundle, and the base bundle requires --adjacent-ranges")
     if not args.print_plan and (args.source is None or args.output is None):
@@ -1126,7 +1144,8 @@ def main() -> int:
         else:
             build(args.backend, args.source.resolve(), args.output.absolute(),
                   native_swiglu=args.native_swiglu, ingraph_argmax=args.ingraph_argmax,
-                  adjacent_ranges=args.adjacent_ranges, base_bundle=args.base_bundle)
+                  adjacent_ranges=args.adjacent_ranges, linear_copy=args.linear_copy,
+                  base_bundle=args.base_bundle)
     except RecipeError as exc:
         print(f"gpu backend recipe: ERROR: {exc}", file=sys.stderr)
         return 1

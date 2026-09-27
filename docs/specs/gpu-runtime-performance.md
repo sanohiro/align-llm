@@ -233,6 +233,163 @@ code was removed; its patch and raw observations remain in local diagnostics.
 This rejects the singleton-copy change as a speed optimization on this host,
 not a general claim about fusion or an independent backend.
 
+### Qwen3.5 recurrent parity placement trial (2026-09-27)
+
+The current 2B decode graph writes 18 convolution and 18 DeltaNet state tensors
+per token. A counter-enabled trace sampled `kernel_cpy_f32_f32` for about
+99 ms per Align request versus 35 ms per pinned llama.cpp request after
+normalizing two and three identical 200/32 requests respectively. These are
+sampled, instrumented shader intervals, not isolated copy clocks or a speedup
+prediction. Both paths dispatch the same 36 large state copies and use shared
+Metal buffers. An independent binding trace found that Align's inactive state
+destinations span about 38 MB because parity is interleaved by layer, while the
+reference's single state buffer spans about 20 MB. The previous 2B trial that
+removed 12 small K/V materializations did not improve requests. Test state
+placement next without weakening success-only publication.
+
+| Trial contract | Boundary |
+| --- | --- |
+| Selection and rollback | A separately built candidate changes only Qwen3.5 recurrent resident index and allocation order. The unchanged binary and bundle remain the control; no new CLI, environment flag, persisted format, Model IR, or ggml scheduler change. Align retains both parity planes and flips the active index only after a complete successful graph. |
+| Placement | Keep the six attention layers' K/V members first. Group all recurrent convolution/DeltaNet tensors of parity zero, then all of parity one, each in layer order. The shape selected for each index must match `recurrent_index`; total resident allocation and tensor types remain unchanged. The existing ggml copy operation and fallback graph remain. |
+| Correctness | The geometry owner checks the complete 84-index bijection and both parity directions. Real 2B and 0.8B generation owners cover reset, failed input recovery and early exit. The 2B full-logit and resident-state oracle must match the unchanged binary exactly before speed interpretation. No numerical tolerance is widened. |
+| Measurement | Capture one diagnostic copy-binding census to confirm the destination span, then run at least five alternating control/candidate/pinned-llama pairs at 64/16, 200/32 and 330/64 with the same GGUF, pack, prompt IDs and generation settings. Separate prefill, decode, request and construction. Record every adverse pair and memory allocation. Profiled clocks cannot replace the untraced paired request result. |
+| Cost ceiling and decision | Preparation and owners: 2,700 seconds; paired campaign: 1,500 seconds; one request: 180 seconds. Keep the trial only if correctness holds and the connected gain survives variability, workload and memory/maintenance assessment. No percentage or win-count floor applies. If the copy sample gap remains after placement, investigate the shared state copy's dependency and memory access pattern rather than attributing it to parity order. |
+
+Construction maps `runtime_qwen35_state.recurrent_index` to
+`runtime_qwen35_load.add_resident` and its geometry smoke. Success maps
+`read_index`, `write_index` and `finish` to exact state/logit and generation
+owners. Invalid geometry and malformed requests retain their existing refusal;
+failure and early exit retain inactive-state isolation and session cleanup in
+the real generation owner. The trial adds no new allocation owner or cleanup
+path. CPU/CUDA and Gemma performance remain unmeasured, and Qwen/Gemma model
+semantics are unchanged.
+
+**Result and decision.** The parity-major candidate compiled and its geometry
+owner passed. On the real 2B Q4_0 model, three complete 248,320-element logit
+rows and 336 semantic resident-state hashes matched the unchanged binary
+byte for byte; both the 2B and 0.8B generation owners matched pinned llama.cpp
+on three prompt lengths and six retained requests, including invalid-input
+recovery. The independent binding census confirmed the final decode's 36 large
+state-copy destination offsets now span 19,152,896 bytes between first and
+last starts, versus 38,305,792 before; the reference span is 19,152,896.
+The resident Metal buffer remained 68,714,496 bytes with both parity planes.
+The copy dispatch count and launch shapes did not change.
+
+The Apple M1 16 GiB worker ran five alternating control/candidate/pinned-llama
+pairs per case after two warm requests per process. Both Align arms used the
+same 2B GGUF, alignpack, prompt IDs, generation settings, adjacent-range
+bundle and execution flags. Control binary SHA256 was
+`b62a2d5d7e88dee85b4f3f672b4b4dca15a74d24fc5e89df5791cf277c6a0450`;
+candidate was
+`7173db47ce0e78ae371fecd2737125dea3cb96108cf51a3babd94b0b8bdfd99e`.
+The paired delta is control minus candidate, so positive favors the trial.
+The wall run had no phase interposer; the separate phase run's graph clocks
+include synchronization and are not shader-only timings.
+The complete portable paired receipts, including all prompt IDs and adverse
+samples, are [`wall.json`](../../eval/benchmarks/qwen35-parity-placement-2026-09-27/wall.json)
+and [`phase.json`](../../eval/benchmarks/qwen35-parity-placement-2026-09-27/phase.json).
+
+| Input / output | Untraced request paired median (ms), trial wins | Control / trial / llama request medians (ms) | Instrumented prefill / decode paired medians (ms) |
+| --- | ---: | ---: | ---: |
+| 64 / 16 | +0.397, 3/5 | 565.808 / 567.419 / 555.915 | -0.170 / -5.224 |
+| 200 / 32 | -3.195, 2/5 | 1290.215 / 1291.643 / 1255.368 | -1.207 / +2.605 |
+| 330 / 64 | -18.414, 1/5 | 2428.006 / 2440.918 / 2379.613 | +1.089 / +1.557 |
+
+The untraced paired ranges were -6.820 to +4.563, -11.984 to +4.746,
+and -55.334 to +14.071 ms in table order. The phase run's 330/64 request
+paired median was +4.674 ms, but that direction did not survive the untraced
+run. Construction-to-ready varied widely: untraced paired startup medians were
++126.899, -8.625, and -27.923 ms, with individual differences as large as
+-430.666/+350.061 ms; OS file-cache state was uncontrolled. Pinned llama.cpp
+was faster than both Align binaries at every untraced request median. No
+isolated physical-memory measurement was made; the unchanged resident buffer
+length is the memory fact supported by the binding census.
+
+**Withdraw the parity placement change.** Its intended layout was achieved and
+correctness held, but the untraced connected requests did not improve
+repeatably, and the long case regressed. The original Align source and binary
+were restored. The exact rejected source patch, two binaries, copy-binding
+logs, complete worker receipts and owner logs remain under the Git common
+directory's
+`diagnostics/q35-ingraph-greedy-2026-09-27/counter-trace-20260927/`.
+The next GPU hypothesis is that the recurrent producer's separate workspace
+output and resident `CPY` form a material execution boundary. Inspect the
+DeltaNet output/state write and dependency timeline, then test an opt-in direct
+resident-state write or a larger fused operation while preserving success-only
+publication and the ggml fallback. The placement result alone cannot establish
+the benefit of that fusion.
+
+### Contiguous F32 Metal copy specialization trial (2026-09-27)
+
+The actual Qwen3.5-2B final decode graph contains 36 large F32 state-copy
+nodes. An independent graph census found 18 convolution copies of 73,728
+bytes with noncontiguous sources and 18 DeltaNet copies of 1,048,576 bytes
+with contiguous source and destination (18,874,368 bytes per decode step).
+Pinned ggml's generic `kernel_cpy_f32_f32` calculates a destination multidimensional
+coordinate with integer divisions for each row. Test whether a linear-index
+path for exactly contiguous, equal-type copies improves the connected graph.
+The strided copies and every other type/layout retain the generic kernel.
+
+| Trial contract | Boundary |
+| --- | --- |
+| Selection and rollback | An opt-in, digest-identified pinned ggml Metal backend patch selects only F32-to-F32 copies with at least 262,144 elements and contiguous source and destination. The unchanged adjacent-range bundle and Align binary remain the control. No model-name gate, Align CLI/API change, Python product path, precision change or extra state allocation. |
+| Correctness | Test representative contiguous/strided local tensors first, then exact 2B full logits and all resident-state hashes, 2B/0.8B generation owners including failure recovery, and same-model output against pinned llama.cpp. Never assume a fast copy is numerically safe solely because types match. |
+| Measurement | Count specialized dispatches in the actual decode graph. Compare local actual-state copy, synchronized prefill/decode, untraced complete requests and construction, with at least five alternating control/trial/reference pairs at 64/16, 200/32 and 330/64. Retain adverse samples and inspect changed buffer ownership, barriers and synchronization. |
+| Cost ceiling | Preparation, build and owners <=2,700 seconds; paired campaign <=1,500 seconds; one request <=180 seconds. Assess reproducibility, workload, memory and maintenance rather than a fixed improvement percentage. Withdraw the patch if the connected cost does not improve defensibly. |
+
+The developer recipe CLI adds `--linear-copy` (default off). It requires
+`--backend metal --adjacent-ranges --base-bundle PATH`; CUDA, plan-only mode,
+and missing prerequisites refuse before build. The new output path must not
+exist. The recipe owns patch application and output staging. A successful
+bundle retains `metal-linear-copy.patch`, binds its SHA256 through
+`-DALIGN_LLM_LINEAR_COPY_PATCH_SHA256` in the existing schema-1 manifest and
+bundle identity, and reuses only the verified byte-identical shared ggml core
+from the base. The Metal plugin is rebuilt. No product CLI, state owner,
+persisted model format or inference cache key changes. Parser errors exit 2;
+recipe validation errors exit 1. Source-pinned, toolchain, base artifact,
+patch-application and output-existence validation precede publication of a
+new bundle. The old bundle and generic copy path are the rollback.
+
+| Closure condition | Implementation | Evidence owner |
+| --- | --- | --- |
+| Construction / success | `gpu_backend_recipe.py` applies the patch and retains its digest and new plugin; Metal copy kernel checks type, minimum element count and both physical strides before linear indexing | `scripts/run-gpu-backend-recipe-smoke`, real bundle manifest, 2B exact logit/state comparison |
+| Malformed input / failure / early exit | CLI prerequisite and base-bundle checks refuse; a failed build leaves no published output; inference keeps existing failure and parity publication paths | `scripts/run-gpu-backend-recipe-smoke`, 2B/0.8B `scripts/run-qwen35-generation-smoke` |
+| Cleanup / repeated session | Recipe staging is temporary; successful generation reuses the existing session state without an extra allocation or copy owner | Bundle inspection and both generation owners |
+
+CPU/CUDA and Gemma remain unmeasured for this trial. The Metal kernel
+specialization is independent of model name; architecture-specific semantics
+remain in the existing model definitions.
+
+**Result and decision.** The pinned 2B final decode binding census confirmed
+18 eligible contiguous DeltaNet copies (18,874,368 bytes per token) and 18
+ineligible strided convolution sources; buffer ownership, storage mode,
+dispatch count and launch shapes did not change. Three actual 2B full-logit
+rows and 336 resident-state hashes were bit-identical to the control. The
+2B/0.8B generation owners passed on the discovery, measured recipe and clean
+final bundles, including retained requests and failure recovery. The
+predeclared standalone
+contiguous/strided local tensor fixture was not built; the actual-graph binding
+inspection and full-model exact oracles cover these observed layouts, but not
+every possible view geometry. Keep the path opt-in while broader layout
+qualification remains outstanding.
+
+On the Apple M1 16 GiB host, two independent five-pair 2B untraced campaigns
+at 64/16, 200/32 and 330/64 won all 30 control comparisons. The measured
+recipe bundle's paired control-minus-trial request medians were
++52.866, +99.577 and +193.448 ms; its arm medians were also shorter than
+pinned llama.cpp's at each condition. The second Qwen size, 0.8B, won 14/15
+control pairs; the short case retained one -11.338 ms trial regression.
+The separate 2B phase campaign showed most of the gain in decode, and a
+counter-enabled trace reduced summed F32 copy Shader Timeline samples from
+199.922 to 11.228 ms for two matched requests. Trace samples are attribution,
+not marginal request savings. Startup results were mixed and physical-memory
+peak was not independently measured. The patch adds no allocation or copy
+owner, and the common shared-buffer bindings remain. The exact conditions,
+all samples, binary comparison and decision are in
+[`qwen35-metal-linear-copy-trial.md`](../qwen35-metal-linear-copy-trial.md)
+and its linked receipts. Continue as an opt-in real-model trial; do not infer a
+universal speed floor or Gemma/CUDA support from this host.
+
 ### GPU greedy readback trial (2026-09-27)
 
 Current Qwen3.5 greedy generation reads 248,320 F32 logits (993,280 bytes) to

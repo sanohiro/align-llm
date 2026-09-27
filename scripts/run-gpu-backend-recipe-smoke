@@ -34,6 +34,15 @@ for extra in (("--adjacent-ranges",), ("--base-bundle", "/missing")):
     )
     assert rejected.returncode != 0
     assert b"--adjacent-ranges requires --base-bundle" in rejected.stderr
+for backend, extra in (("cuda", ["--linear-copy"]),
+                       ("metal", ["--linear-copy"]),
+                       ("metal", ["--linear-copy", "--print-plan"])):
+    rejected = subprocess.run(
+        [sys.executable, str(path), "--backend", backend, *extra],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
+    )
+    assert rejected.returncode != 0
+    assert b"--linear-copy requires an adjacent-range Metal build" in rejected.stderr
 
 assert metal["ggml_commit"] == "bb4caa7540188872173c44d161602d9271386413"
 assert metal["target"] == {"os": "macos", "arch": "aarch64", "gpu_architectures": ["apple_m1"]}
@@ -74,6 +83,7 @@ with tempfile.TemporaryDirectory(prefix="gpu-backend-recipe-smoke-") as raw_temp
                   "libggml.0.dylib", "libggml.dylib")
     source_sha256 = "a" * 64
     trial_flag = "-DALIGN_LLM_ADJACENT_RANGES_PATCH_SHA256=" + "b" * 64
+    linear_flag = "-DALIGN_LLM_LINEAR_COPY_PATCH_SHA256=" + "c" * 64
     baseline_flags = ["-DCMAKE_BUILD_TYPE=Release"]
     artifacts = [{"role": "backend_plugin", "path": "libggml-metal.so",
                   "bytes": 1, "sha256": module.digest(b"p")}]
@@ -94,7 +104,8 @@ with tempfile.TemporaryDirectory(prefix="gpu-backend-recipe-smoke-") as raw_temp
     base_manifest["bundle_id"] = module.digest(module.canonical(base_manifest))
     (base_bundle / "manifest.json").write_bytes(module.canonical(base_manifest))
     selected_core = module.reusable_metal_core(
-        base_bundle, source_sha256, {"test": "same"}, baseline_flags + [trial_flag])
+        base_bundle, source_sha256, {"test": "same"},
+        baseline_flags + [trial_flag, linear_flag])
     assert set(selected_core) == set(core_names)
     (base_bundle / "libggml-metal.so").unlink()
     try:
