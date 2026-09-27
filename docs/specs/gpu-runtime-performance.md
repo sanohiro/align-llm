@@ -173,6 +173,43 @@ This is a decode-only GPU experiment; prefill retains its current greedy path.
 | Rebuild / cleanup | Existing graph invalidation and native reset; repeated short/long/short plus streaming SSE and retained state hashes. |
 | Performance / portability | Same-binary 2B paired worker/phase/footprint, pinned llama.cpp and backend-parity register; another Metal host/CUDA explicitly deferred. |
 
+### Independent Metal Q4_0 tile-consumer FFN screen (2026-09-28)
+
+The previous gate/up/SwiGLU-only native path left the down projection and
+intermediate vector boundary in ggml. Test a different ownership unit before
+another runtime integration: one Metal threadgroup computes a bounded tile of
+gate/up hidden rows, applies SiLU, consumes that tile against every output row
+of Q4_0 down weights, and writes partial F32 outputs. A second dispatch reduces
+the partials. This is an independent local Metal candidate, not a ggml source
+patch or a proposed default. The existing real 2B FFN captures and unmodified
+pinned ggml backend are the oracle and timing control.
+
+| Contract | Definition |
+| --- | --- |
+| Admission / semantics | First screen only F32 decode input width 2048, hidden 6144 and actual Q4_0 gate/up/down bytes from captured 2B layers 3 and 23. Those dimensions are local screen arguments, not model-loading conditions. Layers 0..2 use Q4_1 down weights and are outside this kernel's admission; another Qwen size or Gemma needs shape, quantization and activation qualification. Preserve the captured Qwen SiLU multiplication and all bytes. |
+| Work and ownership | Each hidden tile's gate/up activation stays in threadgroup memory until its Q4_0 down dot products finish. Output partials and a reduced 2048-element result are separately owned local Metal buffers; ggml owns its independent reference graph. The second dispatch follows an explicit buffer barrier in the same command encoder. No CPU/GPU readback or cross-command wait occurs between producer and consumer. The benchmark owns/tears down all allocations and has no inference or Python product path. |
+| Numerical gate | Before timing, compare complete actual layer outputs with the captured ggml result using the predeclared `0.005 + 0.0005 * abs(reference)` local bound from the earlier Q4 FFN trial, report observed maximum differences, reject nonfinite output, and verify repeatability and a nonmultiple/tail local case. Do not change tolerance after seeing results. A connected local advantage is evidence to trial opt-in real-model integration, not proof of whole-request speed; a local loss rejects this mapping only. |
+| Measurement / ceiling | Use the same captured weights/input for both arms, twelve warmups and five alternating pairs of twenty synchronized complete FFN operations per arm. Report full ggml FFN versus native two-dispatch wall and GPU intervals if available, startup and scratch. Each local run <=900 s. Partial output <=1 MiB; no second model-weight copy after upload, no full 6144-element gated device tensor in the fused arm. Review connected arithmetic, bandwidth, occupancy and synchronization before deciding whether to integrate. There is no fixed improvement percentage floor. |
+
+Closure: checked capture sizes/types and Metal pipeline/allocator construction;
+full finite output and tail correctness; repeated command-buffer reuse;
+allocation/encoder failure cleanup; paired timing including complete dispatch
+and synchronization; explicit decision. The ordinary ggml model route is
+unchanged and remains the rollback. A later real-model integration, if earned,
+requires its own Align selection, graph/state failure and full 2B/0.8B owner
+qualification before any request-speed claim.
+
+Result: two actual Q4_0 down-weight layers and a synthetic tail passed the
+predeclared numerical bound. The fastest tested 512-thread mapping lost all
+five complete-operation pairs on both captured layers: paired ggml-minus-native
+medians -0.582 and -0.647 ms. A packed-dot rewrite improved the first shader,
+but 1024 threads and two output partitions did not close the gap. The final
+checked-in owner rerun lost another 5/5 pairs per layer. Withdraw
+this mapping before runtime integration; retain the reproducible local screen
+and full receipt in `docs/qwen35-native-q4-tile-ffn-screen.md`. Next inspect
+down projection scheduling/counters without repeating gate/up work. This local
+loss does not impose a fixed improvement threshold or rule out other fused FFNs.
+
 ### Final-chunk logits trial (2026-09-26)
 
 Remove unused intermediate-prefill output work on the current 2B consumer. The

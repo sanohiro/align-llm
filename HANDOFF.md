@@ -2,10 +2,29 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active native Metal copy-command greedy trial (2026-09-28)
+## Active native Metal tile-consumer FFN screen (2026-09-28)
 
-Branch `agent/native-metal-copy-greedy` starts from merged `main` at
-`21d6a4b2` (PR #311). GPU inference remains the priority. This default-off
+Branch `agent/native-metal-ffn-tile-consumer` starts from merged `main` at
+`eee12bdb` (PR #312). GPU optimization remains the priority. The bounded
+independent Metal Q4_0 FFN screen is implemented and its complete local result
+is in `docs/qwen35-native-q4-tile-ffn-screen.md`, with raw pairs in
+`eval/benchmarks/qwen35-native-q4-tile-ffn-2026-09-28.json`. Actual captured
+layers 3 and 23, plus a synthetic nonmultiple tile, pass the predeclared
+numeric bound. The fastest 512-thread variant loses all five paired complete
+FFN operations on both layers: paired ggml-minus-native medians -0.582 and
+-0.647 ms; the final wrapper rerun lost another 10/10 pairs. Scalar/packed
+loads, 256/512/1024 threads and two output
+partitions were screened; the latter increases repeated gate/up work. Withdraw
+this mapping before runtime integration; retain ggml fallback and prior native
+state-copy route. Next: verify final source/receipt/doc consistency, run narrow
+owner and preflight, review and publish the negative result, then inspect down
+projection scheduling/counters without repeating gate/up work. Q4_1 down
+layers, another Metal host, CUDA and Gemma remain deferred until qualified.
+
+## Completed native Metal copy-command greedy trial (2026-09-28)
+
+Branch `agent/native-metal-copy-greedy` merged as PR #312 at `eee12bdb`.
+This default-off
 finite, first-index Metal argmax is selected by Align inside the native decode
 state-copy command; the ordinary full-row and mixed native modes remain.
 The contract/cost ceiling and completed result are in
@@ -19,10 +38,11 @@ still beat ordinary ggml Align in 15/15 pairs, due chiefly to earlier native
 copy work. Three local command pairs found ~0.019–0.027 ms additional GPU work
 per decode command and a larger required host wait. The default remains off.
 Final unforced shim was restored byte-identically after fault qualification.
-Next: finish stub/aggregate owner and exact-head preflight, complete one fresh
-comprehensive review, publish/merge if clean, then test a larger Align-owned
-producer/consumer GPU boundary. Another Metal host, CUDA and Gemma remain
-deferred until devices/model execution are available.
+`gmake fmt`, strict Python boundary, real/stub shim builds, focused owners,
+exact-head `scripts/pre-pr` and one comprehensive independent review passed at
+`a0e4c342`; CI's hosted and both installed Ubuntu profiles passed. The review
+was CLEAN with no findings. Another Metal host, CUDA and Gemma remain
+unmeasured.
 
 ## Completed native Metal prefill state-copy trial (2026-09-28)
 

@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+# Reproduce the independent real-capture Metal Q4_0 FFN local screen.
+set -euo pipefail
+
+: "${GGML_INCLUDE:?set GGML_INCLUDE to the pinned ggml/include directory}"
+: "${GGML_BUNDLE:?set GGML_BUNDLE to the pinned ggml Metal bundle}"
+: "${CAPTURE_DIR:?set CAPTURE_DIR to the real native FFN capture directory}"
+
+root_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+test -f "${GGML_INCLUDE}/ggml.h"
+test -f "${GGML_BUNDLE}/libggml-metal.so"
+test -f "${CAPTURE_DIR}/03-gate.bin"
+test -f "${CAPTURE_DIR}/23-down.bin"
+scratch_dir="$(mktemp -d)"
+trap 'rm -rf -- "${scratch_dir}"' EXIT
+
+clang++ -O3 -std=c++17 -Wall -Wextra -Werror -fobjc-arc \
+  -framework Foundation -framework Metal \
+  -I "${GGML_INCLUDE}" -L "${GGML_BUNDLE}" \
+  -Wl,-rpath,"${GGML_BUNDLE}" \
+  "${root_dir}/scripts/bench-metal-q4-tile-ffn.mm" \
+  -lggml -lggml-base -o "${scratch_dir}/bench-metal-q4-tile-ffn"
+
+for layer in 3 23; do
+  DYLD_LIBRARY_PATH="${GGML_BUNDLE}" "${scratch_dir}/bench-metal-q4-tile-ffn" \
+    "${GGML_BUNDLE}/libggml-metal.so" "${CAPTURE_DIR}" "${layer}"
+done
