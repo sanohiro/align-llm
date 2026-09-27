@@ -13,6 +13,7 @@ pub Config {
   neon_greedy: bool,
   graph_greedy: bool,
   native_state_copy: bool,
+  native_conv_copy: bool,
 }
 
 pub fn read() -> Result<Config, Error> {
@@ -25,6 +26,7 @@ pub fn read() -> Result<Config, Error> {
   mut neon_greedy := false
   mut graph_greedy := false
   mut native_state_copy := false
+  mut native_conv_copy := false
   match env.get("ALIGN_LLM_SYNC_WEIGHT_UPLOAD") {
     Some(value) => {
       if value == "1" { synchronous = true
@@ -89,11 +91,19 @@ pub fn read() -> Result<Config, Error> {
     },
     None => {},
   }
+  match env.get("ALIGN_LLM_NATIVE_CONV_COPY") {
+    Some(value) => {
+      if value == "1" { native_conv_copy = true
+      } else if value != "0" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
+  if native_conv_copy && !native_state_copy { return Err(Error.Invalid) }
   if (shared_logits && neon_greedy) || (shared_logits && graph_greedy)
     || (neon_greedy && graph_greedy) { return Err(Error.Invalid) }
   return Ok(Config { synchronous_weights: synchronous, prefill_chunk: chunk,
       final_prefill_logits: final_logits, last_ffn_row: last_ffn_row,
       mapped_weights: mapped_weights, shared_logits: shared_logits,
       neon_greedy: neon_greedy, graph_greedy: graph_greedy,
-      native_state_copy: native_state_copy })
+      native_state_copy: native_state_copy, native_conv_copy: native_conv_copy })
 }

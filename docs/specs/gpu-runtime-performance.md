@@ -94,6 +94,33 @@ Keep the route opt-in until another Metal-device qualification. Full
 conditions, phase limits, memory scope and receipts are in
 `docs/qwen35-native-state-copy-trial.md`.
 
+### Native Metal strided convolution-state copy trial (2026-09-27)
+
+The next GPU trial extends the Align-selected decode state-copy boundary. The
+current native mode batches 18 contiguous DeltaNet copies but leaves 18 small
+convolution-state copies as separate ggml graph nodes. A real 2B Q4_0,
+two-token decode trace found all 18 convolution sources have logical shape
+`[3,6144,1,1]`, F32 `nb=[4,16,98304,98304]`, and a 98,300-byte reachable
+span; each destination has `nb=[4,12,73728,73728]` and 73,728 logical bytes.
+The instrumentation was removed after capture. These observed values define a
+test case, not a model-name gate or a universal Qwen/Gemma layout assumption.
+
+| Contract | Definition |
+| --- | --- |
+| Selection / input | `ALIGN_LLM_NATIVE_CONV_COPY` is absent/`0` by default and `1` only when `ALIGN_LLM_NATIVE_STATE_COPY=1`. Align snapshots both at Qwen3.5 session construction before model weight/workspace setup, rejects every other value or the dependent mode without the parent mode, and includes the choice in decode topology identity. Modes `0` and existing native-Delta-only mode remain comparison/rollback paths. The GGUF, pack, Model IR, runtime options and prompt wire formats do not change. |
+| Native operation / validation | Align identifies convolution state by the model's recurrent operation and passes its graph source and inactive resident destination to a new narrow FFI registration. Registration checks F32 type, equal logical shape, a two-dimensional view with singleton outer dimensions, source `nb[0]=4`, row stride greater than or equal to row bytes, contiguous F32 destination, and bounded descriptor count before graph publication. After ggml assigns backing and executes producers, commit checks reachable source/destination spans, non-overlap and shared Metal backing before any native command submission. A mismatch fails the selected session; there is no silent fallback. No Qwen model name or fixed `3×6144` predicate belongs in the implementation. |
+| Execution / ownership | The ggml graph still produces source tensors and all other operations; Align expands explicit source roots instead of 18 convolution `CPY` nodes. The native module borrows the admitted shared source and resident buffers and owns one reusable bounded descriptor buffer plus a Metal compute pipeline for strided copies. A three-element row uses one thread per row and three bitwise F32-word transfers; other widths use the generic element path. This is a local shape specialization, not a model-name gate. The existing contiguous blit and new strided compute are encoded into one native command buffer after the synchronous ggml producer graph. Align's existing finish waits for the whole command before advancing either recurrent-state parity or returning a token. Workspace rebuild, failure and close drain pending work before borrowed allocations are released. No second resident plane or per-token host readback is allowed. |
+| Results / errors / cache | Registration and command errors follow the existing `Result`/unhealthy-session path. Mode and applicable shape/layout enter graph identity; graph-local registrations are cleared on invalidation. The pending command completes before a request finishes; borrowed Metal views and the descriptor buffer remain session-scoped and can be reused by the next request, then are reset or released before their backing is freed. Public persisted/cache schema: N/A; the only new identity is the in-memory decode graph key. |
+| Acceptance / cost ceiling | Before performance measurement, require actual 2B full-logit and state-plane equality with Delta-only mode, 2B and 0.8B generation owners, repeated requests, failure propagation, and an odd-shape local descriptor/kernel check. Compare unchanged Align, Delta-only mode, mixed mode, and pinned llama.cpp under the same GGUF and prompts at 64/16, 200/32 and 330/64 with warm-up and five alternating pairs. Record command count, prefill/decode/whole-request, startup/load and memory; retain adverse pairs. Build <=900 s, each campaign <=900 s and request <=180 s. Permit at most one small reusable descriptor buffer (<=4 KiB), no model-sized allocation or extra model-state host/device copy; measure pipeline construction time and process footprint. Adoption has no universal percentage floor. |
+
+| Closure case | Owner | Evidence to produce |
+| --- | --- | --- |
+| Construction / malformed mode | `runtime_qwen35_execution`, generation session, Metal mode admission | New `scripts/run-qwen35-native-conv-copy-smoke` checks invalid option/dependency refusal before ready and existing modes. |
+| Success / actual layout | Recurrent graph, checked shim descriptor, Metal compute/blit command | `scripts/run-qwen35-native-conv-copy-smoke` checks exact actual 2B logits and both state parts, odd synthetic shape and node/command census; 2B/0.8B `scripts/run-qwen35-generation-smoke` passes. |
+| Failure / early exit | Existing unhealthy-session/parity boundary plus mixed native command | `scripts/run-qwen35-native-copy-failure-smoke` in mixed mode checks forced submit/completion failure; `scripts/run-qwen35-generation-smoke` checks one-token and repeated-request controls. |
+| Rebuild / cleanup | Graph invalidation, reusable views/descriptor and close | `scripts/run-qwen35-generation-smoke` repeated requests and changed decode width; `scripts/run-qwen35-native-conv-copy-smoke` confirms no stale descriptor content across requests. |
+| Performance / portability | Paired worker and pinned llama.cpp callers, backend parity register | Existing Qwen3.5 paired worker/phase/footprint measurement callers record three lengths, startup and memory receipts on M1. Another Metal device and CUDA remain explicitly unmeasured until available. |
+
 ### Final-chunk logits trial (2026-09-26)
 
 Remove unused intermediate-prefill output work on the current 2B consumer. The

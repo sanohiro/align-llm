@@ -1,0 +1,654 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "NATIVE_CONV_COPY_COMMAND_DIAGNOSTIC",
+  "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+  "binary_sha256": "61f55dbbf00824159b07c6bfe6c6a38aae66f856e9045d6a206c80ba85e9ae4e",
+  "shim_sha256": "27f2d1995a86b42b03e4288ccfbe773051c35b9f0c9083b6909db8488e476c4a",
+  "note": "One worker per arm, three repeated 16-token requests. Last 15 command rows are the third request. Instrumented, not paired wall-time evidence.",
+  "arms": {
+    "delta": {
+      "all_commands": [
+        {
+          "records": 18,
+          "preparation_ns": 146000,
+          "wait_ns": 2905000,
+          "total_ns": 3368000,
+          "gpu_ns": 679291
+        },
+        {
+          "records": 18,
+          "preparation_ns": 98000,
+          "wait_ns": 1823000,
+          "total_ns": 2149000,
+          "gpu_ns": 658208
+        },
+        {
+          "records": 18,
+          "preparation_ns": 96000,
+          "wait_ns": 604000,
+          "total_ns": 977000,
+          "gpu_ns": 658250
+        },
+        {
+          "records": 18,
+          "preparation_ns": 96000,
+          "wait_ns": 699000,
+          "total_ns": 1004000,
+          "gpu_ns": 664083
+        },
+        {
+          "records": 18,
+          "preparation_ns": 135000,
+          "wait_ns": 468000,
+          "total_ns": 966000,
+          "gpu_ns": 630875
+        },
+        {
+          "records": 18,
+          "preparation_ns": 158000,
+          "wait_ns": 492000,
+          "total_ns": 1019000,
+          "gpu_ns": 648624
+        },
+        {
+          "records": 18,
+          "preparation_ns": 166000,
+          "wait_ns": 543000,
+          "total_ns": 1027000,
+          "gpu_ns": 637166
+        },
+        {
+          "records": 18,
+          "preparation_ns": 125000,
+          "wait_ns": 670000,
+          "total_ns": 1043000,
+          "gpu_ns": 676000
+        },
+        {
+          "records": 18,
+          "preparation_ns": 117000,
+          "wait_ns": 621000,
+          "total_ns": 986000,
+          "gpu_ns": 647000
+        },
+        {
+          "records": 18,
+          "preparation_ns": 110000,
+          "wait_ns": 648000,
+          "total_ns": 963000,
+          "gpu_ns": 644999
+        },
+        {
+          "records": 18,
+          "preparation_ns": 101000,
+          "wait_ns": 673000,
+          "total_ns": 968000,
+          "gpu_ns": 626041
+        },
+        {
+          "records": 18,
+          "preparation_ns": 125000,
+          "wait_ns": 650000,
+          "total_ns": 1018000,
+          "gpu_ns": 635416
+        },
+        {
+          "records": 18,
+          "preparation_ns": 166000,
+          "wait_ns": 532000,
+          "total_ns": 1021000,
+          "gpu_ns": 628750
+        },
+        {
+          "records": 18,
+          "preparation_ns": 155000,
+          "wait_ns": 513000,
+          "total_ns": 1044000,
+          "gpu_ns": 641291
+        },
+        {
+          "records": 18,
+          "preparation_ns": 230000,
+          "wait_ns": 571000,
+          "total_ns": 1132000,
+          "gpu_ns": 633958
+        },
+        {
+          "records": 18,
+          "preparation_ns": 274000,
+          "wait_ns": 4273000,
+          "total_ns": 5244000,
+          "gpu_ns": 643833
+        },
+        {
+          "records": 18,
+          "preparation_ns": 122000,
+          "wait_ns": 599000,
+          "total_ns": 970000,
+          "gpu_ns": 635250
+        },
+        {
+          "records": 18,
+          "preparation_ns": 136000,
+          "wait_ns": 595000,
+          "total_ns": 959000,
+          "gpu_ns": 616291
+        },
+        {
+          "records": 18,
+          "preparation_ns": 153000,
+          "wait_ns": 530000,
+          "total_ns": 1028000,
+          "gpu_ns": 634333
+        },
+        {
+          "records": 18,
+          "preparation_ns": 139000,
+          "wait_ns": 556000,
+          "total_ns": 1049000,
+          "gpu_ns": 638583
+        },
+        {
+          "records": 18,
+          "preparation_ns": 150000,
+          "wait_ns": 595000,
+          "total_ns": 971000,
+          "gpu_ns": 629124
+        },
+        {
+          "records": 18,
+          "preparation_ns": 160000,
+          "wait_ns": 520000,
+          "total_ns": 1013000,
+          "gpu_ns": 624125
+        },
+        {
+          "records": 18,
+          "preparation_ns": 144000,
+          "wait_ns": 526000,
+          "total_ns": 1031000,
+          "gpu_ns": 631458
+        },
+        {
+          "records": 18,
+          "preparation_ns": 150000,
+          "wait_ns": 548000,
+          "total_ns": 1033000,
+          "gpu_ns": 634624
+        },
+        {
+          "records": 18,
+          "preparation_ns": 98000,
+          "wait_ns": 674000,
+          "total_ns": 970000,
+          "gpu_ns": 628458
+        },
+        {
+          "records": 18,
+          "preparation_ns": 156000,
+          "wait_ns": 534000,
+          "total_ns": 1020000,
+          "gpu_ns": 634750
+        },
+        {
+          "records": 18,
+          "preparation_ns": 162000,
+          "wait_ns": 513000,
+          "total_ns": 1018000,
+          "gpu_ns": 627750
+        },
+        {
+          "records": 18,
+          "preparation_ns": 137000,
+          "wait_ns": 521000,
+          "total_ns": 1007000,
+          "gpu_ns": 631125
+        },
+        {
+          "records": 18,
+          "preparation_ns": 110000,
+          "wait_ns": 555000,
+          "total_ns": 1047000,
+          "gpu_ns": 642875
+        },
+        {
+          "records": 18,
+          "preparation_ns": 172000,
+          "wait_ns": 534000,
+          "total_ns": 1017000,
+          "gpu_ns": 622749
+        },
+        {
+          "records": 18,
+          "preparation_ns": 247000,
+          "wait_ns": 4278000,
+          "total_ns": 5214000,
+          "gpu_ns": 649000
+        },
+        {
+          "records": 18,
+          "preparation_ns": 125000,
+          "wait_ns": 645000,
+          "total_ns": 1020000,
+          "gpu_ns": 616124
+        },
+        {
+          "records": 18,
+          "preparation_ns": 156000,
+          "wait_ns": 615000,
+          "total_ns": 1111000,
+          "gpu_ns": 623625
+        },
+        {
+          "records": 18,
+          "preparation_ns": 164000,
+          "wait_ns": 511000,
+          "total_ns": 1009000,
+          "gpu_ns": 635999
+        },
+        {
+          "records": 18,
+          "preparation_ns": 133000,
+          "wait_ns": 608000,
+          "total_ns": 967000,
+          "gpu_ns": 616000
+        },
+        {
+          "records": 18,
+          "preparation_ns": 167000,
+          "wait_ns": 540000,
+          "total_ns": 1033000,
+          "gpu_ns": 628499
+        },
+        {
+          "records": 18,
+          "preparation_ns": 186000,
+          "wait_ns": 447000,
+          "total_ns": 1045000,
+          "gpu_ns": 646625
+        },
+        {
+          "records": 18,
+          "preparation_ns": 143000,
+          "wait_ns": 513000,
+          "total_ns": 1023000,
+          "gpu_ns": 642375
+        },
+        {
+          "records": 18,
+          "preparation_ns": 158000,
+          "wait_ns": 533000,
+          "total_ns": 1017000,
+          "gpu_ns": 623750
+        },
+        {
+          "records": 18,
+          "preparation_ns": 160000,
+          "wait_ns": 539000,
+          "total_ns": 1036000,
+          "gpu_ns": 628916
+        },
+        {
+          "records": 18,
+          "preparation_ns": 172000,
+          "wait_ns": 529000,
+          "total_ns": 1019000,
+          "gpu_ns": 628125
+        },
+        {
+          "records": 18,
+          "preparation_ns": 178000,
+          "wait_ns": 530000,
+          "total_ns": 1035000,
+          "gpu_ns": 638041
+        },
+        {
+          "records": 18,
+          "preparation_ns": 151000,
+          "wait_ns": 507000,
+          "total_ns": 1038000,
+          "gpu_ns": 659041
+        },
+        {
+          "records": 18,
+          "preparation_ns": 168000,
+          "wait_ns": 526000,
+          "total_ns": 1047000,
+          "gpu_ns": 632249
+        },
+        {
+          "records": 18,
+          "preparation_ns": 88000,
+          "wait_ns": 708000,
+          "total_ns": 955000,
+          "gpu_ns": 636708
+        }
+      ],
+      "last_request_median_gpu_ns": 632249,
+      "last_request_median_wait_ns": 533000,
+      "last_request_median_preparation_ns": 160000
+    },
+    "mixed": {
+      "all_commands": [
+        {
+          "records": 36,
+          "preparation_ns": 161000,
+          "wait_ns": 3559000,
+          "total_ns": 4030000,
+          "gpu_ns": 1422083
+        },
+        {
+          "records": 36,
+          "preparation_ns": 140000,
+          "wait_ns": 2819000,
+          "total_ns": 3414000,
+          "gpu_ns": 737666
+        },
+        {
+          "records": 36,
+          "preparation_ns": 84000,
+          "wait_ns": 604000,
+          "total_ns": 1000000,
+          "gpu_ns": 722750
+        },
+        {
+          "records": 36,
+          "preparation_ns": 174000,
+          "wait_ns": 778000,
+          "total_ns": 1088000,
+          "gpu_ns": 756875
+        },
+        {
+          "records": 36,
+          "preparation_ns": 114000,
+          "wait_ns": 706000,
+          "total_ns": 1055000,
+          "gpu_ns": 746708
+        },
+        {
+          "records": 36,
+          "preparation_ns": 99000,
+          "wait_ns": 729000,
+          "total_ns": 1000000,
+          "gpu_ns": 753208
+        },
+        {
+          "records": 36,
+          "preparation_ns": 103000,
+          "wait_ns": 785000,
+          "total_ns": 1036000,
+          "gpu_ns": 728624
+        },
+        {
+          "records": 36,
+          "preparation_ns": 118000,
+          "wait_ns": 793000,
+          "total_ns": 1052000,
+          "gpu_ns": 770708
+        },
+        {
+          "records": 36,
+          "preparation_ns": 109000,
+          "wait_ns": 789000,
+          "total_ns": 1042000,
+          "gpu_ns": 751999
+        },
+        {
+          "records": 36,
+          "preparation_ns": 112000,
+          "wait_ns": 763000,
+          "total_ns": 1017000,
+          "gpu_ns": 724249
+        },
+        {
+          "records": 36,
+          "preparation_ns": 109000,
+          "wait_ns": 776000,
+          "total_ns": 1034000,
+          "gpu_ns": 728625
+        },
+        {
+          "records": 36,
+          "preparation_ns": 118000,
+          "wait_ns": 758000,
+          "total_ns": 1033000,
+          "gpu_ns": 737833
+        },
+        {
+          "records": 36,
+          "preparation_ns": 97000,
+          "wait_ns": 750000,
+          "total_ns": 1014000,
+          "gpu_ns": 747999
+        },
+        {
+          "records": 36,
+          "preparation_ns": 109000,
+          "wait_ns": 781000,
+          "total_ns": 1034000,
+          "gpu_ns": 729999
+        },
+        {
+          "records": 36,
+          "preparation_ns": 109000,
+          "wait_ns": 781000,
+          "total_ns": 1027000,
+          "gpu_ns": 730875
+        },
+        {
+          "records": 36,
+          "preparation_ns": 200000,
+          "wait_ns": 4006000,
+          "total_ns": 4694000,
+          "gpu_ns": 749250
+        },
+        {
+          "records": 36,
+          "preparation_ns": 104000,
+          "wait_ns": 784000,
+          "total_ns": 1040000,
+          "gpu_ns": 759666
+        },
+        {
+          "records": 36,
+          "preparation_ns": 107000,
+          "wait_ns": 766000,
+          "total_ns": 1008000,
+          "gpu_ns": 720250
+        },
+        {
+          "records": 36,
+          "preparation_ns": 89000,
+          "wait_ns": 776000,
+          "total_ns": 1028000,
+          "gpu_ns": 751374
+        },
+        {
+          "records": 36,
+          "preparation_ns": 111000,
+          "wait_ns": 787000,
+          "total_ns": 1048000,
+          "gpu_ns": 738458
+        },
+        {
+          "records": 36,
+          "preparation_ns": 114000,
+          "wait_ns": 818000,
+          "total_ns": 1080000,
+          "gpu_ns": 751249
+        },
+        {
+          "records": 36,
+          "preparation_ns": 109000,
+          "wait_ns": 796000,
+          "total_ns": 1048000,
+          "gpu_ns": 724125
+        },
+        {
+          "records": 36,
+          "preparation_ns": 110000,
+          "wait_ns": 765000,
+          "total_ns": 1026000,
+          "gpu_ns": 720874
+        },
+        {
+          "records": 36,
+          "preparation_ns": 121000,
+          "wait_ns": 768000,
+          "total_ns": 1034000,
+          "gpu_ns": 731749
+        },
+        {
+          "records": 36,
+          "preparation_ns": 115000,
+          "wait_ns": 783000,
+          "total_ns": 1044000,
+          "gpu_ns": 732375
+        },
+        {
+          "records": 36,
+          "preparation_ns": 120000,
+          "wait_ns": 766000,
+          "total_ns": 1022000,
+          "gpu_ns": 709291
+        },
+        {
+          "records": 36,
+          "preparation_ns": 110000,
+          "wait_ns": 754000,
+          "total_ns": 1025000,
+          "gpu_ns": 731916
+        },
+        {
+          "records": 36,
+          "preparation_ns": 104000,
+          "wait_ns": 744000,
+          "total_ns": 1037000,
+          "gpu_ns": 753791
+        },
+        {
+          "records": 36,
+          "preparation_ns": 113000,
+          "wait_ns": 790000,
+          "total_ns": 1047000,
+          "gpu_ns": 719875
+        },
+        {
+          "records": 36,
+          "preparation_ns": 103000,
+          "wait_ns": 814000,
+          "total_ns": 1072000,
+          "gpu_ns": 729874
+        },
+        {
+          "records": 36,
+          "preparation_ns": 213000,
+          "wait_ns": 3984000,
+          "total_ns": 4658000,
+          "gpu_ns": 776125
+        },
+        {
+          "records": 36,
+          "preparation_ns": 106000,
+          "wait_ns": 773000,
+          "total_ns": 1033000,
+          "gpu_ns": 748416
+        },
+        {
+          "records": 36,
+          "preparation_ns": 108000,
+          "wait_ns": 797000,
+          "total_ns": 1061000,
+          "gpu_ns": 747958
+        },
+        {
+          "records": 36,
+          "preparation_ns": 106000,
+          "wait_ns": 771000,
+          "total_ns": 1023000,
+          "gpu_ns": 715083
+        },
+        {
+          "records": 36,
+          "preparation_ns": 108000,
+          "wait_ns": 750000,
+          "total_ns": 1002000,
+          "gpu_ns": 733124
+        },
+        {
+          "records": 36,
+          "preparation_ns": 108000,
+          "wait_ns": 777000,
+          "total_ns": 1033000,
+          "gpu_ns": 739000
+        },
+        {
+          "records": 36,
+          "preparation_ns": 115000,
+          "wait_ns": 737000,
+          "total_ns": 989000,
+          "gpu_ns": 716041
+        },
+        {
+          "records": 36,
+          "preparation_ns": 105000,
+          "wait_ns": 772000,
+          "total_ns": 1037000,
+          "gpu_ns": 747999
+        },
+        {
+          "records": 36,
+          "preparation_ns": 109000,
+          "wait_ns": 769000,
+          "total_ns": 1023000,
+          "gpu_ns": 726666
+        },
+        {
+          "records": 36,
+          "preparation_ns": 114000,
+          "wait_ns": 762000,
+          "total_ns": 1028000,
+          "gpu_ns": 726500
+        },
+        {
+          "records": 36,
+          "preparation_ns": 104000,
+          "wait_ns": 754000,
+          "total_ns": 1011000,
+          "gpu_ns": 735916
+        },
+        {
+          "records": 36,
+          "preparation_ns": 115000,
+          "wait_ns": 758000,
+          "total_ns": 1020000,
+          "gpu_ns": 737833
+        },
+        {
+          "records": 36,
+          "preparation_ns": 107000,
+          "wait_ns": 734000,
+          "total_ns": 981000,
+          "gpu_ns": 714500
+        },
+        {
+          "records": 36,
+          "preparation_ns": 112000,
+          "wait_ns": 781000,
+          "total_ns": 1036000,
+          "gpu_ns": 729624
+        },
+        {
+          "records": 36,
+          "preparation_ns": 131000,
+          "wait_ns": 791000,
+          "total_ns": 1046000,
+          "gpu_ns": 744624
+        }
+      ],
+      "last_request_median_gpu_ns": 735916,
+      "last_request_median_wait_ns": 771000,
+      "last_request_median_preparation_ns": 108000
+    }
+  }
+}
