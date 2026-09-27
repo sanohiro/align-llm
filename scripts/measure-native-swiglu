@@ -33,6 +33,16 @@ def bundle_patch_digest(bundle, flag_name, file_name):
         raise ValueError('retained bundle patch does not match build flag')
     return values[0]
 
+def last_request_native_waits(waits, prefill_graphs, steps, state_copy, prefill_copy):
+    per_request = (steps - 1 if state_copy else 0) + (prefill_graphs if prefill_copy else 0)
+    if len(waits) != 3 * per_request:
+        raise ValueError(f'native wait count mismatch: {len(waits)} != {3 * per_request}')
+    recent = waits[-per_request:] if per_request else []
+    if sum(kind == 0 for kind, _ in recent) != (prefill_graphs if prefill_copy else 0) \
+            or sum(kind != 0 for kind, _ in recent) != (steps - 1 if state_copy else 0):
+        raise ValueError('last-request native wait kinds differ from selected execution')
+    return recent
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--config', type=Path, required=True,
@@ -113,7 +123,7 @@ def main():
     if any(execution[arm]['graph_greedy'] == '1' and argmax_patches[arm] is None
            for arm in ('control', 'candidate')):
         raise ValueError('graph greedy requires a verified argmax bundle patch')
-    report = dict(schema_version=2,
+    report = dict(schema_version=3,
                   artifact_kind='NATIVE_COPY_GREEDY_MEASUREMENT' if greedy_trial else ('NATIVE_PREFILL_STATE_COPY_MEASUREMENT' if prefill_copy_trial else ('NATIVE_CONV_COPY_MEASUREMENT' if conv_copy_trial else ('NATIVE_STATE_COPY_MEASUREMENT' if state_copy_trial else ('INGRAPH_ARGMAX_MEASUREMENT' if graph_trial else 'NATIVE_SWIGLU_MEASUREMENT')))),
                   align_revision=Path('.align-revision').read_text().strip(),
                   policy='2026-09-26-no-percentage-floor', status='INCOMPLETE',
@@ -204,16 +214,20 @@ def main():
                     chunk=int(execution[arm]['prefill_chunk'])
                     count=(len(ids)+chunk-1)//chunk+steps-1
                     if not args.wall_only and len(graphs)!=3*count:raise ValueError(f'phase graph count mismatch: {len(graphs)} != {3*count}')
-                    expected_waits=3*((steps-1 if execution[arm]['native_state_copy']=='1' else 0)
-                                      + ((len(ids)+chunk-1)//chunk if execution[arm]['native_prefill_state_copy']=='1' else 0))
-                    if prefill_copy_trial and not args.wall_only and len(waits)!=expected_waits:
-                        raise ValueError(f'native wait count mismatch: {len(waits)} != {expected_waits}')
                     recent=graphs[-count:]
-                    recent_waits=waits[-expected_waits:] if expected_waits and waits else []
+                    if not args.wall_only and (sum(k==0 for k,_ in recent)!=(len(ids)+chunk-1)//chunk
+                                               or sum(k!=0 for k,_ in recent)!=steps-1):
+                        raise ValueError('last-request graph kinds differ from selected execution')
+                    recent_waits=[] if args.wall_only else last_request_native_waits(
+                        waits, (len(ids)+chunk-1)//chunk, steps,
+                        execution[arm]['native_state_copy']=='1',
+                        execution[arm]['native_prefill_state_copy']=='1')
                     graph_prefill=sum(t for k,t in recent if k==0)
                     graph_decode=sum(t for k,t in recent if k!=0)
                     wait_prefill=sum(t for k,t in recent_waits if k==0)
                     wait_decode=sum(t for k,t in recent_waits if k!=0)
+                    if not args.wall_only and graph_prefill+graph_decode+wait_prefill+wait_decode>wall:
+                        raise ValueError('last-request phase clocks exceed measured request wall')
                     return dict(wall_ns=wall,startup_ns=startup,first_request_ns=first_wall,first_ready_ns=startup+first_wall,prefill_graphs=(len(ids)+chunk-1)//chunk,prefill_ns=None if args.wall_only else graph_prefill+wait_prefill,
                                 decode_ns=None if args.wall_only else graph_decode+wait_decode,
                                 graph_submit_prefill_ns=None if args.wall_only else graph_prefill,

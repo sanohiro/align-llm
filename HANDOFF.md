@@ -2,10 +2,29 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active Align-owned native Metal execution-plan consumer (2026-09-28)
+## Active current Metal speed and bottleneck qualification (2026-09-28)
 
-Branch `agent/native-metal-ffn-align-owner` starts from merged `main` at
-`d67e224a` (PR #315). GPU optimization remains the priority. The complete
+Branch `agent/qwen35-current-bottleneck` starts from merged `main` at
+`d67e224a` (PR #315). The production source closure is unchanged since PR
+#312. A fresh same-binary Qwen3.5-2B M1 campaign completed five uninstrumented
+alternating pairs at 64/16, 200/32 and 330/64: the already qualified mixed
+native state-copy mode beat ordinary Align and pinned llama.cpp in all 15
+pairs against each. Its isolated complete-FFN candidate remains outside the
+real request. A corrected schema-3 phase campaign, one native-command trace,
+and a complete counter-enabled Metal System Trace found quantized Q4_0/Q6_K
+matrix work dominant; details and raw receipts are in
+`docs/qwen35-current-native-mixed-bottleneck.md` and `eval/benchmarks/`.
+The old schema-2 phase caller summed native waits from three requests; the
+corrected caller and historical-receipt caveats are in this branch. Next:
+finish focused owner checks, one comprehensive review, exact-head preflight,
+publish/merge the measurement correction, then refresh main and start the
+Align-owned resident Metal execution-plan consumer below. Other Metal hosts,
+CUDA and Gemma remain deferred as registered in `docs/backend-parity.md`.
+
+## Next Align-owned native Metal execution-plan consumer (2026-09-28)
+
+Start from merged `main` after this measurement. GPU optimization remains the
+priority. The complete
 Q4_0 FFN kernel is locally faster, but Qwen3.5 currently builds all 24 layers
 as one ggml graph and `align_gpu_graph_compute` calls synchronous
 `ggml_backend_graph_compute`. Per-FFN graph partition with a host wait loses

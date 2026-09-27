@@ -103,7 +103,12 @@ arm medians are 574.895, 1317.345 and 2466.867 ms. Pinned llama arm medians
 are 561.735, 1272.847 and 2389.509 ms.
 
 The separate [phase receipt](../eval/benchmarks/qwen35-native-copy-greedy-2026-09-28-phase-mixed.json)
-uses graph and native-wait instrumentation. Paired mixed-minus-candidate
+uses graph and native-wait instrumentation. Correction (2026-09-28): its
+schema-2 reducer summed all three retained requests' native waits, so the
+following decode graph-plus-wait and native-wait differences are **invalid as
+per-request attributions**. The graph-submit, instrumented request wall and
+untraced comparison remain separate valid observations. Historical numbers
+are retained below without reuse as evidence. Paired mixed-minus-candidate
 medians for prefill are +0.111, +0.183 and -0.198 ms; the decode
 graph-plus-wait medians are -21.854, -47.947 and -113.366 ms. Native-wait
 components are -21.148, -44.405 and -82.926 ms. Instrumented whole-request
@@ -111,10 +116,9 @@ differences are +0.694, -7.595 and -37.784 ms. The untraced results above
 are the request-speed evidence. The phase clocks omit control-side CPU logit
 readback and scan, so they are not an additive decomposition. The control
 reads/scans logits before waiting for the native state copy, while the GPU
-candidate must wait for the command before it can read the token. This likely
-lets the control overlap part of its CPU work with the native command; the
-inference explains the larger measured candidate wait, but a device timeline
-would be needed for exact attribution.
+candidate must wait for the command before it can read the token. Different
+overlap remains a hypothesis; the invalid phase reduction cannot measure its
+contribution, and a device timeline would be needed for exact attribution.
 
 The [native-command receipt](../eval/benchmarks/qwen35-native-copy-greedy-2026-09-28-native-command.json)
 alternated three pairs of real-model workers. Each worker ran three repeated

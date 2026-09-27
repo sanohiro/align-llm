@@ -18,6 +18,12 @@ speed result. Historical measurements remain in their owning reports.
   shader interval or counter sample identifies an attribution candidate but is
   not the marginal time saved by deleting that shader. Measure the connected
   request after each intervention.
+- When a worker repeats requests and times the last one, slice every phase
+  clock, completion wait and operation count to that same request. Check that
+  phase clocks fit inside its wall interval. The schema-2 Qwen3.5 native phase
+  reducer accidentally summed three requests of native waits; historical
+  affected phase totals remain marked invalid, while the corrected schema-3
+  caller and uninstrumented wall measurements are separate evidence.
 - On this Apple M1, `xctrace record --template 'Metal System Trace'
   --instrument 'Metal GPU Counters'` enabled Shader Timeline where Metal System
   Trace alone did not. Check the trace TOC and target PID before interpreting
@@ -247,6 +253,17 @@ overlapping another worker shader were excluded. The source trace, exports,
 local extraction script and compact summaries are retained under the resolved
 Git common directory at
 `diagnostics/q35-ingraph-greedy-2026-09-27/counter-trace-20260927/`.
+
+A fresh [mixed native-copy profile](qwen35-current-native-mixed-bottleneck.md)
+on the same M1 checked the real 2B route after removing the 36 decode state
+copies. Over three 200/32 requests, Q4_0 and Q6_K matrix-vector work was
+59.2% of sampled shader intervals; Q4_0 prefill matrix-matrix was 26.1%, and
+F32 copies 0.7%. Matvec Buffer Read Limiter medians were 100.0% and 99.8%,
+with 52.1 and 56.5 GB/s GPU read samples. The different prefill signature
+remained: Q4_0 matrix-matrix had 83.1% median F32 utilization. This narrows
+the next connected hypothesis to weight traffic, reuse and execution
+boundaries on this workload; it does not impose an M-series or independent
+backend ceiling.
 Raw `gpu-counter-value` XML can be regenerated with `xctrace export` from the
 retained `.trace`; it is not a checked-in benchmark artifact.
 

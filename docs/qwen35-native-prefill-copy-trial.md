@@ -89,6 +89,11 @@ records synchronized ggml graph calls, including native submission in the
 candidate, and native completion waits separately.
 It excludes CPU readback and sampling and changes timing through logging. Arm
 medians below are milliseconds per request, not pairwise differences.
+Correction (2026-09-28): the schema-2 reducer summed native waits from all
+three retained requests while the graph and wall fields refer to the third.
+The candidate native-wait and total-prefill columns below are historical
+**invalid per-request values**; they are preserved but must not be used for
+attribution. The graph/submission and mixed prefill columns are unaffected.
 
 | Prompt / output | Mixed graph/submit prefill | Candidate graph/submit prefill | Candidate native prefill wait | Mixed total prefill | Candidate total prefill |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -96,7 +101,8 @@ medians below are milliseconds per request, not pairwise differences.
 | 200 / 32 | 382.620 | 372.117 | 53.755 | 382.620 | 425.447 |
 | 330 / 64 | 596.613 | 580.960 | 79.198 | 596.613 | 660.939 |
 
-The graph/submission call savings are smaller than the additional completion wait. In a
+The untraced request regression remains valid, but this phase table cannot
+quantify the additional completion wait. In a
 single [diagnostic 199/2 request](../eval/benchmarks/qwen35-native-prefill-copy-2026-09-28-native-command.json),
 the two 36-record prefill commands reported
 GPU intervals of 1.861 and 0.900 ms, but host completion waits of 9.479 and
