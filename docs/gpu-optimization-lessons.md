@@ -97,6 +97,18 @@ speed result. Historical measurements remain in their owning reports.
   producer allocator and exact reachable span when borrowing a buffer, and
   insert an explicit buffer barrier between dependent reduction dispatches.
   See the [copy-command greedy trial](qwen35-native-copy-greedy-trial.md).
+- Fusing a producer with a large consumer can trade away parallelism even when
+  it removes the intermediate vector. A local M1 Q4_0 FFN computed 64 gate/up
+  rows per group, kept the gated tile in threadgroup memory and immediately
+  multiplied all 2,048 down output rows. Real captured layers 3 and 23 passed
+  the declared numerical bound, but the complete native two-dispatch operation
+  lost every paired comparison in the final screen and its rerun against pinned
+  ggml. Going from 256 to 512
+  threads helped modestly; 1024 threads and two output partitions regressed.
+  The extra work from recomputing gate/up tiles and the long down-row loop are
+  concrete suspects, not isolated counter findings. Measure the whole fused
+  operation and its work distribution before assuming saved intermediate bytes
+  exceed lost parallelism. See the [tile-consumer screen](qwen35-native-q4-tile-ffn-screen.md).
 
 ## Current Qwen3.5-2B evidence and next test
 
