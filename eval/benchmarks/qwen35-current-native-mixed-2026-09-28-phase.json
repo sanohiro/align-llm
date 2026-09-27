@@ -140,147 +140,73 @@
       "pairs": [
         {
           "control": {
-            "wall_ns": 581093000,
-            "startup_ns": 1416532334,
-            "first_request_ns": 597843875,
-            "first_ready_ns": 2014376209,
+            "wall_ns": 576348875,
+            "startup_ns": 1515203958,
+            "first_request_ns": 598186625,
+            "first_ready_ns": 2113390583,
             "prefill_graphs": 1,
-            "prefill_ns": 126499000,
-            "decode_ns": 446453000,
-            "graph_submit_prefill_ns": 126499000,
-            "graph_submit_decode_ns": 446453000,
+            "prefill_ns": 123314000,
+            "decode_ns": 434938000,
+            "graph_submit_prefill_ns": 123314000,
+            "graph_submit_decode_ns": 434938000,
             "native_wait_prefill_ns": null,
             "native_wait_decode_ns": null,
             "output": "1 2 3 4 5 6 7 8 "
           },
           "candidate": {
-            "wall_ns": 532172083,
-            "startup_ns": 1036736583,
-            "first_request_ns": 596031875,
-            "first_ready_ns": 1632768458,
+            "wall_ns": 528359041,
+            "startup_ns": 1172645292,
+            "first_request_ns": 555651625,
+            "first_ready_ns": 1728296917,
             "prefill_graphs": 1,
-            "prefill_ns": 127172000,
-            "decode_ns": 394814000,
-            "graph_submit_prefill_ns": 127172000,
-            "graph_submit_decode_ns": 378111000,
+            "prefill_ns": 123948000,
+            "decode_ns": 382153000,
+            "graph_submit_prefill_ns": 123948000,
+            "graph_submit_decode_ns": 368153000,
             "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 16703000,
+            "native_wait_decode_ns": 14000000,
             "output": "1 2 3 4 5 6 7 8 "
           },
           "llama": {
-            "wall_ns": 594128208,
-            "prefill_ns": 132455625,
-            "decode_ns": 461672583,
-            "startup_ns": 489491458,
+            "wall_ns": 566064625,
+            "prefill_ns": 126084500,
+            "decode_ns": 439980125,
+            "startup_ns": 542657500,
             "output": "1 2 3 4 5 6 7 8 "
           }
         },
         {
           "llama": {
-            "wall_ns": 551386917,
-            "prefill_ns": 125925542,
-            "decode_ns": 425461375,
-            "startup_ns": 496820708,
+            "wall_ns": 556513583,
+            "prefill_ns": 125254208,
+            "decode_ns": 431259375,
+            "startup_ns": 425737709,
             "output": "1 2 3 4 5 6 7 8 "
           },
           "candidate": {
-            "wall_ns": 528650708,
-            "startup_ns": 1218556917,
-            "first_request_ns": 579412292,
-            "first_ready_ns": 1797969209,
+            "wall_ns": 547743833,
+            "startup_ns": 1071478958,
+            "first_request_ns": 556085708,
+            "first_ready_ns": 1627564666,
             "prefill_graphs": 1,
-            "prefill_ns": 125941000,
-            "decode_ns": 392369000,
-            "graph_submit_prefill_ns": 125941000,
-            "graph_submit_decode_ns": 377351000,
+            "prefill_ns": 123792000,
+            "decode_ns": 400255000,
+            "graph_submit_prefill_ns": 123792000,
+            "graph_submit_decode_ns": 386183000,
             "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 15018000,
+            "native_wait_decode_ns": 14072000,
             "output": "1 2 3 4 5 6 7 8 "
           },
           "control": {
-            "wall_ns": 570240834,
-            "startup_ns": 1045802041,
-            "first_request_ns": 593145625,
-            "first_ready_ns": 1638947666,
+            "wall_ns": 571326291,
+            "startup_ns": 1146842042,
+            "first_request_ns": 576997208,
+            "first_ready_ns": 1723839250,
             "prefill_graphs": 1,
-            "prefill_ns": 127402000,
-            "decode_ns": 434416000,
-            "graph_submit_prefill_ns": 127402000,
-            "graph_submit_decode_ns": 434416000,
-            "native_wait_prefill_ns": null,
-            "native_wait_decode_ns": null,
-            "output": "1 2 3 4 5 6 7 8 "
-          }
-        },
-        {
-          "control": {
-            "wall_ns": 578467167,
-            "startup_ns": 1076876042,
-            "first_request_ns": 591053833,
-            "first_ready_ns": 1667929875,
-            "prefill_graphs": 1,
-            "prefill_ns": 127572000,
-            "decode_ns": 443346000,
-            "graph_submit_prefill_ns": 127572000,
-            "graph_submit_decode_ns": 443346000,
-            "native_wait_prefill_ns": null,
-            "native_wait_decode_ns": null,
-            "output": "1 2 3 4 5 6 7 8 "
-          },
-          "candidate": {
-            "wall_ns": 534110542,
-            "startup_ns": 1030113875,
-            "first_request_ns": 541667084,
-            "first_ready_ns": 1571780959,
-            "prefill_graphs": 1,
-            "prefill_ns": 128006000,
-            "decode_ns": 390878000,
-            "graph_submit_prefill_ns": 128006000,
-            "graph_submit_decode_ns": 378339000,
-            "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 12539000,
-            "output": "1 2 3 4 5 6 7 8 "
-          },
-          "llama": {
-            "wall_ns": 553649666,
-            "prefill_ns": 124928125,
-            "decode_ns": 428721541,
-            "startup_ns": 485096000,
-            "output": "1 2 3 4 5 6 7 8 "
-          }
-        },
-        {
-          "llama": {
-            "wall_ns": 554289125,
-            "prefill_ns": 126407375,
-            "decode_ns": 427881750,
-            "startup_ns": 449111875,
-            "output": "1 2 3 4 5 6 7 8 "
-          },
-          "candidate": {
-            "wall_ns": 519553875,
-            "startup_ns": 1015958166,
-            "first_request_ns": 543137791,
-            "first_ready_ns": 1559095957,
-            "prefill_graphs": 1,
-            "prefill_ns": 125887000,
-            "decode_ns": 384298000,
-            "graph_submit_prefill_ns": 125887000,
-            "graph_submit_decode_ns": 370031000,
-            "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 14267000,
-            "output": "1 2 3 4 5 6 7 8 "
-          },
-          "control": {
-            "wall_ns": 575009875,
-            "startup_ns": 1246387583,
-            "first_request_ns": 588521958,
-            "first_ready_ns": 1834909541,
-            "prefill_graphs": 1,
-            "prefill_ns": 129170000,
-            "decode_ns": 438248000,
-            "graph_submit_prefill_ns": 129170000,
-            "graph_submit_decode_ns": 438248000,
+            "prefill_ns": 123248000,
+            "decode_ns": 429534000,
+            "graph_submit_prefill_ns": 123248000,
+            "graph_submit_decode_ns": 429534000,
             "native_wait_prefill_ns": null,
             "native_wait_decode_ns": null,
             "output": "1 2 3 4 5 6 7 8 "
@@ -288,60 +214,134 @@
         },
         {
           "control": {
-            "wall_ns": 573915084,
-            "startup_ns": 1034752375,
-            "first_request_ns": 592493750,
-            "first_ready_ns": 1627246125,
+            "wall_ns": 583870291,
+            "startup_ns": 1205175334,
+            "first_request_ns": 608517083,
+            "first_ready_ns": 1813692417,
             "prefill_graphs": 1,
-            "prefill_ns": 125413000,
-            "decode_ns": 440697000,
-            "graph_submit_prefill_ns": 125413000,
-            "graph_submit_decode_ns": 440697000,
+            "prefill_ns": 123859000,
+            "decode_ns": 440440000,
+            "graph_submit_prefill_ns": 123859000,
+            "graph_submit_decode_ns": 440440000,
             "native_wait_prefill_ns": null,
             "native_wait_decode_ns": null,
             "output": "1 2 3 4 5 6 7 8 "
           },
           "candidate": {
-            "wall_ns": 534264625,
-            "startup_ns": 1046731209,
-            "first_request_ns": 536268084,
-            "first_ready_ns": 1582999293,
+            "wall_ns": 536761250,
+            "startup_ns": 1195114708,
+            "first_request_ns": 566556041,
+            "first_ready_ns": 1761670749,
             "prefill_graphs": 1,
-            "prefill_ns": 130076000,
-            "decode_ns": 394075000,
-            "graph_submit_prefill_ns": 130076000,
-            "graph_submit_decode_ns": 377610000,
+            "prefill_ns": 124439000,
+            "decode_ns": 389992000,
+            "graph_submit_prefill_ns": 124439000,
+            "graph_submit_decode_ns": 376048000,
             "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 16465000,
+            "native_wait_decode_ns": 13944000,
             "output": "1 2 3 4 5 6 7 8 "
           },
           "llama": {
-            "wall_ns": 551594583,
-            "prefill_ns": 129340541,
-            "decode_ns": 422254042,
-            "startup_ns": 476671666,
+            "wall_ns": 562021959,
+            "prefill_ns": 124690667,
+            "decode_ns": 437331292,
+            "startup_ns": 418124750,
+            "output": "1 2 3 4 5 6 7 8 "
+          }
+        },
+        {
+          "llama": {
+            "wall_ns": 566577000,
+            "prefill_ns": 126478875,
+            "decode_ns": 440098125,
+            "startup_ns": 399882541,
+            "output": "1 2 3 4 5 6 7 8 "
+          },
+          "candidate": {
+            "wall_ns": 542498000,
+            "startup_ns": 1136004125,
+            "first_request_ns": 574513083,
+            "first_ready_ns": 1710517208,
+            "prefill_graphs": 1,
+            "prefill_ns": 123743000,
+            "decode_ns": 397244000,
+            "graph_submit_prefill_ns": 123743000,
+            "graph_submit_decode_ns": 383661000,
+            "native_wait_prefill_ns": 0,
+            "native_wait_decode_ns": 13583000,
+            "output": "1 2 3 4 5 6 7 8 "
+          },
+          "control": {
+            "wall_ns": 574116500,
+            "startup_ns": 1154297708,
+            "first_request_ns": 609595041,
+            "first_ready_ns": 1763892749,
+            "prefill_graphs": 1,
+            "prefill_ns": 124712000,
+            "decode_ns": 431040000,
+            "graph_submit_prefill_ns": 124712000,
+            "graph_submit_decode_ns": 431040000,
+            "native_wait_prefill_ns": null,
+            "native_wait_decode_ns": null,
+            "output": "1 2 3 4 5 6 7 8 "
+          }
+        },
+        {
+          "control": {
+            "wall_ns": 577193875,
+            "startup_ns": 1177950125,
+            "first_request_ns": 605650625,
+            "first_ready_ns": 1783600750,
+            "prefill_graphs": 1,
+            "prefill_ns": 124049000,
+            "decode_ns": 435043000,
+            "graph_submit_prefill_ns": 124049000,
+            "graph_submit_decode_ns": 435043000,
+            "native_wait_prefill_ns": null,
+            "native_wait_decode_ns": null,
+            "output": "1 2 3 4 5 6 7 8 "
+          },
+          "candidate": {
+            "wall_ns": 536804333,
+            "startup_ns": 1162221917,
+            "first_request_ns": 563110000,
+            "first_ready_ns": 1725331917,
+            "prefill_graphs": 1,
+            "prefill_ns": 124444000,
+            "decode_ns": 389639000,
+            "graph_submit_prefill_ns": 124444000,
+            "graph_submit_decode_ns": 376539000,
+            "native_wait_prefill_ns": 0,
+            "native_wait_decode_ns": 13100000,
+            "output": "1 2 3 4 5 6 7 8 "
+          },
+          "llama": {
+            "wall_ns": 565186125,
+            "prefill_ns": 126806708,
+            "decode_ns": 438379417,
+            "startup_ns": 416250167,
             "output": "1 2 3 4 5 6 7 8 "
           }
         }
       ],
       "median_ms": {
         "control": {
-          "wall_ns": 575.009875,
-          "prefill_ns": 127.402,
-          "decode_ns": 440.697,
-          "startup_ns": 1076.876042
+          "wall_ns": 576.348875,
+          "prefill_ns": 123.859,
+          "decode_ns": 434.938,
+          "startup_ns": 1177.950125
         },
         "candidate": {
-          "wall_ns": 532.172083,
-          "prefill_ns": 127.172,
-          "decode_ns": 392.369,
-          "startup_ns": 1036.736583
+          "wall_ns": 536.804333,
+          "prefill_ns": 123.948,
+          "decode_ns": 389.992,
+          "startup_ns": 1162.221917
         },
         "llama": {
-          "wall_ns": 553.649666,
-          "prefill_ns": 126.407375,
-          "decode_ns": 427.88175,
-          "startup_ns": 485.096
+          "wall_ns": 565.186125,
+          "prefill_ns": 126.0845,
+          "decode_ns": 438.379417,
+          "startup_ns": 418.12475
         }
       }
     },
@@ -553,147 +553,73 @@
       "pairs": [
         {
           "control": {
-            "wall_ns": 1321511167,
-            "startup_ns": 1017939333,
-            "first_request_ns": 1327824209,
-            "first_ready_ns": 2345763542,
+            "wall_ns": 1296283833,
+            "startup_ns": 961094750,
+            "first_request_ns": 1350908417,
+            "first_ready_ns": 2312003167,
             "prefill_graphs": 2,
-            "prefill_ns": 390470000,
-            "decode_ns": 916159000,
-            "graph_submit_prefill_ns": 390470000,
-            "graph_submit_decode_ns": 916159000,
+            "prefill_ns": 382547000,
+            "decode_ns": 883684000,
+            "graph_submit_prefill_ns": 382547000,
+            "graph_submit_decode_ns": 883684000,
             "native_wait_prefill_ns": null,
             "native_wait_decode_ns": null,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
           },
           "candidate": {
-            "wall_ns": 1212551042,
-            "startup_ns": 1032256917,
-            "first_request_ns": 1234417416,
-            "first_ready_ns": 2266674333,
+            "wall_ns": 1236222000,
+            "startup_ns": 1223071583,
+            "first_request_ns": 1251735792,
+            "first_ready_ns": 2474807375,
             "prefill_graphs": 2,
-            "prefill_ns": 390764000,
-            "decode_ns": 802785000,
-            "graph_submit_prefill_ns": 390764000,
-            "graph_submit_decode_ns": 774853000,
+            "prefill_ns": 382487000,
+            "decode_ns": 810143000,
+            "graph_submit_prefill_ns": 382487000,
+            "graph_submit_decode_ns": 787731000,
             "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 27932000,
+            "native_wait_decode_ns": 22412000,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
           },
           "llama": {
-            "wall_ns": 1270528667,
-            "prefill_ns": 387286583,
-            "decode_ns": 883242084,
-            "startup_ns": 454666083,
+            "wall_ns": 1280593083,
+            "prefill_ns": 382275666,
+            "decode_ns": 898317417,
+            "startup_ns": 414936667,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
           }
         },
         {
           "llama": {
-            "wall_ns": 1327070458,
-            "prefill_ns": 392220792,
-            "decode_ns": 934849666,
-            "startup_ns": 442151084,
+            "wall_ns": 1277337209,
+            "prefill_ns": 382573834,
+            "decode_ns": 894763375,
+            "startup_ns": 404282584,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
           },
           "candidate": {
-            "wall_ns": 1212551500,
-            "startup_ns": 1372244834,
-            "first_request_ns": 1228837916,
-            "first_ready_ns": 2601082750,
+            "wall_ns": 1245993459,
+            "startup_ns": 1119900375,
+            "first_request_ns": 1268960458,
+            "first_ready_ns": 2388860833,
             "prefill_graphs": 2,
-            "prefill_ns": 391912000,
-            "decode_ns": 800679000,
-            "graph_submit_prefill_ns": 391912000,
-            "graph_submit_decode_ns": 771606000,
+            "prefill_ns": 381979000,
+            "decode_ns": 818910000,
+            "graph_submit_prefill_ns": 381979000,
+            "graph_submit_decode_ns": 796385000,
             "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 29073000,
+            "native_wait_decode_ns": 22525000,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
           },
           "control": {
-            "wall_ns": 1313419042,
-            "startup_ns": 1025451334,
-            "first_request_ns": 1320578625,
-            "first_ready_ns": 2346029959,
+            "wall_ns": 1320768292,
+            "startup_ns": 1145680125,
+            "first_request_ns": 1342676292,
+            "first_ready_ns": 2488356417,
             "prefill_graphs": 2,
-            "prefill_ns": 390565000,
-            "decode_ns": 905861000,
-            "graph_submit_prefill_ns": 390565000,
-            "graph_submit_decode_ns": 905861000,
-            "native_wait_prefill_ns": null,
-            "native_wait_decode_ns": null,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
-          }
-        },
-        {
-          "control": {
-            "wall_ns": 1384775958,
-            "startup_ns": 1020327417,
-            "first_request_ns": 1334645958,
-            "first_ready_ns": 2354973375,
-            "prefill_graphs": 2,
-            "prefill_ns": 390485000,
-            "decode_ns": 980284000,
-            "graph_submit_prefill_ns": 390485000,
-            "graph_submit_decode_ns": 980284000,
-            "native_wait_prefill_ns": null,
-            "native_wait_decode_ns": null,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
-          },
-          "candidate": {
-            "wall_ns": 1310524792,
-            "startup_ns": 1142325292,
-            "first_request_ns": 1327841791,
-            "first_ready_ns": 2470167083,
-            "prefill_graphs": 2,
-            "prefill_ns": 417607000,
-            "decode_ns": 876509000,
-            "graph_submit_prefill_ns": 417607000,
-            "graph_submit_decode_ns": 844086000,
-            "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 32423000,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
-          },
-          "llama": {
-            "wall_ns": 1264118875,
-            "prefill_ns": 389087667,
-            "decode_ns": 875031208,
-            "startup_ns": 500610917,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
-          }
-        },
-        {
-          "llama": {
-            "wall_ns": 1267583750,
-            "prefill_ns": 390090791,
-            "decode_ns": 877492959,
-            "startup_ns": 466750625,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
-          },
-          "candidate": {
-            "wall_ns": 1217527791,
-            "startup_ns": 1278144417,
-            "first_request_ns": 1312985208,
-            "first_ready_ns": 2591129625,
-            "prefill_graphs": 2,
-            "prefill_ns": 388318000,
-            "decode_ns": 811100000,
-            "graph_submit_prefill_ns": 388318000,
-            "graph_submit_decode_ns": 784153000,
-            "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 26947000,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
-          },
-          "control": {
-            "wall_ns": 1354313125,
-            "startup_ns": 1029812792,
-            "first_request_ns": 1325100334,
-            "first_ready_ns": 2354913126,
-            "prefill_graphs": 2,
-            "prefill_ns": 391440000,
-            "decode_ns": 949113000,
-            "graph_submit_prefill_ns": 391440000,
-            "graph_submit_decode_ns": 949113000,
+            "prefill_ns": 381336000,
+            "decode_ns": 902785000,
+            "graph_submit_prefill_ns": 381336000,
+            "graph_submit_decode_ns": 902785000,
             "native_wait_prefill_ns": null,
             "native_wait_decode_ns": null,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
@@ -701,60 +627,134 @@
         },
         {
           "control": {
-            "wall_ns": 1311103167,
-            "startup_ns": 1027027084,
-            "first_request_ns": 1328014792,
-            "first_ready_ns": 2355041876,
+            "wall_ns": 1320863833,
+            "startup_ns": 1176730958,
+            "first_request_ns": 1355215791,
+            "first_ready_ns": 2531946749,
             "prefill_graphs": 2,
-            "prefill_ns": 392673000,
-            "decode_ns": 903561000,
-            "graph_submit_prefill_ns": 392673000,
-            "graph_submit_decode_ns": 903561000,
+            "prefill_ns": 382213000,
+            "decode_ns": 900283000,
+            "graph_submit_prefill_ns": 382213000,
+            "graph_submit_decode_ns": 900283000,
             "native_wait_prefill_ns": null,
             "native_wait_decode_ns": null,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
           },
           "candidate": {
-            "wall_ns": 1324931333,
-            "startup_ns": 1291849959,
-            "first_request_ns": 1321058042,
-            "first_ready_ns": 2612908001,
+            "wall_ns": 1251432125,
+            "startup_ns": 1097058250,
+            "first_request_ns": 1273192834,
+            "first_ready_ns": 2370251084,
             "prefill_graphs": 2,
-            "prefill_ns": 391843000,
-            "decode_ns": 915011000,
-            "graph_submit_prefill_ns": 391843000,
-            "graph_submit_decode_ns": 882164000,
+            "prefill_ns": 382201000,
+            "decode_ns": 823977000,
+            "graph_submit_prefill_ns": 382201000,
+            "graph_submit_decode_ns": 802798000,
             "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 32847000,
+            "native_wait_decode_ns": 21179000,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
           },
           "llama": {
-            "wall_ns": 1264216750,
-            "prefill_ns": 388309958,
-            "decode_ns": 875906792,
-            "startup_ns": 592687083,
+            "wall_ns": 1279746500,
+            "prefill_ns": 382289417,
+            "decode_ns": 897457083,
+            "startup_ns": 427035125,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          }
+        },
+        {
+          "llama": {
+            "wall_ns": 1280175042,
+            "prefill_ns": 382015542,
+            "decode_ns": 898159500,
+            "startup_ns": 416181833,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          },
+          "candidate": {
+            "wall_ns": 1233540583,
+            "startup_ns": 1180472500,
+            "first_request_ns": 1264346750,
+            "first_ready_ns": 2444819250,
+            "prefill_graphs": 2,
+            "prefill_ns": 382138000,
+            "decode_ns": 806850000,
+            "graph_submit_prefill_ns": 382138000,
+            "graph_submit_decode_ns": 783379000,
+            "native_wait_prefill_ns": 0,
+            "native_wait_decode_ns": 23471000,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          },
+          "control": {
+            "wall_ns": 1322113500,
+            "startup_ns": 1214636292,
+            "first_request_ns": 1354638084,
+            "first_ready_ns": 2569274376,
+            "prefill_graphs": 2,
+            "prefill_ns": 381867000,
+            "decode_ns": 902741000,
+            "graph_submit_prefill_ns": 381867000,
+            "graph_submit_decode_ns": 902741000,
+            "native_wait_prefill_ns": null,
+            "native_wait_decode_ns": null,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          }
+        },
+        {
+          "control": {
+            "wall_ns": 1317986208,
+            "startup_ns": 1127832041,
+            "first_request_ns": 1348844750,
+            "first_ready_ns": 2476676791,
+            "prefill_graphs": 2,
+            "prefill_ns": 381102000,
+            "decode_ns": 897471000,
+            "graph_submit_prefill_ns": 381102000,
+            "graph_submit_decode_ns": 897471000,
+            "native_wait_prefill_ns": null,
+            "native_wait_decode_ns": null,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          },
+          "candidate": {
+            "wall_ns": 1238913209,
+            "startup_ns": 1089138125,
+            "first_request_ns": 1266485292,
+            "first_ready_ns": 2355623417,
+            "prefill_graphs": 2,
+            "prefill_ns": 381697000,
+            "decode_ns": 812023000,
+            "graph_submit_prefill_ns": 381697000,
+            "graph_submit_decode_ns": 789804000,
+            "native_wait_prefill_ns": 0,
+            "native_wait_decode_ns": 22219000,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          },
+          "llama": {
+            "wall_ns": 1229429250,
+            "prefill_ns": 380911375,
+            "decode_ns": 848517875,
+            "startup_ns": 468350708,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
           }
         }
       ],
       "median_ms": {
         "control": {
-          "wall_ns": 1321.511167,
-          "prefill_ns": 390.565,
-          "decode_ns": 916.159,
-          "startup_ns": 1025.451334
+          "wall_ns": 1320.768292,
+          "prefill_ns": 381.867,
+          "decode_ns": 900.283,
+          "startup_ns": 1145.680125
         },
         "candidate": {
-          "wall_ns": 1217.527791,
-          "prefill_ns": 391.843,
-          "decode_ns": 811.1,
-          "startup_ns": 1278.144417
+          "wall_ns": 1238.913209,
+          "prefill_ns": 382.138,
+          "decode_ns": 812.023,
+          "startup_ns": 1119.900375
         },
         "llama": {
-          "wall_ns": 1267.58375,
-          "prefill_ns": 389.087667,
-          "decode_ns": 877.492959,
-          "startup_ns": 466.750625
+          "wall_ns": 1279.7465,
+          "prefill_ns": 382.275666,
+          "decode_ns": 897.457083,
+          "startup_ns": 416.181833
         }
       }
     },
@@ -1096,147 +1096,73 @@
       "pairs": [
         {
           "control": {
-            "wall_ns": 2512515292,
-            "startup_ns": 1221616625,
-            "first_request_ns": 2704358125,
-            "first_ready_ns": 3925974750,
+            "wall_ns": 2483073167,
+            "startup_ns": 930178209,
+            "first_request_ns": 2525518458,
+            "first_ready_ns": 3455696667,
             "prefill_graphs": 3,
-            "prefill_ns": 621510000,
-            "decode_ns": 1866067000,
-            "graph_submit_prefill_ns": 621510000,
-            "graph_submit_decode_ns": 1866067000,
+            "prefill_ns": 596606000,
+            "decode_ns": 1822230000,
+            "graph_submit_prefill_ns": 596606000,
+            "graph_submit_decode_ns": 1822230000,
             "native_wait_prefill_ns": null,
             "native_wait_decode_ns": null,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
           },
           "candidate": {
-            "wall_ns": 2260871792,
-            "startup_ns": 1063742417,
-            "first_request_ns": 2403160333,
-            "first_ready_ns": 3466902750,
+            "wall_ns": 2237969916,
+            "startup_ns": 1058237333,
+            "first_request_ns": 2258624084,
+            "first_ready_ns": 3316861417,
             "prefill_graphs": 3,
-            "prefill_ns": 609691000,
-            "decode_ns": 1620003000,
-            "graph_submit_prefill_ns": 609691000,
-            "graph_submit_decode_ns": 1562534000,
+            "prefill_ns": 597470000,
+            "decode_ns": 1582844000,
+            "graph_submit_prefill_ns": 597470000,
+            "graph_submit_decode_ns": 1532614000,
             "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 57469000,
+            "native_wait_decode_ns": 50230000,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
           },
           "llama": {
-            "wall_ns": 2410509500,
-            "prefill_ns": 608530416,
-            "decode_ns": 1801979084,
-            "startup_ns": 514484250,
+            "wall_ns": 2465679166,
+            "prefill_ns": 663897416,
+            "decode_ns": 1801781750,
+            "startup_ns": 467328583,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
           }
         },
         {
           "llama": {
-            "wall_ns": 2403556708,
-            "prefill_ns": 610337625,
-            "decode_ns": 1793219083,
-            "startup_ns": 457215833,
+            "wall_ns": 2477598250,
+            "prefill_ns": 655274333,
+            "decode_ns": 1822323917,
+            "startup_ns": 458167125,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
           },
           "candidate": {
-            "wall_ns": 2291265833,
-            "startup_ns": 1093838959,
-            "first_request_ns": 2269843750,
-            "first_ready_ns": 3363682709,
+            "wall_ns": 2237532917,
+            "startup_ns": 1124310083,
+            "first_request_ns": 2462249750,
+            "first_ready_ns": 3586559833,
             "prefill_graphs": 3,
-            "prefill_ns": 611733000,
-            "decode_ns": 1652132000,
-            "graph_submit_prefill_ns": 611733000,
-            "graph_submit_decode_ns": 1595625000,
+            "prefill_ns": 604635000,
+            "decode_ns": 1601044000,
+            "graph_submit_prefill_ns": 604635000,
+            "graph_submit_decode_ns": 1547671000,
             "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 56507000,
+            "native_wait_decode_ns": 53373000,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
           },
           "control": {
-            "wall_ns": 2488988167,
-            "startup_ns": 1072007166,
-            "first_request_ns": 2497423375,
-            "first_ready_ns": 3569430541,
+            "wall_ns": 2448861292,
+            "startup_ns": 1021501458,
+            "first_request_ns": 2466894708,
+            "first_ready_ns": 3488396166,
             "prefill_graphs": 3,
-            "prefill_ns": 614275000,
-            "decode_ns": 1852661000,
-            "graph_submit_prefill_ns": 614275000,
-            "graph_submit_decode_ns": 1852661000,
-            "native_wait_prefill_ns": null,
-            "native_wait_decode_ns": null,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
-          }
-        },
-        {
-          "control": {
-            "wall_ns": 2525047833,
-            "startup_ns": 1032486500,
-            "first_request_ns": 2500410792,
-            "first_ready_ns": 3532897292,
-            "prefill_graphs": 3,
-            "prefill_ns": 613631000,
-            "decode_ns": 1887155000,
-            "graph_submit_prefill_ns": 613631000,
-            "graph_submit_decode_ns": 1887155000,
-            "native_wait_prefill_ns": null,
-            "native_wait_decode_ns": null,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
-          },
-          "candidate": {
-            "wall_ns": 2272083875,
-            "startup_ns": 1134444667,
-            "first_request_ns": 2387310291,
-            "first_ready_ns": 3521754958,
-            "prefill_graphs": 3,
-            "prefill_ns": 612033000,
-            "decode_ns": 1632606000,
-            "graph_submit_prefill_ns": 612033000,
-            "graph_submit_decode_ns": 1575548000,
-            "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 57058000,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
-          },
-          "llama": {
-            "wall_ns": 2440210583,
-            "prefill_ns": 611073125,
-            "decode_ns": 1829137458,
-            "startup_ns": 593141750,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
-          }
-        },
-        {
-          "llama": {
-            "wall_ns": 2519525208,
-            "prefill_ns": 616163625,
-            "decode_ns": 1903361583,
-            "startup_ns": 470517583,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
-          },
-          "candidate": {
-            "wall_ns": 2317900709,
-            "startup_ns": 1061303458,
-            "first_request_ns": 2305295625,
-            "first_ready_ns": 3366599083,
-            "prefill_graphs": 3,
-            "prefill_ns": 615069000,
-            "decode_ns": 1674868000,
-            "graph_submit_prefill_ns": 615069000,
-            "graph_submit_decode_ns": 1615638000,
-            "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 59230000,
-            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
-          },
-          "control": {
-            "wall_ns": 2555609166,
-            "startup_ns": 1215088417,
-            "first_request_ns": 2610208209,
-            "first_ready_ns": 3825296626,
-            "prefill_graphs": 3,
-            "prefill_ns": 618100000,
-            "decode_ns": 1913555000,
-            "graph_submit_prefill_ns": 618100000,
-            "graph_submit_decode_ns": 1913555000,
+            "prefill_ns": 605987000,
+            "decode_ns": 1814681000,
+            "graph_submit_prefill_ns": 605987000,
+            "graph_submit_decode_ns": 1814681000,
             "native_wait_prefill_ns": null,
             "native_wait_decode_ns": null,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
@@ -1244,60 +1170,134 @@
         },
         {
           "control": {
-            "wall_ns": 2562046792,
-            "startup_ns": 1105852208,
-            "first_request_ns": 2529327042,
-            "first_ready_ns": 3635179250,
+            "wall_ns": 2472704917,
+            "startup_ns": 995785833,
+            "first_request_ns": 2469268375,
+            "first_ready_ns": 3465054208,
             "prefill_graphs": 3,
-            "prefill_ns": 615502000,
-            "decode_ns": 1923448000,
-            "graph_submit_prefill_ns": 615502000,
-            "graph_submit_decode_ns": 1923448000,
+            "prefill_ns": 612783000,
+            "decode_ns": 1834138000,
+            "graph_submit_prefill_ns": 612783000,
+            "graph_submit_decode_ns": 1834138000,
             "native_wait_prefill_ns": null,
             "native_wait_decode_ns": null,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
           },
           "candidate": {
-            "wall_ns": 2391524875,
-            "startup_ns": 1086144125,
-            "first_request_ns": 2387573250,
-            "first_ready_ns": 3473717375,
+            "wall_ns": 2382352625,
+            "startup_ns": 1052014208,
+            "first_request_ns": 2310615958,
+            "first_ready_ns": 3362630166,
             "prefill_graphs": 3,
-            "prefill_ns": 613159000,
-            "decode_ns": 1749532000,
-            "graph_submit_prefill_ns": 613159000,
-            "graph_submit_decode_ns": 1691932000,
+            "prefill_ns": 630123000,
+            "decode_ns": 1724374000,
+            "graph_submit_prefill_ns": 630123000,
+            "graph_submit_decode_ns": 1665101000,
             "native_wait_prefill_ns": 0,
-            "native_wait_decode_ns": 57600000,
+            "native_wait_decode_ns": 59273000,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
           },
           "llama": {
-            "wall_ns": 2416005417,
-            "prefill_ns": 610052708,
-            "decode_ns": 1805952709,
-            "startup_ns": 774903000,
+            "wall_ns": 2405243750,
+            "prefill_ns": 607737750,
+            "decode_ns": 1797506000,
+            "startup_ns": 512762959,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          }
+        },
+        {
+          "llama": {
+            "wall_ns": 2452166833,
+            "prefill_ns": 612103250,
+            "decode_ns": 1840063583,
+            "startup_ns": 506322583,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          },
+          "candidate": {
+            "wall_ns": 2265238375,
+            "startup_ns": 1077035625,
+            "first_request_ns": 2291026209,
+            "first_ready_ns": 3368061834,
+            "prefill_graphs": 3,
+            "prefill_ns": 610950000,
+            "decode_ns": 1625715000,
+            "graph_submit_prefill_ns": 610950000,
+            "graph_submit_decode_ns": 1568018000,
+            "native_wait_prefill_ns": 0,
+            "native_wait_decode_ns": 57697000,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          },
+          "control": {
+            "wall_ns": 2457918708,
+            "startup_ns": 1031499375,
+            "first_request_ns": 2490995834,
+            "first_ready_ns": 3522495209,
+            "prefill_graphs": 3,
+            "prefill_ns": 606639000,
+            "decode_ns": 1828062000,
+            "graph_submit_prefill_ns": 606639000,
+            "graph_submit_decode_ns": 1828062000,
+            "native_wait_prefill_ns": null,
+            "native_wait_decode_ns": null,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          }
+        },
+        {
+          "control": {
+            "wall_ns": 2484595000,
+            "startup_ns": 1066854042,
+            "first_request_ns": 2489838167,
+            "first_ready_ns": 3556692209,
+            "prefill_graphs": 3,
+            "prefill_ns": 608114000,
+            "decode_ns": 1853785000,
+            "graph_submit_prefill_ns": 608114000,
+            "graph_submit_decode_ns": 1853785000,
+            "native_wait_prefill_ns": null,
+            "native_wait_decode_ns": null,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          },
+          "candidate": {
+            "wall_ns": 2406306000,
+            "startup_ns": 1017247042,
+            "first_request_ns": 2269610959,
+            "first_ready_ns": 3286858001,
+            "prefill_graphs": 3,
+            "prefill_ns": 642578000,
+            "decode_ns": 1736360000,
+            "graph_submit_prefill_ns": 642578000,
+            "graph_submit_decode_ns": 1672879000,
+            "native_wait_prefill_ns": 0,
+            "native_wait_decode_ns": 63481000,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          },
+          "llama": {
+            "wall_ns": 2423390750,
+            "prefill_ns": 610915917,
+            "decode_ns": 1812474833,
+            "startup_ns": 496749292,
             "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
           }
         }
       ],
       "median_ms": {
         "control": {
-          "wall_ns": 2525.047833,
-          "prefill_ns": 615.502,
-          "decode_ns": 1887.155,
-          "startup_ns": 1105.852208
+          "wall_ns": 2472.704917,
+          "prefill_ns": 606.639,
+          "decode_ns": 1828.062,
+          "startup_ns": 1021.501458
         },
         "candidate": {
-          "wall_ns": 2291.265833,
-          "prefill_ns": 612.033,
-          "decode_ns": 1652.132,
-          "startup_ns": 1086.144125
+          "wall_ns": 2265.238375,
+          "prefill_ns": 610.95,
+          "decode_ns": 1625.715,
+          "startup_ns": 1058.237333
         },
         "llama": {
-          "wall_ns": 2416.005417,
-          "prefill_ns": 610.337625,
-          "decode_ns": 1805.952709,
-          "startup_ns": 514.48425
+          "wall_ns": 2452.166833,
+          "prefill_ns": 612.10325,
+          "decode_ns": 1812.474833,
+          "startup_ns": 496.749292
         }
       }
     }

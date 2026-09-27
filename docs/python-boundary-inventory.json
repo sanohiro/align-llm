@@ -3810,6 +3810,19 @@
       "acceptance": "python3 scripts/test-host-reuse-config; python3 scripts/check-python-boundary --strict",
       "frozen_sha256": null,
       "bootstrap": null
+    },
+    {
+      "path": "scripts/test-measure-native-swiglu-phase",
+      "classification": "CI_OR_DEVELOPER_TOOL",
+      "behavior": "Exercise request-local native timing log spans and reject balanced cross-request wait errors without loading a model.",
+      "reachability": "Developer invocation only; never part of product execution.",
+      "substitution": "No model value, shipping decision or inference implementation substitution.",
+      "python_reason": "Portable independent validation of a benchmark reducer.",
+      "target": "Retain outside product runtime; no product migration is needed.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/test-measure-native-swiglu-phase; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
     }
   ],
   "embedded_hosts": [

@@ -86,14 +86,14 @@ the prior schema-2 reducer erroneously included three requests of waits.
 
 | Input/output | Mixed prefill | Mixed decode, including native wait | Native wait within decode | Decode steps/s |
 | --- | ---: | ---: | ---: | ---: |
-| 64/16 | 127.172 ms | 392.369 ms | 15.018 ms | 38.2 |
-| 200/32 | 391.843 ms | 811.100 ms | 29.073 ms | 38.2 |
-| 330/64 | 612.033 ms | 1652.132 ms | 57.469 ms | 38.1 |
+| 64/16 | 123.948 ms | 389.992 ms | 13.944 ms | 38.5 |
+| 200/32 | 382.138 ms | 812.023 ms | 22.412 ms | 38.2 |
+| 330/64 | 610.950 ms | 1625.715 ms | 57.697 ms | 38.8 |
 
 There are 15, 31 and 63 decode steps because the first output token is
 selected from prefill. Decode-steps/s divides those counts by the phase median;
 it is not whole-request output-token throughput. At 200/32, the candidate's
-decode graph/submission median was 784.153 ms. The phase clocks omit CPU
+decode graph/submission median was 789.804 ms. The phase clocks omit CPU
 token selection and other host work, and independently taken medians are not
 an additive decomposition of wall time.
 

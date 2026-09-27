@@ -1,0 +1,53 @@
+#!/usr/bin/env python3
+"""Focused diagnostic-log and three-request phase reduction regression."""
+import re
+import runpy
+import tempfile
+from pathlib import Path
+
+
+measure = runpy.run_path(str(Path(__file__).with_name('measure-native-swiglu')))
+read_log_span = measure['read_log_span']
+last_request_native_waits = measure['last_request_native_waits']
+
+
+def reject(call, reason):
+    try:
+        call()
+    except ValueError as error:
+        assert reason in str(error), error
+    else:
+        raise AssertionError(f'expected rejection: {reason}')
+
+
+with tempfile.TemporaryFile() as log:
+    spans = [b'Q35_TIMING native_wait_kind=0 elapsed_ns=11 status=0\n'
+             b'Q35_TIMING native_wait_kind=1 elapsed_ns=12 status=0\n',
+             b'Q35_TIMING native_wait_kind=0 elapsed_ns=21 status=0\n'
+             b'Q35_TIMING native_wait_kind=1 elapsed_ns=22 status=0\n',
+             b'Q35_TIMING native_wait_kind=0 elapsed_ns=31 status=0\n'
+             b'Q35_TIMING native_wait_kind=1 elapsed_ns=32 status=0\n']
+    boundaries = [0]
+    for span in spans:
+        log.write(span)
+        log.flush()
+        boundaries.append(log.seek(0, 2))
+    groups = [[(int(kind), int(ns)) for kind, ns in re.findall(
+        rb'Q35_TIMING native_wait_kind=(\d+) elapsed_ns=(\d+) status=0',
+        read_log_span(log.fileno(), start, end))]
+        for start, end in zip(boundaries, boundaries[1:])]
+    assert groups == [[(0, 11), (1, 12)], [(0, 21), (1, 22)], [(0, 31), (1, 32)]]
+    assert last_request_native_waits(groups, 1, 2, True, True) == groups[-1]
+    assert last_request_native_waits([[], [], []], 1, 2, False, False) == []
+    reject(lambda: read_log_span(log.fileno(), 2, 1), 'shrank')
+
+    # The old reducer accepted six total waits even when requests had 3/2/1.
+    misplaced = [groups[0] + [groups[2][1]], groups[1], groups[2][:1]]
+    assert sum(map(len, misplaced)) == sum(map(len, groups))
+    reject(lambda: last_request_native_waits(misplaced, 1, 2, True, True),
+           'request 0 native wait count mismatch')
+    wrong_order = [groups[0], groups[1][::-1], groups[2]]
+    reject(lambda: last_request_native_waits(wrong_order, 1, 2, True, True),
+           'request 1 native wait kinds differ')
+
+print('native phase reduction PASS')

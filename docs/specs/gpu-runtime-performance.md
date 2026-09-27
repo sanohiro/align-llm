@@ -58,15 +58,15 @@ to explain a whole-request result.
 | Contract | Definition |
 | --- | --- |
 | Surface and owner | `scripts/measure-native-swiglu` remains an independent measurement caller. The corrected JSON receipt has `schema_version: 3`; the CLI, model execution, and product runtime are unchanged. Python never computes a model value. |
-| Inputs and result | The existing explicit model, arms, output path, pair count and `--wall-only` inputs retain their defaults and validation. For a phase-instrumented arm, the third request contributes exactly its expected prefill graph count, decode graph count, and native finish count. `graph_submit_*_ns`, `native_wait_*_ns` and derived `prefill_ns`/`decode_ns` refer to that same third request. A mode without native finishes reports a null native-wait field. |
-| Validation, failure and identity | Refuse missing or excess graph/finish records and any third-request phase sum larger than its measured wall interval. An incomplete run retains `INCOMPLETE` plus its error; no speed verdict is produced. The output path remains create-only. `schema_version: 3`, input and binary digests, and explicit phase-instrumented flag identify corrected receipts. No cache or product persistence is introduced. |
+| Inputs and result | The existing explicit model, arms, output path, pair count and `--wall-only` inputs retain their defaults and validation. For a phase-instrumented arm, capture the diagnostic log's file-size boundary after each completed request without moving the producer's file offset; parse each request span separately. The third request contributes exactly its own prefill graph count, decode graph count, and native finish count. `graph_submit_*_ns`, `native_wait_*_ns` and derived `prefill_ns`/`decode_ns` refer to that same third request. A mode without native finishes reports a null native-wait field. |
+| Validation, failure and identity | Refuse missing or excess graph/finish records within **each** request, including balanced excess/missing records across requests, and any third-request phase sum larger than its measured wall interval. An incomplete run retains `INCOMPLETE` plus its error; no speed verdict is produced. The output path remains create-only. `schema_version: 3`, input and binary digests, and explicit phase-instrumented flag identify corrected receipts. No cache or product persistence is introduced. |
 | Acceptance and cost | A real 2B Metal 64/16, 200/32, 330/64 paired campaign must retain exact generated output and counts; a focused synthetic three-request check must reject the former all-request wait reduction. Compare corrected phase values with an independent one-request native-command trace. One campaign <=900 s; each request <=180 s, with no extra model-sized allocation. |
 
 | Closure case | Owner and evidence |
 | --- | --- |
 | Construction / malformed input | Existing `measure-native-swiglu` argument and arm validation; focused self-check of three-request reduction before model launch. |
-| Success / repeated requests | Third-request graph and finish slices; focused self-check plus the real 2B paired phase receipt. |
-| Failure / early exit | Count and wall-containment checks fail the receipt; existing `INCOMPLETE` error handling retains evidence. |
+| Success / repeated requests | Per-request file-size spans and the third request's graph/finish clocks; focused self-check plus the real 2B paired phase receipt. |
+| Failure / early exit | Per-request count/kind and wall-containment checks fail the receipt; existing `INCOMPLETE` error handling retains evidence. |
 | Cleanup / rollback | Existing session and reference subprocess scopes; `--wall-only` remains a control without phase interposition. Historical schema-2 files stay immutable. |
 
 ### Independent Metal recurrent-state copy trial (2026-09-27)

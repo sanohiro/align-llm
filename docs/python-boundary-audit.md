@@ -15,9 +15,11 @@ copy and native-greedy arms are independent workload selectors and cannot choose
 token or graph operation. `scripts/measure-metal-worker-footprint` retains its
 `BENCHMARK_OR_MEASUREMENT` role for process memory sampling of those modes,
 including the native greedy selection.
-Its corrected phase reducer selects graph and native-finish clocks from the
-same third retained request; a synthetic reduction self-check and versioned
-receipt remain developer measurement work, never product inference.
+Its corrected phase reducer bounds each request's diagnostic log and selects
+graph and native-finish clocks from the same third retained request;
+`scripts/test-measure-native-swiglu-phase` is a `CI_OR_DEVELOPER_TOOL` that
+checks those log boundaries and rejection of balanced cross-request errors.
+The versioned receipt remains developer measurement work, never product inference.
 
 `scripts/diagnose-qwen35-decode-metal` is `BENCHMARK_OR_MEASUREMENT`: an
 independent Darwin/Metal diagnostic caller. It compiles the checked-in C/Metal

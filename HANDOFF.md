@@ -15,8 +15,12 @@ and a complete counter-enabled Metal System Trace found quantized Q4_0/Q6_K
 matrix work dominant; details and raw receipts are in
 `docs/qwen35-current-native-mixed-bottleneck.md` and `eval/benchmarks/`.
 The old schema-2 phase caller summed native waits from three requests; the
-corrected caller and historical-receipt caveats are in this branch. Next:
-finish focused owner checks, one comprehensive review, exact-head preflight,
+corrected caller now validates each request-local diagnostic log span, and
+historical-receipt caveats are in this branch. A final five-pair real-model
+phase rerun passed with matching outputs and phase containment. One
+comprehensive review found the cross-request wait-count loophole; the focused
+repair and synthetic regression passed, along with the strict Python boundary
+guard and its mutation suite. Next: commit the repair, run exact-head preflight,
 publish/merge the measurement correction, then refresh main and start the
 Align-owned resident Metal execution-plan consumer below. Other Metal hosts,
 CUDA and Gemma remain deferred as registered in `docs/backend-parity.md`.
