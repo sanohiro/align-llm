@@ -6,11 +6,15 @@ logits and resident state between selectable native modes, and checks invalid
 mode construction. Its prefill variant checks the same values at each chunk
 boundary and after repeated requests. The diagnostic interposers and this
 caller never participate in product inference. The existing native-copy failure
-owner also selects mixed decode or prefill mode for command-failure qualification.
+owner also selects mixed decode, prefill or native greedy mode for command-failure qualification.
+Its native greedy variant compares the same real-model output, full logits and
+state while selecting only the experimental decode token reduction; this remains
+an `INDEPENDENT_ORACLE` and does not supply product inference logic.
 `scripts/measure-native-swiglu` remains `BENCHMARK_OR_MEASUREMENT`; its explicit
-copy-mode arms are independent workload selectors and cannot choose a model
+copy and native-greedy arms are independent workload selectors and cannot choose a model
 token or graph operation. `scripts/measure-metal-worker-footprint` retains its
-`BENCHMARK_OR_MEASUREMENT` role for process memory sampling of those modes.
+`BENCHMARK_OR_MEASUREMENT` role for process memory sampling of those modes,
+including the native greedy selection.
 
 `scripts/diagnose-qwen35-decode-metal` is `BENCHMARK_OR_MEASUREMENT`: an
 independent Darwin/Metal diagnostic caller. It compiles the checked-in C/Metal

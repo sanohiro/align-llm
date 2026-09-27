@@ -83,6 +83,20 @@ speed result. Historical measurements remain in their owning reports.
   dependency publication in the cost model; test a larger producer/consumer
   unit if an isolated replacement loses. See the
   [prefill state-copy trial](qwen35-native-prefill-copy-trial.md).
+- Removing a large host readback can lose a useful overlap. On the 2026-09-28
+  M1 Qwen3.5 decode, the existing CPU logit read/scan ran before the required
+  native state-copy wait. Adding a two-dispatch finite argmax to that native
+  command removed the 993,280-byte Align decode readback but made the token
+  depend on command completion. Three alternating local command pairs measured
+  about 0.019–0.027 ms more GPU command work and a larger host wait, while
+  five-pair untraced request comparisons at three lengths showed no stable
+  incremental gain. Treat overlap and publication dependency as measured parts
+  of a fusion proposal; bytes removed alone do not predict speed. The borrowed
+  Metal view also had to include ggml's page-rounded shared allocation after
+  a real logit row landed in the logical workspace's last page. Check the
+  producer allocator and exact reachable span when borrowing a buffer, and
+  insert an explicit buffer barrier between dependent reduction dispatches.
+  See the [copy-command greedy trial](qwen35-native-copy-greedy-trial.md).
 
 ## Current Qwen3.5-2B evidence and next test
 

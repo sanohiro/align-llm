@@ -149,6 +149,30 @@ in the trace. These are measured layouts, not fixed model-name conditions.
 | Rebuild / cleanup | Graph invalidation, borrowed views, descriptor reuse and session close | Repeated short/long/short session owner and full state hashes show no stale source/descriptor across chunk widths; existing close drains pending work. |
 | Performance / portability | Same-binary worker/phase/footprint callers, backend parity | Actual 2B M1 campaigns at three lengths record prefill/decode/whole/startup/memory and pinned reference. Another Metal device and CUDA are deferred with explicit backend parity status. |
 
+### Native Metal copy-command greedy trial (2026-09-28)
+
+The separate post-synchronization Metal argmax selected correct tokens but did
+not improve real requests consistently. Decode now already submits one native
+Metal state-copy command after the synchronized ggml producer. Test whether two
+finite, first-index hierarchical argmax dispatches in that same command avoid
+the full F32 logits readback and CPU scan without paying for another command.
+This is a decode-only GPU experiment; prefill retains its current greedy path.
+
+| Contract | Definition |
+| --- | --- |
+| Selection / owner | `ALIGN_LLM_NATIVE_COPY_GREEDY` is absent/`0` by default. `1` requires `ALIGN_LLM_NATIVE_STATE_COPY=1` and `ALIGN_LLM_NATIVE_CONV_COPY=1`; malformed values, unmet dependencies and combinations with shared/NEON/in-graph greedy refuse before model setup. Align snapshots selection, keys both decode graphs, controls generation/token publication and retains the old full-row path as rollback. No public CLI, pack, Model IR, persisted format or request schema changes. |
+| Input / ABI | Align registers only its completed decode output row: contiguous one-row F32 logits with `1..1,048,576` elements, checked shared Metal backing and bounded extent. The logit row must use the same ggml producer workspace allocation already borrowed by the native copy command. The pinned ggml Metal allocator page-pads its shared allocation; the native view covers that verified page-rounded length so a logit row at the logical tail remains addressable. The shim conveys the borrowed base/offset/count to the session-owned native command. The Metal helper reuses one bounded partial buffer and a four-byte shared result; it implements finite rejection and lowest-index ties. It has no model name, tokenizer, sampling loop or ownership of ggml allocations. |
+| Execution / ownership | Synchronous ggml graph completion precedes the native state-copy/argmax command. The two dependent argmax dispatches have an explicit Metal buffer barrier; the strided state copy and argmax share the existing compute encoder. Align waits once for the command before reading the token and advancing recurrent parity or returning a streamed token. A nonfinite input, invalid result, command failure or borrowed-buffer mismatch fails the selected session; no stale token can be published. Workspace rebuild/invalidation/close drain work before freeing borrowed views. Other model graph operations and prefill remain ggml. |
+| Verification / ceiling | Before timing, compare exact 2B full logits and every resident state plane with the same-binary mixed-decode route, plus 2B/0.8B generation and 0.8B serving/SSE owners. Locally test finite rows, first-index ties and NaN/infinity. Exercise short/long/short sessions and native submit/completion failures. Compare same GGUF, IDs and generated work at 64/16, 200/32 and 330/64 with two warmups and five alternating pairs against mixed decode, ordinary Align and pinned llama.cpp. Separate local kernel, graph/submit, decode, full request, startup and process footprint. Build/owners <=900 s, campaign <=900 s and request <=180 s; reusable scratch <=16 KiB, no full-row copy or second model-state plane. Assess reproducibility and maintenance without a fixed percentage gate. |
+
+| Closure case | Owner / evidence |
+| --- | --- |
+| Construction / malformed mode | Config parser and native selection; invalid/dependent/conflicting flags refuse before readiness, old mode still runs. |
+| Success / numeric edge | Decode graph registration, shim, Metal partial/final kernels and Align read; actual 2B exact logits/states, 2B/0.8B output, local tie/nonfinite cases. |
+| Failure / early exit | Native submission/completion and token read; controlled failed envelope without result/token in forced-failure owners. |
+| Rebuild / cleanup | Existing graph invalidation and native reset; repeated short/long/short plus streaming SSE and retained state hashes. |
+| Performance / portability | Same-binary 2B paired worker/phase/footprint, pinned llama.cpp and backend-parity register; another Metal host/CUDA explicitly deferred. |
+
 ### Final-chunk logits trial (2026-09-26)
 
 Remove unused intermediate-prefill output work on the current 2B consumer. The

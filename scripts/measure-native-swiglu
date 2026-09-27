@@ -57,7 +57,7 @@ def main():
     execution = {}
     for arm in ('control', 'candidate'):
         selected = cfg[arm].get('execution', {})
-        if set(selected) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights', 'shared_logits', 'neon_greedy', 'graph_greedy', 'private_buffers', 'native_state_copy', 'native_conv_copy', 'native_prefill_state_copy'}:
+        if set(selected) - {'sync_weight_upload', 'prefill_chunk', 'final_prefill_logits', 'final_ffn_row', 'mapped_weights', 'shared_logits', 'neon_greedy', 'graph_greedy', 'private_buffers', 'native_state_copy', 'native_conv_copy', 'native_prefill_state_copy', 'native_copy_greedy'}:
             raise ValueError('unknown execution setting')
         sync = selected.get('sync_weight_upload', '0')
         chunk = selected.get('prefill_chunk', '128')
@@ -71,20 +71,29 @@ def main():
         state_copy = selected.get('native_state_copy', '0')
         conv_copy = selected.get('native_conv_copy', '0')
         prefill_copy = selected.get('native_prefill_state_copy', '0')
-        if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or shared not in ('0', '1') or neon not in ('0', '1') or graph not in ('0', '1') or private not in ('0', '1') or state_copy not in ('0', '1') or conv_copy not in ('0', '1') or prefill_copy not in ('0', '1') or (conv_copy == '1' and state_copy != '1') or (prefill_copy == '1' and (state_copy != '1' or conv_copy != '1')) or sum((shared == '1', neon == '1', graph == '1')) > 1 or (mapped == '1' and sync == '1') or (private == '1' and (mapped == '1' or shared == '1' or neon == '1' or graph == '1' or state_copy == '1')):
+        copy_greedy = selected.get('native_copy_greedy', '0')
+        if sync not in ('0', '1') or chunk not in ('128', '256', '512') or final_logits not in ('0', '1') or last_row not in ('0', '1') or mapped not in ('0', '1') or shared not in ('0', '1') or neon not in ('0', '1') or graph not in ('0', '1') or private not in ('0', '1') or state_copy not in ('0', '1') or conv_copy not in ('0', '1') or prefill_copy not in ('0', '1') or copy_greedy not in ('0', '1') or (conv_copy == '1' and state_copy != '1') or (prefill_copy == '1' and (state_copy != '1' or conv_copy != '1')) or (copy_greedy == '1' and (state_copy != '1' or conv_copy != '1' or shared == '1' or neon == '1' or graph == '1')) or sum((shared == '1', neon == '1', graph == '1')) > 1 or (mapped == '1' and sync == '1') or (private == '1' and (mapped == '1' or shared == '1' or neon == '1' or graph == '1' or state_copy == '1')):
             raise ValueError('invalid execution setting')
-        execution[arm] = dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped, shared_logits=shared, neon_greedy=neon, graph_greedy=graph, private_buffers=private, native_state_copy=state_copy, native_conv_copy=conv_copy, native_prefill_state_copy=prefill_copy)
+        execution[arm] = dict(sync_weight_upload=sync, prefill_chunk=chunk, final_prefill_logits=final_logits, final_ffn_row=last_row, mapped_weights=mapped, shared_logits=shared, neon_greedy=neon, graph_greedy=graph, private_buffers=private, native_state_copy=state_copy, native_conv_copy=conv_copy, native_prefill_state_copy=prefill_copy, native_copy_greedy=copy_greedy)
     graph_trial = any(execution[arm]['graph_greedy'] == '1' for arm in ('control', 'candidate'))
-    state_copy_trial = any(execution[arm]['native_state_copy'] == '1' for arm in ('control', 'candidate'))
-    conv_copy_trial = execution['candidate']['native_conv_copy'] == '1'
+    greedy_trial = execution['candidate']['native_copy_greedy'] == '1'
+    state_copy_trial = not greedy_trial and any(execution[arm]['native_state_copy'] == '1' for arm in ('control', 'candidate'))
+    conv_copy_trial = not greedy_trial and execution['candidate']['native_conv_copy'] == '1'
     prefill_copy_trial = execution['candidate']['native_prefill_state_copy'] == '1'
+    if greedy_trial and (execution['control']['native_copy_greedy'] != '0'
+                         or execution['control']['native_state_copy'] != execution['control']['native_conv_copy']
+                         or execution['candidate']['native_state_copy'] != '1'
+                         or execution['candidate']['native_conv_copy'] != '1'
+                         or any(execution[arm]['native_prefill_state_copy'] != '0'
+                                for arm in ('control', 'candidate'))):
+        raise ValueError('native-copy greedy trial requires ordinary or mixed control and mixed candidate')
     if prefill_copy_trial and execution['control']['native_prefill_state_copy'] != '0':
         raise ValueError('prefill-copy trial requires control off and candidate on')
     if prefill_copy_trial and execution['control']['native_state_copy'] != execution['control']['native_conv_copy']:
         raise ValueError('prefill-copy control must select ordinary or mixed decode copy')
     if conv_copy_trial and not prefill_copy_trial and execution['control']['native_conv_copy'] != '0':
         raise ValueError('convolution-copy trial requires control off and candidate on')
-    if conv_copy_trial:
+    if conv_copy_trial or greedy_trial:
         for arm in ('control', 'candidate'):
             shim = cfg[arm].get('shim')
             if not shim or shim not in subprocess.check_output(
@@ -105,10 +114,11 @@ def main():
            for arm in ('control', 'candidate')):
         raise ValueError('graph greedy requires a verified argmax bundle patch')
     report = dict(schema_version=2,
-                  artifact_kind='NATIVE_PREFILL_STATE_COPY_MEASUREMENT' if prefill_copy_trial else ('NATIVE_CONV_COPY_MEASUREMENT' if conv_copy_trial else ('NATIVE_STATE_COPY_MEASUREMENT' if state_copy_trial else ('INGRAPH_ARGMAX_MEASUREMENT' if graph_trial else 'NATIVE_SWIGLU_MEASUREMENT'))),
+                  artifact_kind='NATIVE_COPY_GREEDY_MEASUREMENT' if greedy_trial else ('NATIVE_PREFILL_STATE_COPY_MEASUREMENT' if prefill_copy_trial else ('NATIVE_CONV_COPY_MEASUREMENT' if conv_copy_trial else ('NATIVE_STATE_COPY_MEASUREMENT' if state_copy_trial else ('INGRAPH_ARGMAX_MEASUREMENT' if graph_trial else 'NATIVE_SWIGLU_MEASUREMENT')))),
                   align_revision=Path('.align-revision').read_text().strip(),
                   policy='2026-09-26-no-percentage-floor', status='INCOMPLETE',
-                  control_kind=(('same_binary_same_bundle_' if cfg['control']['binary'] == cfg['candidate']['binary'] and cfg['control']['lib'] == cfg['candidate']['lib'] else 'explicit_')
+                  control_kind=(('same_binary_same_bundle_' if cfg['control']['binary'] == cfg['candidate']['binary'] and cfg['control']['lib'] == cfg['candidate']['lib'] else 'explicit_') + ('mixed_decode_cpu_greedy' if execution['control']['native_conv_copy'] == '1' else 'ordinary_ggml_cpu_greedy')) if greedy_trial else
+                               (('same_binary_same_bundle_' if cfg['control']['binary'] == cfg['candidate']['binary'] and cfg['control']['lib'] == cfg['candidate']['lib'] else 'explicit_')
                                 + ('mixed_decode' if execution['control']['native_conv_copy'] == '1' else 'ordinary_ggml')) if prefill_copy_trial else
                                (('same_binary_same_bundle_' if cfg['control']['binary'] == cfg['candidate']['binary'] and cfg['control']['lib'] == cfg['candidate']['lib'] else 'explicit_')
                                 + ('delta_only' if execution['control']['native_state_copy'] == '1' else 'ordinary_ggml')) if conv_copy_trial else
@@ -171,6 +181,7 @@ def main():
                     e['ALIGN_LLM_NATIVE_STATE_COPY']=execution[arm]['native_state_copy']
                     e['ALIGN_LLM_NATIVE_CONV_COPY']=execution[arm]['native_conv_copy']
                     e['ALIGN_LLM_NATIVE_PREFILL_STATE_COPY']=execution[arm]['native_prefill_state_copy']
+                    e['ALIGN_LLM_NATIVE_COPY_GREEDY']=execution[arm]['native_copy_greedy']
                     if execution[arm]['private_buffers'] == '1':
                         e['GGML_METAL_SHARED_BUFFERS_DISABLE']='1'
                     started=time.monotonic_ns()

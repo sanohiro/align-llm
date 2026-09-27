@@ -20,18 +20,28 @@ struct align_native_metal_strided_copy {
     uint32_t destination_row_stride;
 };
 
+struct align_native_metal_greedy_input {
+    void *base;
+    size_t size;
+    uint64_t offset;
+    uint32_t count;
+};
+
 #ifdef __cplusplus
 extern "C" {
 #endif
 
 void *align_native_metal_copy_open(const char *selected_device_description);
 int align_native_metal_copy_enable_strided(void *context);
+int align_native_metal_copy_enable_greedy(void *context);
 int align_native_metal_copy_submit(void *context,
         void *source_base, size_t source_size,
         void *destination_base, size_t destination_size,
         const struct align_native_metal_copy *copies, size_t count,
-        const struct align_native_metal_strided_copy *strided, size_t strided_count);
+        const struct align_native_metal_strided_copy *strided, size_t strided_count,
+        const struct align_native_metal_greedy_input *greedy);
 int align_native_metal_copy_wait(void *context);
+int64_t align_native_metal_copy_greedy_result(void *context);
 int align_native_metal_copy_reset_views(void *context);
 void align_native_metal_copy_close(void *context);
 

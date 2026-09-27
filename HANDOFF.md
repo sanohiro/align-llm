@@ -2,16 +2,34 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active native Metal prefill state-copy trial (2026-09-28)
+## Active native Metal copy-command greedy trial (2026-09-28)
 
-Branch `agent/native-metal-prefill-state-copy` from merged `main` at
-`df6d3cdc` (PR #310). GPU inference remains the priority. The immediate
-consumer capability extends the Align-selected independent Metal state-copy
-command to prefill without changing the default ggml graph or the merged
-decode-only modes. The public option, failure/ownership closure, cost ceiling
-and evidence owners are in `docs/specs/gpu-runtime-performance.md`.
+Branch `agent/native-metal-copy-greedy` starts from merged `main` at
+`21d6a4b2` (PR #311). GPU inference remains the priority. This default-off
+finite, first-index Metal argmax is selected by Align inside the native decode
+state-copy command; the ordinary full-row and mixed native modes remain.
+The contract/cost ceiling and completed result are in
+`docs/specs/gpu-runtime-performance.md` and
+`docs/qwen35-native-copy-greedy-trial.md`. Final real 2B comparison passed 48
+exact complete logits and 4,116 resident planes; local Metal tie/nonfinite,
+2B/0.8B generation, 0.8B serving/SSE and both forced fault owners passed.
+Five alternating pairs at 64/16, 200/32 and 330/64 found no reproducible
+incremental request win over the already native mixed mode. The candidate
+still beat ordinary ggml Align in 15/15 pairs, due chiefly to earlier native
+copy work. Three local command pairs found ~0.019–0.027 ms additional GPU work
+per decode command and a larger required host wait. The default remains off.
+Final unforced shim was restored byte-identically after fault qualification.
+Next: finish stub/aggregate owner and exact-head preflight, complete one fresh
+comprehensive review, publish/merge if clean, then test a larger Align-owned
+producer/consumer GPU boundary. Another Metal host, CUDA and Gemma remain
+deferred until devices/model execution are available.
 
-The implementation and result are in `docs/qwen35-native-prefill-copy-trial.md`.
+## Completed native Metal prefill state-copy trial (2026-09-28)
+
+Branch `agent/native-metal-prefill-state-copy` merged as PR #311 at
+`21d6a4b2`; its implementation and result are in
+`docs/qwen35-native-prefill-copy-trial.md`.
+
 The selectable prefill route removes 36 ggml state `CPY` nodes per prefill
 graph, and Align waits for the native command before parity publication in
 ordinary and streaming generation. The final 2B owner passed 48 exact full
@@ -25,9 +43,6 @@ longer conditions losing four of five pairs. Ordinary Align still lost all
 Instrumented prefill graph/submission call savings were outweighed by native completion
 waits; the process-footprint screen resolved no difference. Keep the prefill
 option default-off and retain mixed decode as the preferred tested route.
-Next: complete final owner/preflight, one independent review, PR checks and
-merge; then refresh `main` and begin the next GPU capability. Another Metal
-host and CUDA remain deferred until available.
 
 ## Completed native Metal convolution-state copy trial (2026-09-27)
 

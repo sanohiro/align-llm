@@ -187,6 +187,12 @@ pub fn build_tokens_final_row_greedy(
     ggml_ffi.graph_expand(graph, slots, OUTPUT, "q35_logits") else {
       return Err(Error.Invalid)
     }
+    if kind != ggml_ffi.GPU_GRAPH_PREFILL
+      && ggml_ffi.gpu_native_copy_greedy_enabled(owner) {
+      ggml_ffi.gpu_native_copy_greedy_register(owner, kind, slots, OUTPUT) else {
+        return Err(Error.Invalid)
+      }
+    }
   }
   return Ok(())
 }

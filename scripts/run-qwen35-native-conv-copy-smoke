@@ -26,8 +26,10 @@ def main() -> None:
                str(geometry), str(options), "0"]
     base = os.environ.copy()
     base["DYLD_LIBRARY_PATH"] = os.environ["QWEN35_LIB_PATH"]
-    base["DYLD_INSERT_LIBRARIES"] = ":".join((os.environ["QWEN35_STATE_TRACE"],
-                                                   os.environ["QWEN35_LOGIT_TRACE"]))
+    greedy = os.environ.get("QWEN35_NATIVE_COPY_GREEDY", "0")
+    base["DYLD_INSERT_LIBRARIES"] = (os.environ["QWEN35_STATE_TRACE"] if greedy == "1"
+                                     else ":".join((os.environ["QWEN35_STATE_TRACE"],
+                                                    os.environ["QWEN35_LOGIT_TRACE"])))
     base["ALIGN_STATE_COUNT"] = "84"
     base["ALIGN_LOGIT_BYTES"] = "993280"
     base["ALIGN_LLM_PREFILL_CHUNK"] = "128"
@@ -35,37 +37,64 @@ def main() -> None:
     prefill = os.environ.get("QWEN35_NATIVE_PREFILL_COPY", "0")
     if prefill not in ("0", "1"):
         raise RuntimeError("expected 0 or 1 for native prefill copy")
+    if greedy not in ("0", "1") or (prefill == "1" and greedy == "1"):
+        raise RuntimeError("expected one native copy trial mode")
+    if greedy == "1":
+        base["ALIGN_GRAPH_LOGIT_BYTES"] = "993280"
     request = dict(schema_version=1,
                    system="You are a coding assistant. Return a concise patch-oriented answer.",
                    user="List the integers from 1 to 1000 in ascending order, separated by single spaces. Output only the integers.",
                    max_tokens=16, temperature=0.0, seed=None)
 
-    invalid_modes = (("0", "1", "0"), ("bad", "0", "0"))
+    invalid_modes = (("0", "1", "0", "0"), ("bad", "0", "0", "0"))
     if prefill == "1":
-        invalid_modes += (("0", "0", "1"), ("1", "0", "1"),
-                          ("1", "1", "bad"))
-    for state, conv, selected_prefill in invalid_modes:
+        invalid_modes += (("0", "0", "1", "0"), ("1", "0", "1", "0"),
+                          ("1", "1", "bad", "0"))
+    if greedy == "1":
+        invalid_modes += (("0", "0", "0", "1"), ("1", "0", "0", "1"),
+                          ("1", "1", "0", "bad"))
+    for state, conv, selected_prefill, selected_greedy in invalid_modes:
         environment = dict(base, ALIGN_LLM_NATIVE_STATE_COPY=state,
                            ALIGN_LLM_NATIVE_CONV_COPY=conv,
-                           ALIGN_LLM_NATIVE_PREFILL_STATE_COPY=selected_prefill)
+                           ALIGN_LLM_NATIVE_PREFILL_STATE_COPY=selected_prefill,
+                           ALIGN_LLM_NATIVE_COPY_GREEDY=selected_greedy)
         try:
             with Session(command, timeout=180, env=environment):
                 raise RuntimeError("invalid copy mode acknowledged session construction")
         except SessionError:
             pass
+    if greedy == "1":
+        for conflict in ("ALIGN_LLM_SHARED_LOGITS", "ALIGN_LLM_NEON_GREEDY",
+                         "ALIGN_LLM_GRAPH_GREEDY"):
+            environment = dict(base, ALIGN_LLM_NATIVE_STATE_COPY="1",
+                               ALIGN_LLM_NATIVE_CONV_COPY="1",
+                               ALIGN_LLM_NATIVE_PREFILL_STATE_COPY="0",
+                               ALIGN_LLM_NATIVE_COPY_GREEDY="1")
+            environment[conflict] = "1"
+            try:
+                with Session(command, timeout=180, env=environment):
+                    raise RuntimeError(f"conflicting {conflict} acknowledged session construction")
+            except SessionError:
+                pass
 
     observations = {}
-    arms = (("delta", "1", "0", "0"), ("mixed", "1", "1", "0"))
+    arms = (("delta", "1", "0", "0", "0"), ("mixed", "1", "1", "0", "0"))
     requests = [request, request]
     if prefill == "1":
-        arms = (("mixed", "1", "1", "0"), ("prefill", "1", "1", "1"))
+        arms = (("mixed", "1", "1", "0", "0"), ("prefill", "1", "1", "1", "0"))
         requests = [request,
                     dict(request, user="hello " * 169),
                     request]
-    for name, state, conv, selected_prefill in arms:
+    if greedy == "1":
+        arms = (("mixed", "1", "1", "0", "0"), ("greedy", "1", "1", "0", "1"))
+        requests = [request,
+                    dict(request, user="hello " * 169),
+                    request]
+    for name, state, conv, selected_prefill, selected_greedy in arms:
         environment = dict(base, ALIGN_LLM_NATIVE_STATE_COPY=state,
                            ALIGN_LLM_NATIVE_CONV_COPY=conv,
-                           ALIGN_LLM_NATIVE_PREFILL_STATE_COPY=selected_prefill)
+                           ALIGN_LLM_NATIVE_PREFILL_STATE_COPY=selected_prefill,
+                           ALIGN_LLM_NATIVE_COPY_GREEDY=selected_greedy)
         with Session(command, timeout=180, env=environment) as session:
             results = [session.generate(item) for item in requests]
             session.log.seek(0)
@@ -106,8 +135,9 @@ def main() -> None:
         outputs = [(row["output"], row["prompt_tokens"], row["completion_tokens"])
                    for row in results]
         observations[name] = (outputs, states, logits, graph)
-    control = observations["mixed" if prefill == "1" else "delta"]
-    candidate = observations["prefill" if prefill == "1" else "mixed"]
+    control = observations["mixed" if prefill == "1" or greedy == "1" else "delta"]
+    candidate = observations["prefill" if prefill == "1" else
+                             "greedy" if greedy == "1" else "mixed"]
     if prefill == "1" and ([row[1] for row in control[0]][1] != 199
                            or [row[1] for row in control[0]][0]
                            != [row[1] for row in control[0]][2]):
@@ -119,7 +149,7 @@ def main() -> None:
             raise RuntimeError("graph kinds differ")
         removed = ordinary["ops"]["CPY"] - selected["ops"]["CPY"]
         expected_removed = 36 if prefill == "1" and ordinary["kind"] == 0 else (
-            18 if prefill == "0" and ordinary["kind"] != 0 else 0)
+            18 if prefill == "0" and greedy == "0" and ordinary["kind"] != 0 else 0)
         if removed != expected_removed:
             raise RuntimeError(f"native copy removed {removed} CPY nodes, expected {expected_removed}")
     print(f"invalid modes refused; {len(control[2])} full logits and {len(control[1])} resident planes match exactly")

@@ -48,6 +48,18 @@ static int64_t state_count(void) {
     return count;
 }
 
+static int64_t graph_logit_bytes(void) {
+    const char *raw = getenv("ALIGN_GRAPH_LOGIT_BYTES");
+    if (raw == NULL) return 0;
+    require(raw[0] != '\0', "empty graph logit bytes");
+    for (const char *p = raw; *p; ++p) require(*p >= '0' && *p <= '9', "invalid graph logit bytes");
+    errno = 0;
+    unsigned long long value = strtoull(raw, NULL, 10);
+    require(errno != ERANGE && value >= 4 && value <= INT32_MAX && value % 4 == 0,
+            "graph logit bytes outside diagnostic bound");
+    return (int64_t)value;
+}
+
 static int32_t traced_compute(void *owner, int32_t kind, const void *key,
                               int64_t length, void *value) {
     int64_t count = state_count();
@@ -89,6 +101,37 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
             case GGML_OP_FLASH_ATTN_EXT: ++flash; break;
             case GGML_OP_GLU: ++glu; break;
             default: break;
+        }
+    }
+    int64_t logit_bytes = graph_logit_bytes();
+    if (logit_bytes) {
+        const struct ggml_tensor *logits = NULL;
+        for (int i = 0; i < nodes; ++i) {
+            const struct ggml_tensor *t = ggml_graph_node(graph, i);
+            if (t->op == GGML_OP_MUL_MAT && t->type == GGML_TYPE_F32
+                && t->ne[0] == logit_bytes / 4 && t->ne[1] == 1
+                && t->ne[2] == 1 && t->ne[3] == 1 && ggml_is_contiguous(t)) {
+                require(logits == NULL, "multiple graph logit rows");
+                logits = t;
+            }
+        }
+        if (logits != NULL) {
+            static uint64_t logit_ordinal;
+            unsigned char *bytes = malloc((size_t)logit_bytes);
+            require(bytes != NULL && logits->buffer != NULL, "graph logit storage unavailable");
+            ggml_backend_tensor_get(logits, bytes, 0, (size_t)logit_bytes);
+            unsigned char digest[CC_SHA256_DIGEST_LENGTH];
+            char hex[2 * CC_SHA256_DIGEST_LENGTH + 1];
+            static const char digits[] = "0123456789abcdef";
+            CC_SHA256(bytes, (CC_LONG)logit_bytes, digest);
+            free(bytes);
+            for (size_t i = 0; i < sizeof(digest); ++i) {
+                hex[2*i] = digits[digest[i] >> 4];
+                hex[2*i+1] = digits[digest[i] & 15];
+            }
+            hex[sizeof(hex)-1] = '\0';
+            fprintf(stderr, "Q35_LOGIT {\"ordinal\":%" PRIu64 ",\"bytes\":%" PRId64
+                    ",\"sha256\":\"%s\"}\n", logit_ordinal++, logit_bytes, hex);
         }
     }
     fprintf(stderr, "Q35_STATE {\"event\":\"graph\",\"ordinal\":%" PRIu64 ",\"kind\":%d,"
