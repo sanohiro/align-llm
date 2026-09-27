@@ -58,6 +58,19 @@ speed result. Historical measurements remain in their owning reports.
   path ran, and require the expected worker envelope and controlled exit. The
   [state-copy failure trial](qwen35-native-state-copy-trial.md) found this false
   positive in its first owner version.
+- A small strided state copy can be worth moving only when its graph and command
+  boundaries are included in the trial. On the 2026-09-27 M1 Qwen3.5 run,
+  Align kept the ggml state producer but replaced 18 convolution `CPY` nodes
+  with one native Metal compute pass in the already required DeltaNet command.
+  The real source had three F32 words per row and a 16-byte row stride;
+  assigning one thread per row avoids repeated row division. The generic
+  odd-width path remains. Exact logits/state and five alternating untraced
+  pairs at three lengths showed a small repeatable request gain over the
+  Delta-only route. This does not establish the row mapping's isolated gain;
+  the connected change also removed graph nodes and changed scheduling.
+  Pipeline compilation is additional setup and startup medians were slower;
+  its isolated contribution remains unmeasured. This matters for short-lived
+  sessions. See [the convolution-copy trial](qwen35-native-conv-copy-trial.md).
 
 ## Current Qwen3.5-2B evidence and next test
 

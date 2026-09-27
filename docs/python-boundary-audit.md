@@ -1,5 +1,16 @@
 # Python execution-boundary audit
 
+`scripts/run-qwen35-native-conv-copy-smoke` is `INDEPENDENT_ORACLE`: it drives
+explicit real-model Align workers, compares diagnostic hashes of complete
+logits and resident state between selectable native modes, and checks invalid
+mode construction. The diagnostic interposers and this caller never participate
+in product inference. The existing native-copy failure owner also selects the
+mixed mode for the same command-failure qualification. `scripts/measure-native-swiglu`
+remains `BENCHMARK_OR_MEASUREMENT`; its explicit convolution-copy arm is only an
+independent workload selector and cannot choose a model token or graph operation.
+`scripts/measure-metal-worker-footprint` retains its `BENCHMARK_OR_MEASUREMENT`
+role when it selects that same explicit trial mode for process memory sampling.
+
 `scripts/diagnose-qwen35-decode-metal` is `BENCHMARK_OR_MEASUREMENT`: an
 independent Darwin/Metal diagnostic caller. It compiles the checked-in C/Metal
 interposers, checks fixed 200-token input IDs, runs explicit Align and pinned

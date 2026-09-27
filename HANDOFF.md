@@ -8,7 +8,8 @@ Branch `agent/native-metal-conv-state-copy` from `main` at `9ff42d21` (PR #309
 merged). GPU inference remains the priority. Extend the Align-selected native
 decode boundary to the 18 strided convolution-state copies while preserving
 the already qualified Delta-only mode and ordinary ggml graph as controls.
-The plan and cost ceiling are in `docs/specs/gpu-runtime-performance.md`.
+The plan and cost ceiling are in `docs/specs/gpu-runtime-performance.md`; the
+implementation and result are in `docs/qwen35-native-conv-copy-trial.md`.
 
 A temporary real-model shim diagnostic (removed from source after capture)
 found all 18 2B decode convolution sources shaped `[3,6144,1,1]` with F32
@@ -16,10 +17,22 @@ strides `[4,16,98304,98304]`, versus contiguous destination strides
 `[4,12,73728,73728]`. Source reachable span was 98,300 bytes, destination
 logical size 73,728 bytes; a real two-token provider request completed. The
 raw trace is uncommitted diagnostic data under the Git common directory.
-Next: implement bounded strided descriptors and one Metal compute dispatch in
-the existing native command, connect Align source roots behind a second opt-in,
-then prove exact real-model state/logits and measure paired requests. Another
-Metal device remains unavailable on this M1 host and is deferred.
+The implementation now adds bounded strided descriptors and one compute pass to
+the existing native command, selected by Align's separate default-off option.
+The final 2B owner passed 32 exact complete logits and 2,688 exact resident
+planes, the 2B/0.8B generation owners and mixed submit/completion failure
+owners passed, and local 37x5/6144x3 kernels passed. Five alternating untraced
+pairs per 64/16, 200/32 and 330/64 condition all favored mixed over Delta-only,
+ordinary Align and pinned llama.cpp. Paired Delta-only-minus-mixed medians were
++6.412, +12.673 and +14.190 ms. Instrumented phase results retained three
+adverse whole-request pairs; the mixed session's startup was slower, while the
+five-pair process-footprint screen found no resolved after-request difference.
+All receipts are under `eval/benchmarks/qwen35-native-conv-copy-2026-09-27-*`.
+`python3 scripts/check-python-boundary --strict` passed before the final
+documentation batch. Next: run `gmake fmt`, the focused owners and one fresh
+comprehensive review, repair accepted findings, run `scripts/pre-pr` for the
+exact head, then publish and merge. A second Metal host and CUDA remain
+unmeasured; defer their qualification until device/session support is available.
 
 ## Completed independent Metal state-copy failure qualification (2026-09-27)
 

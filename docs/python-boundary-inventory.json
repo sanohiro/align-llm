@@ -3318,15 +3318,28 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/run-qwen35-native-conv-copy-smoke",
+      "classification": "INDEPENDENT_ORACLE",
+      "behavior": "Compare complete real-model logits and resident-state hashes between selectable native copy modes and reject invalid mode construction.",
+      "reachability": "Focused developer qualification only; never part of normal product execution.",
+      "substitution": "Drives external Align workers and diagnostic interposers; does not implement shipping inference.",
+      "python_reason": "Real-model independent numerical and state comparison remains outside Align product execution.",
+      "target": "Retain as the native Metal convolution-state copy qualification owner.",
+      "migration": "N/A",
+      "acceptance": "QWEN35_GGUF=... QWEN35_ALIGNPACK=... QWEN35_MODEL_IR=... QWEN35_RUNTIME_OPTIONS=... QWEN35_LIB_PATH=... QWEN35_NATIVE_COPY_BINARY=... QWEN35_STATE_TRACE=... QWEN35_LOGIT_TRACE=... python3 scripts/run-qwen35-native-conv-copy-smoke; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/run-qwen35-native-copy-failure-smoke",
       "classification": "INDEPENDENT_ORACLE",
-      "behavior": "Verify a real Qwen3.5 Metal session reports and exits on an injected native state-copy command failure, while its ordinary copy mode still completes.",
+      "behavior": "Verify a real Qwen3.5 Metal session reports and exits on an injected native state-copy command failure in Delta-only or mixed convolution mode, while its ordinary copy mode still completes.",
       "reachability": "Focused developer qualification only; never part of normal product execution.",
       "substitution": "Drives an external Align worker built with a test-only native fault; it does not implement shipping inference.",
       "python_reason": "Real-model failure-envelope verification remains outside Align product execution.",
       "target": "Retain as the native Metal command-failure qualification owner.",
       "migration": "N/A",
-      "acceptance": "QWEN35_GGUF=... QWEN35_ALIGNPACK=... QWEN35_MODEL_IR=... QWEN35_RUNTIME_OPTIONS=... QWEN35_LIB_PATH=... QWEN35_NATIVE_COPY_BINARY=... QWEN35_NATIVE_COPY_FAILURE=submit|complete python3 scripts/run-qwen35-native-copy-failure-smoke; python3 scripts/check-python-boundary --strict",
+      "acceptance": "QWEN35_GGUF=... QWEN35_ALIGNPACK=... QWEN35_MODEL_IR=... QWEN35_RUNTIME_OPTIONS=... QWEN35_LIB_PATH=... QWEN35_NATIVE_COPY_BINARY=... QWEN35_NATIVE_COPY_FAILURE=submit|complete QWEN35_NATIVE_CONV_COPY=0|1 python3 scripts/run-qwen35-native-copy-failure-smoke; python3 scripts/check-python-boundary --strict",
       "frozen_sha256": null,
       "bootstrap": null
     },

@@ -51,6 +51,7 @@ fn key(borrow owner: ggml_ffi.GpuDevice, borrow options: runtime_options.Runtime
   if last_ffn_row { b.write(":final-ffn-row") }
   if graph_greedy { b.write(":graph-greedy") }
   if ggml_ffi.gpu_native_state_copy_enabled(owner) { b.write(":native-state-copy") }
+  if ggml_ffi.gpu_native_conv_copy_enabled(owner) { b.write(":native-conv-copy") }
   digest := crypto.sha256(b.to_string())
   return encoding.hex_encode(digest[0..digest.len()]).clone()
 }
@@ -274,6 +275,9 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
     || probe_prompt < 1 || probe_prompt > MAX_PROMPT
     || capacity < probe_prompt || capacity > g.context_length { return Err(Error.Invalid) }
   ggml_ffi.gpu_native_state_copy_select(owner, config.native_state_copy) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_native_conv_copy_select(owner, config.native_conv_copy) else {
     return Err(Error.Invalid)
   }
   // The retained planes must cover the fixed-width decode graph's padded view.

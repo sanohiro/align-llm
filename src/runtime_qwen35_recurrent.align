@@ -98,10 +98,24 @@ pub fn build_many(
   }
   ggml_ffi.op_view_2d(ctx, slots, 34, 33, g.ssm_conv_kernel - 1, channels,
     1, 0, count, "q35_recurrent_conv_next") else { return Err(Error.Invalid) }
-  runtime_qwen35_state_io.stage_write(owner, g, state, layer, runtime_qwen35_state.CONV,
-    kind, slots, 53, 34)?
-  ggml_ffi.graph_expand(graph, slots, 53, "q35_recurrent_conv_commit") else {
-    return Err(Error.Invalid)
+  if kind != ggml_ffi.GPU_GRAPH_PREFILL && ggml_ffi.gpu_native_conv_copy_enabled(owner) {
+    destination := runtime_qwen35_state.write_index(
+      g, state, layer, runtime_qwen35_state.CONV)?
+    ggml_ffi.gpu_native_conv_copy_register(owner, kind, slots, 34, destination) else {
+      return Err(Error.Invalid)
+    }
+    ggml_ffi.slot_mark_output(slots, 34, "q35_native_conv_source") else {
+      return Err(Error.Invalid)
+    }
+    ggml_ffi.graph_expand(graph, slots, 34, "q35_native_conv_source") else {
+      return Err(Error.Invalid)
+    }
+  } else {
+    runtime_qwen35_state_io.stage_write(owner, g, state, layer, runtime_qwen35_state.CONV,
+      kind, slots, 53, 34)?
+    ggml_ffi.graph_expand(graph, slots, 53, "q35_recurrent_conv_commit") else {
+      return Err(Error.Invalid)
+    }
   }
   ggml_ffi.op_ssm_conv(ctx, slots, 35, 33, 3, "q35_recurrent_conv") else {
     return Err(Error.Invalid)

@@ -17,6 +17,8 @@ struct align_native_metal_copy_context {
     id<MTLCommandQueue> queue;
     id<MTLBuffer> source_view;
     id<MTLBuffer> destination_view;
+    id<MTLBuffer> strided_descriptors;
+    id<MTLComputePipelineState> strided_pipeline;
     id<MTLCommandBuffer> pending;
     void *source_base;
     void *destination_base;
@@ -49,8 +51,70 @@ extern "C" void *align_native_metal_copy_open(const char *selected_device_descri
         if (queue == nil) return nullptr;
         const char *trace = getenv("ALIGN_LLM_NATIVE_COPY_TRACE");
         return new align_native_metal_copy_context{
-            device, queue, nil, nil, nil, nullptr, nullptr, 0, 0, 0, 0, 0,
+            device, queue, nil, nil, nil, nil, nil, nullptr, nullptr, 0, 0, 0, 0, 0,
             trace != nullptr && trace[0] == '1' && trace[1] == '\0'};
+    }
+}
+
+extern "C" int align_native_metal_copy_enable_strided(void *opaque) {
+    auto *context = static_cast<align_native_metal_copy_context *>(opaque);
+    if (context == nullptr || context->pending != nil) return 0;
+    if (context->strided_pipeline != nil && context->strided_descriptors != nil) return 1;
+    static const char *source = R"metal(
+#include <metal_stdlib>
+using namespace metal;
+struct Copy {
+    ulong source_offset;
+    ulong destination_offset;
+    uint row_elements;
+    uint rows;
+    uint source_row_stride;
+    uint destination_row_stride;
+};
+kernel void copy_strided(device const uchar *source [[buffer(0)]],
+                         device uchar *destination [[buffer(1)]],
+                         device const Copy *copies [[buffer(2)]],
+                         uint2 position [[thread_position_in_grid]]) {
+    Copy item = copies[position.y];
+    if (item.row_elements == 3) {
+        if (position.x >= item.rows) return;
+        device const uint *from = (device const uint *)(source + item.source_offset
+            + ulong(position.x) * item.source_row_stride);
+        device uint *to = (device uint *)(destination + item.destination_offset
+            + ulong(position.x) * item.destination_row_stride);
+        to[0] = from[0];
+        to[1] = from[1];
+        to[2] = from[2];
+        return;
+    }
+    uint elements = item.row_elements * item.rows;
+    if (position.x >= elements) return;
+    ulong row = position.x / item.row_elements;
+    ulong column = position.x % item.row_elements;
+    device const uint *from = (device const uint *)(source + item.source_offset
+        + row * item.source_row_stride + column * sizeof(float));
+    device uint *to = (device uint *)(destination + item.destination_offset
+        + row * item.destination_row_stride + column * sizeof(float));
+    *to = *from;
+}
+)metal";
+    @autoreleasepool {
+        NSError *error = nil;
+        NSString *text = [NSString stringWithUTF8String:source];
+        id<MTLLibrary> library = [context->device newLibraryWithSource:text options:nil error:&error];
+        if (library == nil) return 0;
+        id<MTLFunction> function = [library newFunctionWithName:@"copy_strided"];
+        if (function == nil) return 0;
+        id<MTLComputePipelineState> pipeline =
+            [context->device newComputePipelineStateWithFunction:function error:&error];
+        if (pipeline == nil || pipeline.maxTotalThreadsPerThreadgroup < 1) return 0;
+        id<MTLBuffer> descriptors = [context->device
+            newBufferWithLength:sizeof(align_native_metal_strided_copy) * 64
+            options:MTLResourceStorageModeShared];
+        if (descriptors == nil || descriptors.contents == nullptr) return 0;
+        context->strided_pipeline = pipeline;
+        context->strided_descriptors = descriptors;
+        return 1;
     }
 }
 
@@ -99,12 +163,17 @@ extern "C" int align_native_metal_copy_reset_views(void *opaque) {
 extern "C" int align_native_metal_copy_submit(void *opaque,
         void *source_base, size_t source_size,
         void *destination_base, size_t destination_size,
-        const struct align_native_metal_copy *copies, size_t count) {
+        const struct align_native_metal_copy *copies, size_t count,
+        const struct align_native_metal_strided_copy *strided, size_t strided_count) {
     auto *context = static_cast<align_native_metal_copy_context *>(opaque);
     size_t page = size_t(getpagesize());
     if (context == nullptr || context->pending != nil
         || source_base == nullptr || destination_base == nullptr
-        || copies == nullptr || count == 0 || count > 64 || page == 0
+        || count > 64 || strided_count > 64 || count + strided_count == 0
+        || (count > 0 && copies == nullptr) || (strided_count > 0 && strided == nullptr)
+        || (strided_count > 0
+            && (context->strided_pipeline == nil || context->strided_descriptors == nil))
+        || page == 0
         || uintptr_t(source_base) % page != 0 || uintptr_t(destination_base) % page != 0) return 0;
     size_t source_length = source_size - source_size % page;
     size_t destination_length = destination_size - destination_size % page;
@@ -119,6 +188,23 @@ extern "C" int align_native_metal_copy_submit(void *opaque,
             || item.source_offset > source_length || bytes > source_length - item.source_offset
             || item.destination_offset > destination_length
             || bytes > destination_length - item.destination_offset) return 0;
+    }
+    uint32_t max_strided_elements = 0;
+    for (size_t i = 0; i < strided_count; ++i) {
+        const auto &item = strided[i];
+        uint64_t row_bytes = uint64_t(item.row_elements) * sizeof(float);
+        uint64_t elements = uint64_t(item.row_elements) * item.rows;
+        if (item.row_elements == 0 || item.rows == 0 || elements > INT32_MAX
+            || item.source_offset % 4 != 0 || item.destination_offset % 4 != 0
+            || item.source_row_stride < row_bytes || item.destination_row_stride != row_bytes
+            || item.source_row_stride % 4 != 0 || item.destination_row_stride % 4 != 0
+            || item.source_offset > source_length || item.destination_offset > destination_length
+            || uint64_t(item.rows - 1) * item.source_row_stride + row_bytes
+                > source_length - item.source_offset
+            || uint64_t(item.rows - 1) * item.destination_row_stride + row_bytes
+                > destination_length - item.destination_offset) return 0;
+        uint32_t work = item.row_elements == 3 ? item.rows : uint32_t(elements);
+        if (work > max_strided_elements) max_strided_elements = work;
     }
     @autoreleasepool {
         uint64_t preparation_start = context->trace ? clock_ns() : 0;
@@ -149,18 +235,36 @@ extern "C" int align_native_metal_copy_submit(void *opaque,
         return 0;
 #endif
         id<MTLCommandBuffer> command = [context->queue commandBuffer];
-        id<MTLBlitCommandEncoder> encoder = [command blitCommandEncoder];
-        if (command == nil || encoder == nil) return 0;
-        for (size_t i = 0; i < count; ++i) {
-            const auto &item = copies[i];
-            [encoder copyFromBuffer:context->source_view sourceOffset:item.source_offset
-                          toBuffer:context->destination_view destinationOffset:item.destination_offset
-                              size:size_t(item.elements) * sizeof(float)];
+        if (command == nil) return 0;
+        if (count > 0) {
+            id<MTLBlitCommandEncoder> encoder = [command blitCommandEncoder];
+            if (encoder == nil) return 0;
+            for (size_t i = 0; i < count; ++i) {
+                const auto &item = copies[i];
+                [encoder copyFromBuffer:context->source_view sourceOffset:item.source_offset
+                              toBuffer:context->destination_view destinationOffset:item.destination_offset
+                                  size:size_t(item.elements) * sizeof(float)];
+            }
+            [encoder endEncoding];
         }
-        [encoder endEncoding];
+        if (strided_count > 0) {
+            memcpy(context->strided_descriptors.contents, strided,
+                   strided_count * sizeof(align_native_metal_strided_copy));
+            id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+            if (encoder == nil) return 0;
+            [encoder setComputePipelineState:context->strided_pipeline];
+            [encoder setBuffer:context->source_view offset:0 atIndex:0];
+            [encoder setBuffer:context->destination_view offset:0 atIndex:1];
+            [encoder setBuffer:context->strided_descriptors offset:0 atIndex:2];
+            NSUInteger threads = context->strided_pipeline.maxTotalThreadsPerThreadgroup;
+            if (threads > 256) threads = 256;
+            [encoder dispatchThreads:MTLSizeMake(max_strided_elements, strided_count, 1)
+                threadsPerThreadgroup:MTLSizeMake(threads, 1, 1)];
+            [encoder endEncoding];
+        }
         [command commit];
         context->pending = command;
-        context->pending_count = count;
+        context->pending_count = count + strided_count;
         if (context->trace) {
             context->preparation_ns = clock_ns() - preparation_start;
             context->submitted_ns = clock_ns();

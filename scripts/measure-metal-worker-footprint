@@ -45,6 +45,12 @@ def main():
     arms = ("control", "candidate")
     if digest(cfg["control"]["binary"]) != digest(cfg["candidate"]["binary"]):
         raise ValueError("this screen requires the same Align binary")
+    if any(cfg[arm].get("execution", {}).get("native_conv_copy") == "1" for arm in arms):
+        for arm in arms:
+            shim = cfg[arm].get("shim")
+            if not shim or shim not in subprocess.check_output(
+                    ["otool", "-L", cfg[arm]["binary"]], text=True):
+                raise ValueError("native shim is not bound to the measured binary")
     normalized_options = []
     for arm in arms:
         options = json.loads(Path(cfg[arm]["options"]).read_text())
@@ -63,8 +69,11 @@ def main():
                 or execution.get("neon_greedy", "0") != "0" \
                 or execution.get("private_buffers", "0") != "0" \
                 or execution.get("native_state_copy", "0") not in ("0", "1") \
+                or execution.get("native_conv_copy", "0") not in ("0", "1") \
+                or (execution.get("native_conv_copy", "0") == "1" and
+                    execution.get("native_state_copy", "0") != "1") \
                 or set(execution) - (set(expected_execution) |
-                                     {"neon_greedy", "private_buffers", "native_state_copy"}):
+                                     {"neon_greedy", "private_buffers", "native_state_copy", "native_conv_copy"}):
             raise ValueError("this screen requires the recorded common execution")
     if normalized_options[0] != normalized_options[1]:
         raise ValueError("runtime options differ beyond the bundle")
@@ -95,6 +104,8 @@ def main():
                   metric_scope="process footprint, not system/GPU total",
                   model_sha256=digest(cfg["model"]),
                   binary_sha256=digest(cfg["control"]["binary"]),
+                  native_shim_sha256={arm: digest(cfg[arm]["shim"]) if cfg[arm].get("shim") else None
+                                      for arm in arms},
                   prompt_ids_sha256=hashlib.sha256(json.dumps(ids).encode()).hexdigest(),
                   execution={arm: cfg[arm]["execution"] for arm in arms},
                   bundles={arm: json.loads((Path(cfg[arm]["lib"]) /
@@ -112,7 +123,8 @@ def main():
                    ALIGN_LLM_PREFILL_LAST_FFN_ROW="0", ALIGN_LLM_MAPPED_WEIGHTS="0",
                    ALIGN_LLM_SHARED_LOGITS="0", ALIGN_LLM_NEON_GREEDY="0",
                    ALIGN_LLM_GRAPH_GREEDY="0",
-                   ALIGN_LLM_NATIVE_STATE_COPY=selected["execution"].get("native_state_copy", "0"))
+                   ALIGN_LLM_NATIVE_STATE_COPY=selected["execution"].get("native_state_copy", "0"),
+                   ALIGN_LLM_NATIVE_CONV_COPY=selected["execution"].get("native_conv_copy", "0"))
         command = [selected["binary"], "--runtime-session", cfg["model"],
                    cfg["pack"], cfg["geometry"], selected["options"], "0"]
         started = time.monotonic_ns()

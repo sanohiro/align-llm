@@ -1068,10 +1068,14 @@ struct align_gpu_device_state {
     int memory_allocated;
     int synchronous_weight_upload;
     int native_state_copy;
+    int native_conv_copy;
     void *native_state_copy_context;
     int native_state_copy_count[ALIGN_GPU_GRAPH_KINDS];
     struct ggml_tensor *native_state_copy_sources[ALIGN_GPU_GRAPH_KINDS][64];
     struct ggml_tensor *native_state_copy_destinations[ALIGN_GPU_GRAPH_KINDS][64];
+    int native_conv_copy_count[ALIGN_GPU_GRAPH_KINDS];
+    struct ggml_tensor *native_conv_copy_sources[ALIGN_GPU_GRAPH_KINDS][64];
+    struct ggml_tensor *native_conv_copy_destinations[ALIGN_GPU_GRAPH_KINDS][64];
     int64_t weights_expected;
     int64_t weights_created;
     int64_t weights_uploaded;
@@ -2587,6 +2591,28 @@ int32_t align_gpu_native_state_copy_enabled(void *owner) {
     return state != NULL && state->native_state_copy == 1 ? 1 : 0;
 }
 
+int32_t align_gpu_native_conv_copy_mode(void *owner, int32_t mode) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || (mode != 0 && mode != 1) || state->weights_finished
+        || state->workspace_prepared) return ALIGN_GPU_CONFIG;
+    if (mode == 0) return state->native_conv_copy ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+#if defined(__APPLE__)
+    if (!state->native_state_copy || state->native_state_copy_context == NULL) return ALIGN_GPU_CONFIG;
+    if (!align_native_metal_copy_enable_strided(state->native_state_copy_context)) {
+        return ALIGN_GPU_UNSUPPORTED;
+    }
+    state->native_conv_copy = 1;
+    return ALIGN_GPU_OK;
+#else
+    return ALIGN_GPU_UNSUPPORTED;
+#endif
+}
+
+int32_t align_gpu_native_conv_copy_enabled(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    return state != NULL && state->native_conv_copy == 1 ? 1 : 0;
+}
+
 int32_t align_gpu_native_state_copy_register(void *owner, int32_t kind,
         void *slots, int64_t source, int64_t destination) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
@@ -2610,6 +2636,40 @@ int32_t align_gpu_native_state_copy_register(void *owner, int32_t kind,
     at = state->native_state_copy_count[kind]++;
     state->native_state_copy_sources[kind][at] = src;
     state->native_state_copy_destinations[kind][at] = dst;
+    return ALIGN_GPU_OK;
+}
+
+int32_t align_gpu_native_conv_copy_register(void *owner, int32_t kind,
+        void *slots, int64_t source, int64_t destination) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *src = (struct ggml_tensor *) align_ggml_slot_load(slots, source);
+    struct ggml_tensor *dst = state == NULL ? NULL : align_gpu_kv_at(state, destination);
+    int at;
+    uint64_t row_bytes;
+    if (state == NULL || !state->native_conv_copy
+        || (kind != ALIGN_GPU_GRAPH_DECODE && kind != ALIGN_GPU_GRAPH_DECODE_ALT)
+        || state->graph_prepared[kind] || src == NULL || dst == NULL
+        || src->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32
+        || src->ne[0] < 1 || src->ne[1] < 1 || src->ne[2] != 1 || src->ne[3] != 1
+        || (uint64_t) src->ne[0] > UINT32_MAX / sizeof(float) || src->ne[1] > UINT32_MAX
+        || (uint64_t) src->ne[0] * src->ne[1] > INT32_MAX
+        || src->nb[0] != sizeof(float) || src->nb[1] > UINT32_MAX
+        || !ggml_is_contiguous(dst) || dst->nb[0] != sizeof(float)
+        || state->native_conv_copy_count[kind] >= 64) return ALIGN_GPU_CONFIG;
+    row_bytes = (uint64_t) src->ne[0] * sizeof(float);
+    if (src->nb[1] < row_bytes || src->nb[1] % sizeof(float) != 0
+        || dst->nb[1] != row_bytes || ggml_nbytes(dst) != row_bytes * (uint64_t) src->ne[1]) {
+        return ALIGN_GPU_CONFIG;
+    }
+    for (at = 0; at < 4; ++at) {
+        if (src->ne[at] != dst->ne[at]) return ALIGN_GPU_CONFIG;
+    }
+    for (at = 0; at < state->native_conv_copy_count[kind]; ++at) {
+        if (state->native_conv_copy_destinations[kind][at] == dst) return ALIGN_GPU_CONFIG;
+    }
+    at = state->native_conv_copy_count[kind]++;
+    state->native_conv_copy_sources[kind][at] = src;
+    state->native_conv_copy_destinations[kind][at] = dst;
     return ALIGN_GPU_OK;
 }
 
@@ -3313,6 +3373,7 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
     }
 #endif
     state->native_state_copy_count[kind] = 0;
+    state->native_conv_copy_count[kind] = 0;
     if (kind == ALIGN_GPU_GRAPH_PREFILL) { state->prefill_rows_registered = 0; state->prefill_rows_valid = 0; }
     state->graph_prepared[kind] = 0;
     state->workspace_graphs[kind] = NULL;
@@ -3364,13 +3425,14 @@ static int align_gpu_count_model_node(struct align_gpu_device_state *state,
 
 #if defined(__APPLE__)
 static int align_gpu_native_copy_extent(struct ggml_tensor *tensor,
-        void **base, size_t *capacity, uint64_t *offset) {
+        int require_contiguous, void **base, size_t *capacity, uint64_t *offset) {
     ggml_backend_buffer_t buffer;
     const char *name;
     void *start;
     size_t size;
     if (tensor == NULL || tensor->buffer == NULL || tensor->data == NULL
-        || tensor->type != GGML_TYPE_F32 || !ggml_is_contiguous(tensor)) return 0;
+        || tensor->type != GGML_TYPE_F32
+        || (require_contiguous && !ggml_is_contiguous(tensor))) return 0;
     buffer = tensor->buffer;
     name = ggml_backend_buft_name(ggml_backend_buffer_get_type(buffer));
     if (name == NULL || strncmp(name, "MTL", 3) != 0
@@ -3387,12 +3449,15 @@ static int align_gpu_native_copy_extent(struct ggml_tensor *tensor,
 
 static int align_gpu_native_copy_commit(struct align_gpu_device_state *state, int kind) {
     struct align_native_metal_copy copies[64];
+    struct align_native_metal_strided_copy strided[64];
     void *source_base = NULL, *destination_base = NULL;
     size_t source_size = 0, destination_size = 0;
     int count = state->native_state_copy_count[kind];
+    int strided_count = state->native_conv_copy_count[kind];
     int at;
-    if (count == 0) return 1;
+    if (count == 0 && strided_count == 0) return 1;
     if (!state->native_state_copy || state->native_state_copy_context == NULL) return 0;
+    if (strided_count > 0 && !state->native_conv_copy) return 0;
     // ggml_backend_graph_compute synchronizes before returning. The native
     // queue must see the finished producer, and native run waits before parity
     // can advance. Do not add a second wait here.
@@ -3403,8 +3468,8 @@ static int align_gpu_native_copy_commit(struct align_gpu_device_state *state, in
         size_t src_size, dst_size, bytes;
         uint64_t src_offset, dst_offset;
         if (src == NULL || dst == NULL || ggml_nbytes(src) != ggml_nbytes(dst)
-            || !align_gpu_native_copy_extent(src, &src_base, &src_size, &src_offset)
-            || !align_gpu_native_copy_extent(dst, &dst_base, &dst_size, &dst_offset)) return 0;
+            || !align_gpu_native_copy_extent(src, 1, &src_base, &src_size, &src_offset)
+            || !align_gpu_native_copy_extent(dst, 1, &dst_base, &dst_size, &dst_offset)) return 0;
         if (source_base != NULL && (source_base != src_base || source_size != src_size)) return 0;
         if (destination_base != NULL
             && (destination_base != dst_base || destination_size != dst_size)) return 0;
@@ -3419,9 +3484,35 @@ static int align_gpu_native_copy_commit(struct align_gpu_device_state *state, in
             src_offset, dst_offset, (uint32_t) (bytes / 4), 0
         };
     }
+    for (at = 0; at < strided_count; ++at) {
+        struct ggml_tensor *src = state->native_conv_copy_sources[kind][at];
+        struct ggml_tensor *dst = state->native_conv_copy_destinations[kind][at];
+        void *src_base, *dst_base;
+        size_t src_size, dst_size, source_span, destination_span;
+        uint64_t src_offset, dst_offset;
+        if (src == NULL || dst == NULL
+            || !align_gpu_native_copy_extent(src, 0, &src_base, &src_size, &src_offset)
+            || !align_gpu_native_copy_extent(dst, 1, &dst_base, &dst_size, &dst_offset)) return 0;
+        if (source_base != NULL && (source_base != src_base || source_size != src_size)) return 0;
+        if (destination_base != NULL
+            && (destination_base != dst_base || destination_size != dst_size)) return 0;
+        source_base = src_base;
+        destination_base = dst_base;
+        source_size = src_size;
+        destination_size = dst_size;
+        source_span = ggml_nbytes(src);
+        destination_span = ggml_nbytes(dst);
+        if (source_base == destination_base
+            && src_offset < dst_offset + destination_span
+            && dst_offset < src_offset + source_span) return 0;
+        strided[at] = (struct align_native_metal_strided_copy) {
+            src_offset, dst_offset, (uint32_t) src->ne[0], (uint32_t) src->ne[1],
+            (uint32_t) src->nb[1], (uint32_t) dst->nb[1]
+        };
+    }
     return align_native_metal_copy_submit(state->native_state_copy_context,
         source_base, source_size, destination_base, destination_size,
-        copies, (size_t) count);
+        copies, (size_t) count, strided, (size_t) strided_count);
 }
 #endif
 

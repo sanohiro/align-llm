@@ -2896,7 +2896,22 @@ int32_t align_gpu_native_state_copy_enabled(void *owner) {
     return 0;
 }
 
+int32_t align_gpu_native_conv_copy_mode(void *owner, int32_t mode) {
+    return owner != NULL && mode == 0 ? ALIGN_GPU_OK : ALIGN_GPU_UNSUPPORTED;
+}
+
+int32_t align_gpu_native_conv_copy_enabled(void *owner) {
+    (void) owner;
+    return 0;
+}
+
 int32_t align_gpu_native_state_copy_register(void *owner, int32_t kind,
+        void *slots, int64_t source, int64_t destination) {
+    (void) owner; (void) kind; (void) slots; (void) source; (void) destination;
+    return ALIGN_GPU_UNSUPPORTED;
+}
+
+int32_t align_gpu_native_conv_copy_register(void *owner, int32_t kind,
         void *slots, int64_t source, int64_t destination) {
     (void) owner; (void) kind; (void) slots; (void) source; (void) destination;
     return ALIGN_GPU_UNSUPPORTED;
