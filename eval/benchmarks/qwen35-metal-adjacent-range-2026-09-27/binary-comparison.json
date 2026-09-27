@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "artifact_kind": "METAL_ADJACENT_RANGE_BINARY_COMPARISON",
+  "measured_bundle_id": "ef88bfced485790dc8e1ffb478ec3d1de2f5c280e181eb16446df604cc1c114a",
+  "final_bundle_id": "a414d11a2fc9bd437550e35666c3115bf7253d0fecbce1b8069d58871e508527",
+  "same_loaded_core_artifacts": 4,
+  "same_plugin_sections": 14,
+  "different_plugin_sections": [
+    "__TEXT,__cstring"
+  ],
+  "different_strings": "six embedded temporary source-directory paths only",
+  "text_bytes": 119720,
+  "text_sha256": "c7eaf8ecbdb350afe70f8c2b7b6627520dce97b6226be6b0494dfb7c0a68a995",
+  "embedded_metallib_bytes": 662398,
+  "embedded_metallib_sha256": "603f0cdce110ef545b6dfc7f3129814fecdb5018d9576963258a9be0d2f43620",
+  "limitation": "This establishes equality of executable text and embedded Metal library, not equality of whole Mach-O bytes or timing."
+}

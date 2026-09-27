@@ -889,14 +889,88 @@ def copy_artifacts(
     return artifacts
 
 
+def reusable_metal_core(
+    base_bundle: pathlib.Path, source_sha256: str, toolchain_id: dict[str, object],
+    configure_flags: list[str],
+) -> dict[str, pathlib.Path]:
+    """Keep the loaded core byte-identical while testing a Metal-only patch."""
+    try:
+        root = base_bundle.resolve(strict=True)
+        manifest_path = root / "manifest.json"
+        manifest_size = manifest_path.lstat()
+        if not stat.S_ISREG(manifest_size.st_mode) or not 1 <= manifest_size.st_size <= 256 * 1024:
+            raise RecipeError("base Metal manifest is outside its file bound")
+        manifest_raw = manifest_path.read_bytes()
+    except OSError as exc:
+        raise RecipeError("base Metal bundle cannot be read") from exc
+    manifest = parse_canonical(manifest_raw, 256 * 1024)
+    claimed = lowercase_hex(manifest.get("bundle_id"), 64, "base bundle id")
+    zero = dict(manifest, bundle_id=ZERO_DIGEST)
+    if digest(canonical(zero)) != claimed or manifest.get("schema_version") != 1 \
+            or manifest.get("artifact_kind") != "GPU_BACKEND_BUNDLE" \
+            or manifest.get("backend") != "metal" or manifest.get("target") != TARGET["metal"] \
+            or manifest.get("ggml") != {
+                "commit": GGML_COMMIT, "source_manifest_sha256": source_sha256,
+                "version": GGML_COMMIT,
+            } or manifest.get("toolchain") != toolchain_id \
+            or manifest.get("build_flags") != [flag for flag in configure_flags
+                                               if not flag.startswith("-DALIGN_LLM_ADJACENT_RANGES_PATCH_SHA256=")]:
+        raise RecipeError("base Metal bundle does not match the pinned core build")
+    rows = manifest.get("artifacts")
+    if not isinstance(rows, list) or len(rows) != 5:
+        raise RecipeError("base Metal bundle artifacts are invalid")
+    expected_roles = {
+        "libggml-metal.so": "backend_plugin",
+        "libggml-base.0.dylib": "shared_library",
+        "libggml-base.dylib": "shared_library",
+        "libggml.0.dylib": "shared_library",
+        "libggml.dylib": "shared_library",
+    }
+    core = {}
+    seen = set()
+    for row in rows:
+        if not isinstance(row, dict) or set(row) != {"role", "path", "bytes", "sha256"}:
+            raise RecipeError("base Metal bundle artifact is invalid")
+        name = row["path"]
+        if not isinstance(name, str) or name not in expected_roles or name in seen \
+                or row["role"] != expected_roles[name]:
+            raise RecipeError("base Metal bundle artifact role is invalid")
+        seen.add(name)
+        bounded_i64(row["bytes"], 1, MAX_BUNDLE_ARTIFACT_BYTES, "base artifact bytes")
+        lowercase_hex(row["sha256"], 64, "base artifact sha256")
+        path = root / name
+        try:
+            metadata = path.lstat()
+        except OSError as exc:
+            raise RecipeError("base Metal artifact cannot be read") from exc
+        if not stat.S_ISREG(metadata.st_mode) or row["bytes"] != metadata.st_size:
+            raise RecipeError("base Metal artifact bytes differ from its manifest")
+        try:
+            data = path.read_bytes()
+        except OSError as exc:
+            raise RecipeError("base Metal artifact cannot be read") from exc
+        if len(data) != metadata.st_size or digest(data) != row["sha256"]:
+            raise RecipeError("base Metal artifact bytes differ from its manifest")
+        if name != "libggml-metal.so":
+            core[name] = path
+    if seen != set(expected_roles):
+        raise RecipeError("base Metal artifact set is incomplete")
+    return core
+
+
 def build(backend: str, source: pathlib.Path, output: pathlib.Path, *, native_swiglu: bool = False,
-          ingraph_argmax: bool = False) -> None:
-    if (native_swiglu or ingraph_argmax) and backend != "metal":
+          ingraph_argmax: bool = False, adjacent_ranges: bool = False,
+          base_bundle: pathlib.Path | None = None) -> None:
+    if (native_swiglu or ingraph_argmax or adjacent_ranges) and backend != "metal":
         raise RecipeError("native Metal trials require Metal")
+    if (base_bundle is None) != (adjacent_ranges is False):
+        raise RecipeError("adjacent-range builds require one base Metal bundle")
     native_patch = (pathlib.Path(__file__).with_name("native-metal-swiglu.patch").read_bytes()
                     if native_swiglu else None)
     argmax_patch = (pathlib.Path(__file__).with_name("metal-ingraph-argmax.patch").read_bytes()
                     if ingraph_argmax else None)
+    adjacent_patch = (pathlib.Path(__file__).with_name("metal-adjacent-ranges.patch").read_bytes()
+                      if adjacent_ranges else None)
     source = source.resolve()
     output = pathlib.Path(os.path.abspath(output))
     try:
@@ -938,6 +1012,11 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path, *, native_sw
             patch_path.write_bytes(argmax_patch)
             command([executables["git"], "apply",
                      os.fspath(patch_path)], cwd=private_source, environment=environment)
+        if adjacent_patch is not None:
+            patch_path = work_dir / "metal-adjacent-ranges.patch"
+            patch_path.write_bytes(adjacent_patch)
+            command([executables["git"], "apply",
+                     os.fspath(patch_path)], cwd=private_source, environment=environment)
         build_environment = dict(environment)
         build_environment["GIT_CEILING_DIRECTORIES"] = os.fspath(work_dir)
         configure_flags = [
@@ -950,6 +1029,8 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path, *, native_sw
             configure_flags.append("-DALIGN_LLM_NATIVE_SWIGLU_PATCH_SHA256=" + digest(native_patch))
         if argmax_patch is not None:
             configure_flags.append("-DALIGN_LLM_INGRAPH_ARGMAX_PATCH_SHA256=" + digest(argmax_patch))
+        if adjacent_patch is not None:
+            configure_flags.append("-DALIGN_LLM_ADJACENT_RANGES_PATCH_SHA256=" + digest(adjacent_patch))
         if backend == "cuda":
             configure_flags.append(f"-DCMAKE_CUDA_COMPILER={executables['platform']}")
         command(
@@ -964,6 +1045,9 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path, *, native_sw
         )
         binary_dir = build_dir / "bin"
         sources = artifact_sources(backend, binary_dir)
+        if base_bundle is not None:
+            core = reusable_metal_core(base_bundle, digest(source_bytes), identities, configure_flags)
+            sources = [(role, name, core.get(name, path)) for role, name, path in sources]
         parent.mkdir(parents=True, exist_ok=True)
         if output.exists() or output.is_symlink():
             raise RecipeError("output became occupied during the build")
@@ -976,6 +1060,8 @@ def build(backend: str, source: pathlib.Path, output: pathlib.Path, *, native_sw
                 (stage / "native-metal-swiglu.patch").write_bytes(native_patch)
             if argmax_patch is not None:
                 (stage / "metal-ingraph-argmax.patch").write_bytes(argmax_patch)
+            if adjacent_patch is not None:
+                (stage / "metal-adjacent-ranges.patch").write_bytes(adjacent_patch)
             write_source_snapshot(source_dir, manifest, source_bytes, raw_commit, blobs, "ggml")
             artifacts = copy_artifacts(sources, bundle_dir)
             bundle = {
@@ -1012,11 +1098,19 @@ def parse_args() -> argparse.Namespace:
                         help="experimental Metal fusion; retain patch and bind digest in build flags")
     parser.add_argument("--ingraph-argmax", action="store_true",
                         help="experimental in-graph Metal argmax; retain its independent patch")
+    parser.add_argument("--adjacent-ranges", action="store_true",
+                        help="experimental Metal half-open range fix; retain its independent patch")
+    parser.add_argument("--base-bundle", type=pathlib.Path,
+                        help="byte-identical core bundle for an adjacent-range Metal plugin trial")
     args = parser.parse_args()
     if args.native_swiglu and (args.backend != "metal" or args.print_plan):
         parser.error("--native-swiglu requires a Metal build")
     if args.ingraph_argmax and (args.backend != "metal" or args.print_plan):
         parser.error("--ingraph-argmax requires a Metal build")
+    if args.adjacent_ranges and (args.backend != "metal" or args.print_plan):
+        parser.error("--adjacent-ranges requires a Metal build")
+    if (args.base_bundle is None) != (not args.adjacent_ranges):
+        parser.error("--adjacent-ranges requires --base-bundle, and the base bundle requires --adjacent-ranges")
     if not args.print_plan and (args.source is None or args.output is None):
         parser.error("--source and --output are required unless --print-plan is used")
     if args.print_plan and (args.source is not None or args.output is not None):
@@ -1031,7 +1125,8 @@ def main() -> int:
             sys.stdout.buffer.write(canonical(plan(args.backend)))
         else:
             build(args.backend, args.source.resolve(), args.output.absolute(),
-                  native_swiglu=args.native_swiglu, ingraph_argmax=args.ingraph_argmax)
+                  native_swiglu=args.native_swiglu, ingraph_argmax=args.ingraph_argmax,
+                  adjacent_ranges=args.adjacent_ranges, base_bundle=args.base_bundle)
     except RecipeError as exc:
         print(f"gpu backend recipe: ERROR: {exc}", file=sys.stderr)
         return 1

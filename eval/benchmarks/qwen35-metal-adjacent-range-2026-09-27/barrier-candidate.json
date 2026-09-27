@@ -1,0 +1,330 @@
+{
+  "schema_version": 1,
+  "status": "DIAGNOSTIC_ONLY",
+  "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+  "pack_sha256": "b4b418ebef9f83f911e4d604bdcce03e589fb7d2afa35f7e3bbdff3111b810b1",
+  "geometry_sha256": "39baceca01ea59dba7f989f3b6c15214f8927880926e2e87d18ffc56fd813c98",
+  "options_sha256": "3f4a4f8dc25659914e8f909acbd4131f0cb12135a9f8ab86dafc93d20d0602ff",
+  "backend_bundle": {
+    "bundle_id": "da22f113c783b8a6b7e9928146c9370e1983fc4bfb4e76ca6839d405812c6867",
+    "manifest_sha256": "b479d78cbc95c6ca80fa3d1712a7a403925991bfda17646d700cdb29cb352288"
+  },
+  "align_sha256": "b62a2d5d7e88dee85b4f3f672b4b4dca15a74d24fc5e89df5791cf277c6a0450",
+  "llama_sha256": "f384a6a64603479cf5c675ba587aeafbd64a500c3129a0afdcd271dcf532717d",
+  "fixture_sha256": "b43b82ec132fab424ebbc1024a165c883429fb7544b7c4b050b71ce8e5897718",
+  "inputs": {
+    "prompt_tokens": 200,
+    "completion_tokens": 2,
+    "native_swiglu": "0",
+    "sync_weight_upload": "0",
+    "prefill_chunk": "128",
+    "final_prefill_logits": "1",
+    "final_ffn_row": "0"
+  },
+  "dispatch": {
+    "align_dispatches": 663,
+    "llama_dispatches": 682,
+    "identical_signatures": 613,
+    "align_signatures": {
+      "kernel_bin_fuse_f32_f32_f32_4 groups=16,1,1 threads=16,1,1": 18,
+      "kernel_bin_fuse_f32_f32_f32_4 groups=4,1,1 threads=1,1,1": 36,
+      "kernel_bin_fuse_f32_f32_f32_4 groups=512,1,1 threads=1,1,1": 54,
+      "kernel_concat_f32 groups=96,1,1 threads=4,64,1": 18,
+      "kernel_cpy_f32_f16 groups=1,1,1 threads=256,1,1": 6,
+      "kernel_cpy_f32_f32 groups=1,2,1 threads=256,1,1": 12,
+      "kernel_cpy_f32_f32 groups=64,16,1 threads=128,2,1": 18,
+      "kernel_cpy_f32_f32 groups=73,1,1 threads=3,85,1": 18,
+      "kernel_cpy_f32_f32 groups=8,1,1 threads=256,1,1": 6,
+      "kernel_flash_attn_ext_vec_f16_dk256_dv256 groups=1,8,32 threads=32,1,1": 6,
+      "kernel_flash_attn_ext_vec_reduce groups=8,1,1 threads=1024,1,1": 6,
+      "kernel_gated_delta_net_f32_4 groups=32,16,1 threads=32,4,1": 18,
+      "kernel_get_rows_q6_K groups=1,1,1 threads=128,1,1": 1,
+      "kernel_l2_norm_f32_f32_4 groups=16,1,1 threads=128,1,1": 36,
+      "kernel_mul_mv_q4_0_f32 groups=256,1,1 threads=32,2,1": 45,
+      "kernel_mul_mv_q4_0_f32 groups=512,1,1 threads=32,2,1": 6,
+      "kernel_mul_mv_q4_0_f32 groups=64,1,1 threads=32,2,1": 12,
+      "kernel_mul_mv_q4_0_f32 groups=768,1,1 threads=32,2,1": 66,
+      "kernel_mul_mv_q4_1_f32 groups=256,1,1 threads=32,2,1": 3,
+      "kernel_mul_mv_q5_K_f32 groups=1024,1,1 threads=32,2,1": 18,
+      "kernel_mul_mv_q6_K_f32 groups=62080,1,1 threads=32,2,1": 1,
+      "kernel_mul_mv_q8_0_f32 groups=8,1,1 threads=32,4,1": 36,
+      "kernel_rms_norm_mul_f32_4 groups=1,1,1 threads=512,1,1": 49,
+      "kernel_rms_norm_mul_f32_4 groups=16,1,1 threads=32,1,1": 18,
+      "kernel_rms_norm_mul_f32_4 groups=2,1,1 threads=64,1,1": 6,
+      "kernel_rms_norm_mul_f32_4 groups=8,1,1 threads=64,1,1": 6,
+      "kernel_rope_multi_f32 groups=2,1,1 threads=256,1,1": 6,
+      "kernel_rope_multi_f32 groups=8,1,1 threads=256,1,1": 6,
+      "kernel_set_rows_f32_i32_f16 groups=1,2,1 threads=256,1,1": 12,
+      "kernel_ssm_conv_f32_f32_4 groups=6144,1,1 threads=1,1,1": 18,
+      "kernel_swiglu_f32 groups=1,1,1 threads=1024,1,1": 24,
+      "kernel_unary_f32_f32_4 groups=1536,1,1 threads=1,1,1": 18,
+      "kernel_unary_f32_f32_4 groups=4,1,1 threads=1,1,1": 36,
+      "kernel_unary_f32_f32_4 groups=512,1,1 threads=1,1,1": 24
+    },
+    "llama_signatures": {
+      "kernel_bin_fuse_f32_f32_f32_4 groups=16,1,1 threads=16,1,1": 18,
+      "kernel_bin_fuse_f32_f32_f32_4 groups=4,1,1 threads=1,1,1": 36,
+      "kernel_bin_fuse_f32_f32_f32_4 groups=512,1,1 threads=1,1,1": 55,
+      "kernel_concat_f32 groups=96,1,1 threads=4,64,1": 18,
+      "kernel_cpy_f32_f32 groups=64,16,1 threads=128,2,1": 18,
+      "kernel_cpy_f32_f32 groups=73,1,1 threads=3,85,1": 18,
+      "kernel_cpy_f32_f32 groups=8,1,1 threads=256,1,1": 6,
+      "kernel_flash_attn_ext_vec_f16_dk256_dv256 groups=1,8,32 threads=32,1,1": 6,
+      "kernel_flash_attn_ext_vec_reduce groups=8,1,1 threads=1024,1,1": 6,
+      "kernel_gated_delta_net_f32_4 groups=32,16,1 threads=32,4,1": 18,
+      "kernel_get_rows_f32 groups=18,1,1 threads=1024,1,1": 18,
+      "kernel_get_rows_f32 groups=2,1,1 threads=1024,1,1": 1,
+      "kernel_get_rows_f32 groups=256,1,1 threads=1024,1,1": 18,
+      "kernel_l2_norm_f32_f32_4 groups=16,1,1 threads=128,1,1": 36,
+      "kernel_mul_mv_q4_0_f32 groups=256,1,1 threads=32,2,1": 45,
+      "kernel_mul_mv_q4_0_f32 groups=512,1,1 threads=32,2,1": 6,
+      "kernel_mul_mv_q4_0_f32 groups=64,1,1 threads=32,2,1": 12,
+      "kernel_mul_mv_q4_0_f32 groups=768,1,1 threads=32,2,1": 66,
+      "kernel_mul_mv_q4_1_f32 groups=256,1,1 threads=32,2,1": 3,
+      "kernel_mul_mv_q5_K_f32 groups=1024,1,1 threads=32,2,1": 18,
+      "kernel_mul_mv_q6_K_f32 groups=62080,1,1 threads=32,2,1": 1,
+      "kernel_mul_mv_q8_0_f32 groups=8,1,1 threads=32,4,1": 36,
+      "kernel_rms_norm_f32_4 groups=1,1,1 threads=512,1,1": 1,
+      "kernel_rms_norm_mul_f32_4 groups=1,1,1 threads=512,1,1": 48,
+      "kernel_rms_norm_mul_f32_4 groups=16,1,1 threads=32,1,1": 18,
+      "kernel_rms_norm_mul_f32_4 groups=2,1,1 threads=64,1,1": 6,
+      "kernel_rms_norm_mul_f32_4 groups=8,1,1 threads=64,1,1": 6,
+      "kernel_rope_multi_f32 groups=2,1,1 threads=256,1,1": 6,
+      "kernel_rope_multi_f32 groups=8,1,1 threads=256,1,1": 6,
+      "kernel_set_rows_f32_i64_f16 groups=1,1,1 threads=512,1,1": 12,
+      "kernel_ssm_conv_f32_f32_4 groups=6144,1,1 threads=1,1,1": 18,
+      "kernel_swiglu_f32 groups=1,1,1 threads=1024,1,1": 24,
+      "kernel_unary_f32_f32 groups=16,1,1 threads=1,1,1": 18,
+      "kernel_unary_f32_f32_4 groups=1536,1,1 threads=1,1,1": 18,
+      "kernel_unary_f32_f32_4 groups=4,1,1 threads=1,1,1": 18,
+      "kernel_unary_f32_f32_4 groups=512,1,1 threads=1,1,1": 24
+    },
+    "align_only": {
+      "kernel_cpy_f32_f16 groups=1,1,1 threads=256,1,1": 6,
+      "kernel_cpy_f32_f32 groups=1,2,1 threads=256,1,1": 12,
+      "kernel_get_rows_q6_K groups=1,1,1 threads=128,1,1": 1,
+      "kernel_rms_norm_mul_f32_4 groups=1,1,1 threads=512,1,1": 1,
+      "kernel_set_rows_f32_i32_f16 groups=1,2,1 threads=256,1,1": 12,
+      "kernel_unary_f32_f32_4 groups=4,1,1 threads=1,1,1": 18
+    },
+    "llama_only": {
+      "kernel_bin_fuse_f32_f32_f32_4 groups=512,1,1 threads=1,1,1": 1,
+      "kernel_get_rows_f32 groups=18,1,1 threads=1024,1,1": 18,
+      "kernel_get_rows_f32 groups=2,1,1 threads=1024,1,1": 1,
+      "kernel_get_rows_f32 groups=256,1,1 threads=1024,1,1": 18,
+      "kernel_rms_norm_f32_4 groups=1,1,1 threads=512,1,1": 1,
+      "kernel_set_rows_f32_i64_f16 groups=1,1,1 threads=512,1,1": 12,
+      "kernel_unary_f32_f32 groups=16,1,1 threads=1,1,1": 18
+    },
+    "normal_rendered_output": "1 ",
+    "reference_generated_ids": [
+      16,
+      220
+    ]
+  },
+  "projection": {
+    "warmups": [
+      {
+        "full": {
+          "request_ns": 446724167,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 ",
+          "decode_graph_ns": 31068000,
+          "nodes": 1110,
+          "projection_index": 1109
+        },
+        "skip": {
+          "request_ns": 430171458,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 Souls",
+          "decode_graph_ns": 22215000,
+          "nodes": 1110,
+          "projection_index": 1109
+        }
+      },
+      {
+        "skip": {
+          "request_ns": 416513667,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 Souls",
+          "decode_graph_ns": 22427000,
+          "nodes": 1110,
+          "projection_index": 1109
+        },
+        "full": {
+          "request_ns": 425290916,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 ",
+          "decode_graph_ns": 30150000,
+          "nodes": 1110,
+          "projection_index": 1109
+        }
+      }
+    ],
+    "pairs": [
+      {
+        "full": {
+          "request_ns": 432454833,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 ",
+          "decode_graph_ns": 32969000,
+          "nodes": 1110,
+          "projection_index": 1109
+        },
+        "skip": {
+          "request_ns": 418128000,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 Souls",
+          "decode_graph_ns": 21174000,
+          "nodes": 1110,
+          "projection_index": 1109
+        }
+      },
+      {
+        "skip": {
+          "request_ns": 417715083,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 Souls",
+          "decode_graph_ns": 22123000,
+          "nodes": 1110,
+          "projection_index": 1109
+        },
+        "full": {
+          "request_ns": 424511000,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 ",
+          "decode_graph_ns": 30659000,
+          "nodes": 1110,
+          "projection_index": 1109
+        }
+      },
+      {
+        "full": {
+          "request_ns": 423861208,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 ",
+          "decode_graph_ns": 28747000,
+          "nodes": 1110,
+          "projection_index": 1109
+        },
+        "skip": {
+          "request_ns": 419530417,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 Souls",
+          "decode_graph_ns": 22373000,
+          "nodes": 1110,
+          "projection_index": 1109
+        }
+      },
+      {
+        "skip": {
+          "request_ns": 415468959,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 Souls",
+          "decode_graph_ns": 21354000,
+          "nodes": 1110,
+          "projection_index": 1109
+        },
+        "full": {
+          "request_ns": 428026583,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 ",
+          "decode_graph_ns": 31785000,
+          "nodes": 1110,
+          "projection_index": 1109
+        }
+      },
+      {
+        "full": {
+          "request_ns": 422437416,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 ",
+          "decode_graph_ns": 28751000,
+          "nodes": 1110,
+          "projection_index": 1109
+        },
+        "skip": {
+          "request_ns": 417762666,
+          "usage": {
+            "prompt_tokens": 200,
+            "completion_tokens": 2,
+            "total_tokens": 202
+          },
+          "output": "1 Souls",
+          "decode_graph_ns": 21516000,
+          "nodes": 1110,
+          "projection_index": 1109
+        }
+      }
+    ],
+    "full_median_ms": 30.659,
+    "pruned_median_ms": 21.516,
+    "paired_delta_ms": [
+      11.795,
+      8.536,
+      6.374,
+      10.431,
+      7.235
+    ],
+    "paired_delta_median_ms": 8.536
+  },
+  "raw_sha256": {
+    "align-dispatch.log": "e69dfbbdaa396480b111c85e6966a7a2302f0b7a64e0bb9bfdbe4c68c4a8edc6",
+    "llama-dispatch.log": "f74b73f289924ae91ef457063ca86e11619abd2d865356e5e5dd5b5f9db53a92",
+    "prune-full.log": "5c04e5eb1a1aeb3f03e654bd3babfc951bddd50ae563c9cf05f7e98341f4857b",
+    "prune-skip.log": "6884137fcdc13db54b7c750bf0da43a08ad63e50556f018c8378b4bf21b5fec3"
+  },
+  "limitation": "Instrumented clocks and intentionally invalid output cannot support a speed adoption claim."
+}

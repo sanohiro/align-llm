@@ -472,6 +472,63 @@ complete local record is in `docs/qwen35-q6-fused-top-screen.md`. Continue
 GPU work on a larger FFN or graph boundary. No fixed improvement floor was
 applied.
 
+### Metal graph barrier census (2026-09-27)
+
+The same pinned Qwen3.5-2B model and 200-input/two-output request produced
+613 identical major dispatch signatures in Align and llama.cpp, yet Align's
+decode GPU interval was longer. Count Metal buffer barriers in the existing
+independent dispatch trace, across the final complete decode graph in each
+engine. This is an execution-order diagnostic, not a benchmark. Keep the
+existing prompt, weight, ggml revision, and output verification; do not change
+either inference graph or skip a barrier. Build only the diagnostic interposer,
+run the existing attribution owner once, and finish within 600 seconds. A
+barrier-count difference nominates a correctness-preserving scheduling probe;
+equal counts redirect attention to placement, data layout or GPU work cost.
+Either outcome is recorded without assigning shader time from the count.
+
+The first census found 469 Align versus 393 pinned llama.cpp barriers in the
+final decode graph, while the matching major dispatch census remains 613.
+The pinned Metal range predicate treats `[p0,p1)` and an adjacent range
+starting at `p1` as overlapping (`p1 >= other.p0`). A diagnostic patch may
+change only that comparison to `p1 > other.p0`, retaining all genuinely
+overlapping dependency barriers. Build a separate bundle with the same pinned
+source, Metal flags and in-graph argmax patch, plus this one-line change; keep
+the existing bundle as rollback. Cost ceiling: 900 seconds for build and local
+checks, 900 seconds for real 2B output/state and five alternating worker pairs
+at 200/32 and 330/64. Require unchanged exact output and state before retaining
+the candidate; record barrier counts, prefill, decode, whole-request wall,
+and adverse samples.
+The comparison tests whether boundary false positives matter on this model,
+without assuming a gain from the count difference or setting a percentage
+floor. If useful, integrate as an explicit pinned Metal patch after verification.
+
+The diagnostic bundle reduced the 2B decode barrier count from 469 to 399
+without changing 663 dispatches. The real 200/3 request matched all 744,960
+captured logits and 336 retained-state hashes exactly. A phase-instrumented
+five-pair campaign improved request wall by paired medians 6.107, 14.614 and
+17.971 ms at 64/16, 200/32 and 330/64, with 4/5, 5/5 and 5/5 wins. A separate
+untraced campaign gave -2.114, +2.630 and +14.176 ms, with 2/5, 4/5 and 5/5
+wins. Both retain adverse samples and pinned llama.cpp remains faster. These
+results justify a reproducible opt-in build, not a default performance claim.
+
+| Contract field | Opt-in adjacent-range bundle |
+| --- | --- |
+| Public developer surface | `gpu_backend_recipe.py --adjacent-ranges --base-bundle BASE/bundle` is false by default and valid only with `--backend metal` in a build invocation. It may combine with `--ingraph-argmax`; CUDA, `--print-plan`, a missing base bundle, or `--base-bundle` without `--adjacent-ranges` fail validation. No inference CLI or request format changes. |
+| Build and owner | `scripts/gpu_backend_recipe.py` applies `scripts/metal-adjacent-ranges.patch` to the private pinned source after any independent Metal patches; the new flag digest enters `build_flags`, and the exact patch is retained next to the immutable bundle. The base bundle must match source, target, toolchain and all nontrial flags, and all five of its artifacts must match its manifest; its verified core dylib bytes are copied into the trial bundle. Only the Metal plugin changes, so the same Align binary can compare both bundles under its loaded-core identity check. The existing default bundle remains selectable. |
+| Result, errors and cleanup | Successful build produces the existing schema-1 bundle/source snapshot with a distinct content identity. Missing/unapplicable patch or build failure aborts the private staging operation and leaves no published bundle. No new persistent schema, model cache or runtime allocation. |
+| Validation order and prerequisites | Require Metal, a real build invocation and a base bundle, then the pinned clean ggml source and existing toolchain checks; apply the patch, build, verify the base manifest and all five artifacts, hash staged artifacts and publish atomically. The runtime continues to verify the selected bundle and loaded core libraries before session allocation. |
+| Acceptance and metric | Recipe smoke, strict Python boundary, real 2B generation and full-logit/state equality; compare same-binary control/candidate bundles and pinned llama.cpp on 64/16, 200/32 and 330/64 with five alternating pairs. Report prefill, decode, request, startup and all reversals, without a percentage floor. CPU/CUDA porting is deferred because this patch is in the Metal scheduler; Gemma would reuse the patch only after its own model admission and correctness checks. |
+
+Local closure: the formatted patch's final bundle passes 2B/0.8B generation,
+744,960 exact 2B logits and 336 exact state hashes. Its Metal executable text,
+embedded shader and four core libraries match the measured recipe bundle;
+only embedded temporary source-path strings differ. Five final untraced
+330/64 pairs give +12.966 ms median with four wins, a -134.671 ms reversal
+and a +586.905 ms control outlier; shorter cases and startup are mixed.
+Pinned llama.cpp remains faster in the stable comparisons. Retain the patch
+as an opt-in build, not the default. The report and complete receipts are in
+`../qwen35-metal-adjacent-range-trial.md` and `../../eval/benchmarks/`.
+
 ### Shared Metal row SIMD greedy trial (2026-09-27)
 
 The previous borrowed-row path proves the real Qwen3.5 output is shared Metal

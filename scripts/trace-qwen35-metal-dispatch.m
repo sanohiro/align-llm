@@ -10,6 +10,7 @@
 #include <stdint.h>
 static void (*orig_set)(id,SEL,id<MTLComputePipelineState>);
 static void (*orig_dispatch)(id,SEL,MTLSize,MTLSize);
+static void (*orig_barrier)(id,SEL,MTLBarrierScope);
 static id<MTLComputePipelineState> (*orig_new_pipeline)(id,SEL,id<MTLFunction>,NSError **);
 static char pipeline_key;
 static char function_name_key;
@@ -30,6 +31,10 @@ static void traced_dispatch(id object,SEL selector,MTLSize groups,MTLSize thread
    (unsigned long)threads.width,(unsigned long)threads.height,(unsigned long)threads.depth);
  orig_dispatch(object,selector,groups,threads);
 }
+static void traced_barrier(id object,SEL selector,MTLBarrierScope scope) {
+ fprintf(stderr,"Q35_BARRIER scope=%lu\n",(unsigned long)scope);
+ orig_barrier(object,selector,scope);
+}
 __attribute__((constructor)) static void install(void) {
  @autoreleasepool {
   id<MTLDevice>d=MTLCreateSystemDefaultDevice();id<MTLCommandQueue>q=[d newCommandQueue];
@@ -41,9 +46,11 @@ __attribute__((constructor)) static void install(void) {
   orig_new_pipeline=(void *)method_setImplementation(pipeline_method,(IMP)traced_new_pipeline);
   Method a=class_getInstanceMethod(cls,@selector(setComputePipelineState:));
   Method b=class_getInstanceMethod(cls,@selector(dispatchThreadgroups:threadsPerThreadgroup:));
-  if(!a || !b){fprintf(stderr,"Q35_KERNEL unavailable\n");abort();}
+  Method barrier=class_getInstanceMethod(cls,@selector(memoryBarrierWithScope:));
+  if(!a || !b || !barrier){fprintf(stderr,"Q35_KERNEL unavailable\n");abort();}
   orig_set=(void *)method_setImplementation(a,(IMP)traced_set);
   orig_dispatch=(void *)method_setImplementation(b,(IMP)traced_dispatch);
+  orig_barrier=(void *)method_setImplementation(barrier,(IMP)traced_barrier);
   fprintf(stderr,"Q35_KERNEL installed class=%s\n",class_getName(cls));
   [e endEncoding];
  }

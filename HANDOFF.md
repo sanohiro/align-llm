@@ -4,29 +4,38 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## GPU-only optimization priority (2026-09-27)
 
-Branch `agent/native-metal-ffn-integration`, base checkpoint `14ac45e3`.
+Branch `agent/native-metal-ffn-integration`, previous checkpoint `dfd5da2b`;
+this adjacent-range trial is the branch HEAD's local implementation checkpoint.
 The user directs current work toward GPU inference performance; HTTP transport
 optimization is deferred until the GPU options have been adequately tested.
-The local Q6_K producer-side top-token screen is complete. The exact 2B captured
-full/tail tokens and reducer edge cases pass, but five-pair synchronized local
-timing has mixed changes (-0.011, -0.048, +0.021 ms for final prefill and two
-decode activations), so the 64-thread/four-row mapping is not integrated into
-the model. The control remains pinned ggml Q6_K plus in-graph greedy. Read
-`docs/qwen35-q6-fused-top-screen.md` and its checked-in raw receipts. The
-default legacy benchmark mode also passes exact full-logit checks after this
-extension. One comprehensive host-native review found a valid small-capture
-edge-check buffer overrun. A separate two-entry test buffer repaired it;
-three-row and full-size captured checks pass. No product runtime path or backend
-gate changed.
+The Q6_K producer-side top-token screen completed at `dfd5da2b`; read
+`docs/qwen35-q6-fused-top-screen.md` for its negative local timing.
 
-Next: measure or prototype a larger GPU boundary, prioritizing gate/up/SiLU/
-down or a measured graph scheduling difference on the captured real 2B model.
-Keep a bounded local screen and exact numeric oracle; integrate only a useful
-candidate into the real model, then compare prefill/decode/whole request with
-the same weights and pinned llama.cpp. Do not infer that the failed Q6_K
-four-row mapping exhausts independent Metal optimization. CPU/CUDA/Gemma
-admission remains deferred as recorded in the parity register. No PR,
-preflight or merge is claimed for this local screen.
+The active Metal graph scheduling trial corrects a half-open memory-range
+intersection in the pinned ggml backend through an opt-in build patch. The
+actual 2B final decode graph has 399 instead of 469 buffer barriers, with
+663 dispatches unchanged. The final recipe bundle reuses byte-identical core
+dylibs from the control bundle so the same Align binary can compare them.
+The 2B/0.8B generation owner, 744,960 exact 2B logit values, 336 exact
+state hashes, recipe smoke and strict Python boundary all pass. On the
+measured recipe bundle, five paired 330/64 phase requests improve by median
+22.264 ms. The final checked-in patch yields byte-identical Metal executable
+text and embedded shaders; its untraced wall requests improve by only
+12.966 ms with a -134.671 ms pair and one +586.905 ms control outlier.
+Shorter cases and startup remain variable. Pinned llama.cpp remains faster in
+the stable phase comparisons. Keep the trial default-off; do not claim a
+competitive win. See
+`docs/qwen35-metal-adjacent-range-trial.md` and complete checked-in receipts.
+One comprehensive host-native review found a valid missing-base-plugin
+validation issue. The recipe now verifies all five base artifacts; missing and
+modified plugin and modified core refusal probes, the recipe smoke, actual
+base-bundle check and strict Python boundary pass after the repair.
+
+Next: return to GPU attribution with an isolated Metal System Trace/counter
+capture for matched Align and llama.cpp decode commands; distinguish shader
+work, barrier stalls and command-buffer gaps before changing Q4_0/DeltaNet
+layout or fusion. CPU/CUDA/Gemma admission remains deferred as recorded in the
+parity register. No PR, preflight or merge is claimed for this local trial.
 
 ## Qwen3.5 in-graph Metal greedy trial (2026-09-27)
 
