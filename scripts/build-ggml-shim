@@ -163,10 +163,12 @@ PY_HASH
                flavour="real+force-no-host-ptr" ;;
     native-copy-submit)
                [ "${suffix}" = dylib ] || { printf '%s\n' "native copy failure requires Darwin" >&2; exit 1; }
+               include_flags+=("-DALIGN_GGML_FORCE_NATIVE_COPY_SUBMIT_FAILURE=1")
                native_flags+=("-DALIGN_NATIVE_METAL_FORCE_SUBMIT_FAILURE=1")
                flavour="real+force-native-copy-submit" ;;
     native-copy-complete)
                [ "${suffix}" = dylib ] || { printf '%s\n' "native copy failure requires Darwin" >&2; exit 1; }
+               include_flags+=("-DALIGN_GGML_FORCE_NATIVE_COPY_COMPLETION_FAILURE=1")
                native_flags+=("-DALIGN_NATIVE_METAL_FORCE_COMPLETION_FAILURE=1")
                flavour="real+force-native-copy-complete" ;;
     *)

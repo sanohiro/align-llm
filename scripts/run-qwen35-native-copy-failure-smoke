@@ -59,12 +59,14 @@ def main() -> None:
         if response != {"schema_version": 1, "status": "failed"}:
             raise RuntimeError(f"native copy failure published an unexpected envelope: {response!r}")
         code = session.process.wait(timeout=180)
-        if code == 0:
-            raise RuntimeError("worker reported failure but exited successfully")
+        if code != 2:
+            raise RuntimeError(f"worker failure exit was {code}, expected the controlled exit 2")
         session.log.seek(0)
         diagnostic = session.log.read().decode("utf-8", "replace")
         if f"native_state_copy forced {'completion' if fault == 'complete' else 'submit'} failure" not in diagnostic:
             raise RuntimeError("the expected native failure injection was not reached")
+        if f"native_state_copy request {'completion' if fault == 'complete' else 'submit'} failure" not in diagnostic:
+            raise RuntimeError(f"the native fault was not reported by the request path: {diagnostic[-2000:]}")
         print(f"mode 1: failed envelope, no result or token, worker exit {code}")
     finally:
         session.close(check=False)
