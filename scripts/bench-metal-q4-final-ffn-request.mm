@@ -15,6 +15,9 @@
 #include <vector>
 #include <unistd.h>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <mach/mach_time.h>
 
 #include "native_metal_q40_full_ffn_kernel.h"
@@ -37,6 +40,7 @@ static ggml_backend_event_t producer_event, consumer_event;
 static ggml_backend_t event_backend;
 static id<MTLCommandBuffer> native_pending;
 static uint64_t calls;
+static uint64_t *shared_calls;
 static uint64_t native_ns, prefix_ns, suffix_ns;
 
 static uint64_t now_ns() {
@@ -45,6 +49,20 @@ static uint64_t now_ns() {
 
 static bool initialize() {
   if (device) return fused && down_pipeline && queue;
+  const char *counter_path = getenv("ALIGN_LLM_NATIVE_TAIL_COUNTER");
+  if (counter_path) {
+    int fd = open(counter_path, O_RDWR | O_CLOEXEC);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0 || st.st_size != sizeof(uint64_t)) {
+      if (fd >= 0) close(fd);
+      return false;
+    }
+    void *mapped = mmap(nullptr, sizeof(uint64_t), PROT_READ | PROT_WRITE,
+                        MAP_SHARED, fd, 0);
+    close(fd);
+    if (mapped == MAP_FAILED) return false;
+    shared_calls = (uint64_t *)mapped;
+  }
   device = MTLCreateSystemDefaultDevice();
   if (!device) return false;
   NSError *error = nil;
@@ -277,7 +295,9 @@ static enum ggml_status compute(ggml_backend_t backend, struct ggml_cgraph *grap
     native_pending = nil;
   }
   suffix_ns += now_ns() - start;
-  if (++calls == 1 || calls % 32 == 0)
+  ++calls;
+  if (shared_calls) __atomic_store_n(shared_calls, calls, __ATOMIC_RELEASE);
+  if (calls == 1 || calls % 32 == 0)
     fprintf(stderr, "NATIVE_TAIL calls=%llu prefix_ms=%.3f native_ms=%.3f suffix_ms=%.3f\n",
       (unsigned long long)calls, prefix_ns / 1e6, native_ns / 1e6, suffix_ns / 1e6);
   return status;

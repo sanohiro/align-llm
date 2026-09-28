@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import statistics
+import struct
 import subprocess
 import sys
 import tempfile
@@ -91,27 +92,33 @@ def main() -> int:
                 order = ("control", "native") if pair % 2 == 0 else ("native", "control")
                 for arm in order:
                     env = dict(base, ALIGN_LLM_NATIVE_TAIL_DIAGNOSTIC="1" if arm == "native" else "0")
+                    counter = Path(directory) / "native-calls.bin"
+                    if arm == "native":
+                        counter.write_bytes(struct.pack("<Q", 0))
+                        env["ALIGN_LLM_NATIVE_TAIL_COUNTER"] = str(counter)
                     start = time.monotonic_ns()
                     with Session([worker["binary"], "--runtime-session", cfg["model"],
                                   cfg["pack"], cfg["geometry"], worker["options"], "0"],
                                  timeout=180, env=env) as session:
                         startup = time.monotonic_ns() - start
                         outputs = []
-                        for _ in range(3):
+                        for request_index in range(3):
                             begin = time.monotonic_ns()
                             generated = session.generate(request)
                             wall = time.monotonic_ns() - begin
                             outputs.append(generated["output"])
                             if (generated["prompt_tokens"], generated["completion_tokens"]) != (n_prompt, n_out):
                                 raise ValueError("actual work differs from declared work")
+                            if arm == "native":
+                                observed = struct.unpack("<Q", counter.read_bytes())[0]
+                                expected = (request_index + 1) * (n_out - 1)
+                                if observed != expected:
+                                    raise ValueError(f"native FFN calls {observed}, expected {expected} after request {request_index + 1}")
                         if len(set(outputs)) != 1:
                             raise ValueError(f"{arm} changed output across retained requests")
-                        if arm == "native":
-                            session.log.seek(0)
-                            if b"NATIVE_TAIL calls=" not in session.log.read():
-                                raise ValueError("native FFN interposer did not execute")
                         sample[arm] = {"startup_ns": startup, "wall_ns": wall,
-                                       "output": outputs[-1]}
+                                       "output": outputs[-1],
+                                       "native_ffn_calls": 3 * (n_out - 1) if arm == "native" else 0}
                 if sample["control"]["output"] != sample["native"]["output"]:
                     raise ValueError("native FFN changed generated output")
                 case["pairs"].append(sample)

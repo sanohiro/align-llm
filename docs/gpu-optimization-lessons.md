@@ -365,18 +365,21 @@ numeric agreement. This is a concrete alias/visibility trap when crossing
 independently managed Metal resources, not evidence that shared physical
 memory removes ownership and ordering work. Direct borrowing cut the
 fresh-view campaign's request loss, and GPU events removed intermediate CPU
-waits, but the final-layer-only candidate still lost at 64/16 and 330/64
-and had no stable 200/32 gain. The isolated 0.057–0.068 ms FFN win was too
+waits, but the final-layer-only candidate lost at all three conditions in a
+campaign that verified each request's native substitution count. The isolated
+0.057–0.068 ms FFN win was too
 small for this boundary. A larger native unit needs owned buffer lifetimes
 and explicit GPU dependencies; a pinned ggml internal buffer/event ABI is
 useful for a reversible diagnostic bridge, not a portable engine contract.
 
 The [target-batch feasibility screen](qwen35-target-batch-feasibility.md)
 shows a different mechanism from a faster single-token kernel. On the M1
-2B worker, adding 4/8/16 real prompt tokens to the last prefill chunk cost
+2B worker, lengthening related prompts by 4/8/16 tokens cost
 only 2.562/2.400/6.684 ms at paired medians when the graph emitted only its
 last logit row; generating those tokens serially cost
-121.676/230.490/438.319 ms. The existing Q6_K output head also computed
+121.676/230.490/438.319 ms. The longer prompts share only 191 initial token
+IDs with the base, so these figures compare processing shapes and do not bound
+an exact target continuation. The existing Q6_K output head also computed
 4/8/16 captured activation rows together in 10.722/20.974/18.980 ms,
 versus 29.098/58.376/117.108 ms serially, with complete numerical and
 greedy checks. Thus weight reuse across token columns is real for the head

@@ -343,14 +343,18 @@ over that workspace returned stale values on subsequent decodes in this
 setup; recreating the wrapper or borrowing ggml's original Metal buffer
 restored local numerical correctness. Five real decode steps passed the
 declared local FFN bound with the direct-buffer variant. Three-request
-generation outputs matched across all 15 paired conditions per mode, but full
+generation outputs matched across all 15 paired conditions per mode. A shared
+8-byte diagnostic counter confirmed `completion_tokens - 1` native FFN
+substitutions after every request, including each timed third request. Full
 logits/state and fault propagation were not qualified for a product path.
 
 With five alternating pairs at 64/16, 200/32 and 330/64, rewrapping won
-0/5, 0/5 and 0/5; direct borrowing won 0/5, 2/5 and 0/5; GPU events won
-1/5, 3/5 and 0/5, respectively. The event arm's +0.598 ms median at 200/32
-was inside substantial order/host variance and accompanied by losses at the
-other lengths. Withdraw final-layer-only substitution. The pinned private
+0/5, 0/5 and 0/5; direct borrowing won 1/5, 0/5 and 0/5; GPU events won
+1/5, 0/5 and 0/5, respectively. The paired median control-minus-native
+request differences were −27.005/−64.104/−152.384 ms for rewrapping,
+−10.515/−29.923/−63.976 ms for direct borrowing, and
+−3.403/−15.798/−37.003 ms for GPU events. Withdraw final-layer-only
+substitution. The pinned private
 Metal buffer/event ABI is diagnostic and cannot be made an implicit permanent
 ggml dependency of a native scheduler. Full receipts, phase limits and
 reproduction commands are in `docs/qwen35-native-final-ffn-connected-screen.md`.

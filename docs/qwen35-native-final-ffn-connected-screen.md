@@ -69,6 +69,10 @@ guarantee about every shared buffer or device.
 Each worker ran three identical requests and the third was timed. Five
 control/native pairs alternated process order for each condition. Both arms
 used one saved binary and interposer, selected by `ALIGN_LLM_NATIVE_TAIL_DIAGNOSTIC`.
+The diagnostic writes a monotonically increasing substitution count to an
+8-byte shared counter owned by the measurement caller. After **each** request,
+including the timed third request, the caller requires exactly `completion_tokens
+- 1` new FFN substitutions; a fallback on any decode step rejects the sample.
 Positive control-minus-native values favor the candidate. The receipt files
 retain every pair, startup clock and generated output:
 [rewrapped view](../eval/benchmarks/qwen35-native-final-ffn-connected-2026-09-28-rewrap.json),
@@ -77,12 +81,13 @@ and [GPU-event ordering](../eval/benchmarks/qwen35-native-final-ffn-connected-20
 
 | Prompt/output | New no-copy view each decode | Borrow original ggml Metal buffer | Borrow plus GPU events and final synchronization |
 | --- | ---: | ---: | ---: |
-| 64/16 | −27.879 ms, 0/5 wins | −10.563 ms, 0/5 | −15.214 ms, 1/5 |
-| 200/32 | −66.907 ms, 0/5 | −38.149 ms, 2/5 | +0.598 ms, 3/5 |
-| 330/64 | −150.855 ms, 0/5 | −58.138 ms, 0/5 | −38.286 ms, 0/5 |
+| 64/16 | −27.005 ms, 0/5 wins | −10.515 ms, 1/5 | −3.403 ms, 1/5 |
+| 200/32 | −64.104 ms, 0/5 | −29.923 ms, 0/5 | −15.798 ms, 0/5 |
+| 330/64 | −152.384 ms, 0/5 | −63.976 ms, 0/5 | −37.003 ms, 0/5 |
 
-The event arm's 200/32 paired differences span −136.0 to +42.6 ms; its
-small positive median is not a reliable speedup. Event ordering preserves
+The event arm lost all five 200/32 and 330/64 pairs, with one favorable
+64/16 pair. The earlier unverified-count campaign's small positive 200/32
+median is superseded by these receipts. Event ordering preserves
 the required dependencies: ggml records completion of the producer slice,
 the native queue waits, native signals after its kernels, ggml waits before
 the suffix, and the host synchronizes at the end. The diagnostic checks the

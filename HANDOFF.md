@@ -33,8 +33,10 @@ the 2B decode graph in a developer interposer with three boundary modes;
 three raw paired receipts record the result. Five real decode shadow steps
 passed the existing local numeric bound; three retained requests per arm
 matched generated output/counts at 64/16, 200/32 and 330/64. Fresh secondary
-Metal views won 0/15 pairs, direct pinned-buffer borrowing won 2/15, and
-GPU-event ordering won 4/15, with adverse long-condition results. The FFN-only
+Metal views won 0/15 pairs, direct pinned-buffer borrowing won 1/15, and
+GPU-event ordering won 1/15, with adverse long-condition results. A shared
+counter verified every FFN substitution in each request, including the timed
+third request; the original unchecked-count receipts were superseded. The FFN-only
 substitution is withdrawn. No product runtime or ggml source was changed;
 complete logits/state and fault injection were not qualified for this
 discarded diagnostic. The probe found actual FFN input/gated allocation
