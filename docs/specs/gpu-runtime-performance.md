@@ -432,6 +432,33 @@ paired synchronized-compute comparisons, while adding about 2 MB of graph
 workspace. Its empty-prefix and missing-draft limits are recorded in
 `docs/qwen35-target-all-rows-screen.md`; the production gate above remains open.
 
+The next developer-only continuation screen consumes JSON arrays of 1..508
+prefix token IDs and exactly four target token IDs. On the same resident
+session, it first executes the identical prefix, then either one four-row
+prefill target graph or four one-token target graphs. The Align smoke owns
+input validation, position/mask construction, recurrent parity, the graph
+switch and synchronized computation. The current pinned ggml shim holds only
+one prefill graph context; this probe must invalidate and rebuild that context
+for the batched target graph and charge the rebuild to the connected target
+cost. Its only output is a complete F32
+target-logit file (batched) or four staged F32 row files (serial), plus JSON
+timings for prefix, graph switching, target computation, readback and graph
+workspace. Failed validation, graph execution or readback publishes no target
+file. No production session or model format changes. The comparison uses the
+same token IDs, weights, prefix state, graph/backend settings and retained
+output rows, with the same predeclared local logit and active-state bounds as
+the empty-prefix screen; compare KV only over prefix plus four valid tokens.
+Run five alternating pairs, preserving setup and slower samples. The first
+real fixture is the existing recorded 200-token prompt plus its pinned
+reference's `[16, 220, 17, 220]` continuation. Cost ceiling: one extra
+four-row F32 logits result, no second weight payload, <=508 prefix tokens,
+four target tokens, <=900 s build/campaign and <=180 s per worker. An exact
+continuation result remains a diagnostic until partial acceptance/rejection,
+fault cleanup, draft cost and complete-request speed are qualified.
+The recorded fixture may declare its source prefix and expected oracle greedy
+IDs; other valid token sequences need only the bounded arrays and are compared
+between batch and serial without requiring a greedy continuation.
+
 ### Final-chunk logits trial (2026-09-26)
 
 Remove unused intermediate-prefill output work on the current 2B consumer. The

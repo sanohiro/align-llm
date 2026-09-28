@@ -401,6 +401,17 @@ This empty-prefix graph result still excludes a draft, partial acceptance,
 rejection replay and whole-request time; those decide whether weight reuse
 can become a generation speedup.
 
+The [exact-prefix continuation screen](qwen35-target-continuation-screen.md)
+then ran the same four oracle tokens after an identical 200-token prompt
+state. Five alternating M1 pairs gave a 63.126 ms median connected target
+advantage after charging the current 2.920 ms graph rebuild and four-row
+readback; all five pairs favored the batch. Complete logits and valid active
+KV/recurrent state met their predeclared numerical bounds. The mechanism is
+weight reuse across token columns, with enough saved graph work to pay the
+current context switch. The serial diagnostic retains both decode parity
+graphs, so process wall and workspace are not a product comparison. Acceptance
+rollback, draft cost and complete-request results still decide adoption.
+
 ## Decision pattern
 
 1. State a mechanism in bytes, work, or synchronization and define a reversible

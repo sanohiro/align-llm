@@ -10,6 +10,11 @@ model values; normal inference never invokes it.
 workloads as a target-batch shape-cost screen; the longer prompts are not exact
 token-ID continuations of the base. It does not perform draft
 selection, token acceptance or product inference.
+`scripts/measure-qwen35-target-continuation` is
+`BENCHMARK_OR_MEASUREMENT`: it runs two explicit Align diagnostic arms from
+the same recorded token prefix, compares complete target logits and active
+state under predeclared bounds, and records alternating timings. It neither
+chooses tokens nor participates in normal inference.
 `scripts/measure-qwen35-target-rows` is `BENCHMARK_OR_MEASUREMENT`: it runs
 explicit Align diagnostic graph arms on identical real-model token IDs,
 compares complete logits rows with a predeclared local bound, and records
