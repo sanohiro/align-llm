@@ -397,6 +397,41 @@ acceptance, repeated requests and rejection fault cleanup. Production
 adoption requires combined target-plus-draft request evidence, not a fixed
 percentage improvement.
 
+The first consumer of the all-row graph is a focused, developer-only real-model
+probe in `runtime_qwen35_load_smoke`, selected by `--target-rows OUTPUT`.
+The same smoke's `--serial-target-rows OUT0 OUT1 OUT2 OUT3` arm emits the
+four one-token reference rows without the older 0.8B-only hard-coded oracle
+ranges; it retains the ordinary full graph and token sequence. Each arm warms
+its exact graph path once, resets resident state, then times synchronized
+compute separately from output readback. The serial arm writes the timed
+replay's four logits rows.
+`runtime_qwen35_model.build_tokens_all_logits` admits a prefill graph with
+`1 < count <= 16`, no last-FFN-row shortcut and no in-graph greedy. It returns
+an F32 `[vocabulary, count]` output slot while retaining every recurrent and
+attention state commit. The caller owns the output file and all temporary
+buffers; no model, weight, session, or persisted format changes. For the first
+screen, use the existing real-model four-token reference sequence
+`[0, 23066, 0, 0]` and compare every row against the existing one-token
+smoke's four outputs before timing interpretation. Predeclare
+`abs(batch - serial) <= 0.05 + 0.001 * abs(serial)` for every finite logit and
+require the same lowest-index greedy token; this local bound does not relax
+the product regression. Record graph compute time, output readback, actual
+allocation and shape, and keep the ordinary one-row graph as control. A
+passing empty-prefix four-row screen is a graph feasibility result, not a
+target-continuation, state-transaction or speculative-speed claim. Malformed
+mode/arguments and graph construction/compute/readback failures must return
+errors without publishing an output file. The existing 16-row and time/byte
+ceilings above remain the upper limits for subsequent continuation trials.
+An independent state diagnostic may compare the valid first four KV positions
+and the active recurrent parity after the two arms. Before inspecting values,
+use `abs(batch - serial) <= 0.005 + 0.0005 * abs(serial)` for every finite active
+state element; inactive parity and unused KV capacity are outside this local
+comparison. A failure is a feasibility finding, not grounds to widen the bound.
+The completed M1 four-row screen met both local bounds and won all five
+paired synchronized-compute comparisons, while adding about 2 MB of graph
+workspace. Its empty-prefix and missing-draft limits are recorded in
+`docs/qwen35-target-all-rows-screen.md`; the production gate above remains open.
+
 ### Final-chunk logits trial (2026-09-26)
 
 Remove unused intermediate-prefill output work on the current 2B consumer. The

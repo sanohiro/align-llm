@@ -19,12 +19,33 @@ import std.fs
 import std.time
 
 BenchResult { tokens: i64, elapsed_ns: i64 }
+TargetRowsResult {
+  rows: i64,
+  vocabulary: i64,
+  logits_bytes: i64,
+  compute_ns: i64,
+  readback_ns: i64,
+  workspace_bytes: i64,
+}
+TargetSerialResult {
+  rows: i64,
+  compute_ns: i64,
+  readback_ns: i64,
+  workspace_bytes: i64,
+}
 
 pub fn main(args: array<str>) -> Result<(), Error> {
   benchmark := (args.len() == 7 || args.len() == 8) && args[6] == "--decode-bench"
   prefill := args.len() == 9 && args[6] == "--prefill-128"
-  edge_dumps := (args.len() == 8 || args.len() == 10) && args[6] != "--decode-bench"
-  if args.len() != 6 && !benchmark && !prefill && !edge_dumps { return Err(Error.Invalid) }
+  target_rows := args.len() == 8 && args[6] == "--target-rows"
+  serial_target_rows := args.len() == 11 && args[6] == "--serial-target-rows"
+  edge_dumps := (args.len() == 8 || args.len() == 10)
+    && args[6] != "--decode-bench" && args[6] != "--prefill-128"
+    && args[6] != "--target-rows" && args[6] != "--serial-target-rows"
+  if args.len() != 6 && !benchmark && !prefill && !edge_dumps
+    && !target_rows && !serial_target_rows {
+    return Err(Error.Invalid)
+  }
   source := fs.read_file(args[1])?
   snapshot := gguf.open_snapshot(args[2])?
   g := runtime_qwen35_geometry.parse_snapshot(source, snapshot)?
@@ -67,6 +88,10 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   }
   if prefill {
     run_prefill_128(owner, g, args[7], args[8])?
+    return Ok(())
+  }
+  if target_rows {
+    run_target_rows(owner, g, args[7])?
     return Ok(())
   }
   mut slot_storage := buffer.filled(1040, 0 as u8)
@@ -198,10 +223,13 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   }
   runtime_inputs.update(owner, 2, 0, mask_view)?
   mut token_image := buffer.filled(4, 0 as u8)
-  token_view := token_image.bytes()
+  mut token_view := token_image.bytes()
   runtime_inputs.update(owner, 3, 0, token_view)?
   runtime_inputs.update(owner, 4, 0, token_view)?
+  mut serial_compute_ns := 0
+  mut serial_started := time.instant()
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, first_key, graph)?
+  if serial_target_rows { serial_compute_ns = serial_compute_ns + time.instant() - serial_started }
   mut first_image := buffer.filled(g.n_vocab * 4, 0 as u8)
   first_logits := first_image.bytes()
   ggml_ffi.gpu_slot_get(owner, slots, runtime_qwen35_model.OUTPUT,
@@ -209,14 +237,14 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     return Err(Error.Invalid)
   }
   // Same-pin Metal llama-eval-callback, token 0, 512 context, Flash Attention on.
-  if first_logits.f32_le(0) < (6.22 as f32)
-    || first_logits.f32_le(0) > (6.29 as f32)
-    || first_logits.f32_le(4) < (-0.74 as f32)
-    || first_logits.f32_le(4) > (-0.66 as f32)
-    || first_logits.f32_le(8) < (5.57 as f32)
-    || first_logits.f32_le(8) > (5.64 as f32)
-    || first_logits.f32_le((g.n_vocab - 1) * 4) < (-5.53 as f32)
-    || first_logits.f32_le((g.n_vocab - 1) * 4) > (-5.45 as f32) {
+  if !serial_target_rows && (first_logits.f32_le(0) < (6.22 as f32)
+      || first_logits.f32_le(0) > (6.29 as f32)
+      || first_logits.f32_le(4) < (-0.74 as f32)
+      || first_logits.f32_le(4) > (-0.66 as f32)
+      || first_logits.f32_le(8) < (5.57 as f32)
+      || first_logits.f32_le(8) > (5.64 as f32)
+      || first_logits.f32_le((g.n_vocab - 1) * 4) < (-5.53 as f32)
+      || first_logits.f32_le((g.n_vocab - 1) * 4) > (-5.45 as f32)) {
     return Err(Error.Invalid)
   }
   if edge_dumps {
@@ -235,7 +263,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   mut second_index_view := second_index.bytes()
   second_index_view.set_u32_le(0, 1 as u32)
   runtime_inputs.update(owner, 4, 0, second_index_view)?
+  serial_started = time.instant()
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, attention_key, attention_graph)?
+  if serial_target_rows { serial_compute_ns = serial_compute_ns + time.instant() - serial_started }
   mut attention_result_image := buffer.filled(g.n_vocab * 4, 0 as u8)
   attention_result := attention_result_image.bytes()
   ggml_ffi.gpu_slot_get(owner, attention_slots, runtime_qwen35_model.OUTPUT,
@@ -243,14 +273,14 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     return Err(Error.Invalid)
   }
   // The second token is 23066 in the reference's "! hello" prompt.
-  if attention_result.f32_le(0) < (13.98 as f32)
-    || attention_result.f32_le(0) > (14.04 as f32)
-    || attention_result.f32_le(4) < (10.98 as f32)
-    || attention_result.f32_le(4) > (11.04 as f32)
-    || attention_result.f32_le(8) < (6.75 as f32)
-    || attention_result.f32_le(8) > (6.81 as f32)
-    || attention_result.f32_le((g.n_vocab - 1) * 4) < (-5.14 as f32)
-    || attention_result.f32_le((g.n_vocab - 1) * 4) > (-5.08 as f32) {
+  if !serial_target_rows && (attention_result.f32_le(0) < (13.98 as f32)
+      || attention_result.f32_le(0) > (14.04 as f32)
+      || attention_result.f32_le(4) < (10.98 as f32)
+      || attention_result.f32_le(4) > (11.04 as f32)
+      || attention_result.f32_le(8) < (6.75 as f32)
+      || attention_result.f32_le(8) > (6.81 as f32)
+      || attention_result.f32_le((g.n_vocab - 1) * 4) < (-5.14 as f32)
+      || attention_result.f32_le((g.n_vocab - 1) * 4) > (-5.08 as f32)) {
     return Err(Error.Invalid)
   }
   if edge_dumps {
@@ -266,8 +296,10 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   mut third_index_view := third_index.bytes()
   third_index_view.set_u32_le(0, 2 as u32)
   runtime_inputs.update(owner, 4, 0, third_index_view)?
+  serial_started = time.instant()
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE_ALT,
     alternate_key, alternate_graph)?
+  if serial_target_rows { serial_compute_ns = serial_compute_ns + time.instant() - serial_started }
   if args.len() == 10 {
     mut third_image := buffer.filled(g.n_vocab * 4, 0 as u8)
     third_logits := third_image.bytes()
@@ -286,7 +318,9 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   mut fourth_index_view := fourth_index.bytes()
   fourth_index_view.set_u32_le(0, 3 as u32)
   runtime_inputs.update(owner, 4, 0, fourth_index_view)?
+  serial_started = time.instant()
   runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE, attention_key, attention_graph)?
+  if serial_target_rows { serial_compute_ns = serial_compute_ns + time.instant() - serial_started }
   if args.len() == 10 {
     mut fourth_image := buffer.filled(g.n_vocab * 4, 0 as u8)
     fourth_logits := fourth_image.bytes()
@@ -297,6 +331,84 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     fs.write_file(args[9], fourth_logits)?
   }
   runtime_qwen35_state.finish(state, true)
+  if serial_target_rows {
+    // Replay the same four tokens from reset resident state after all four
+    // graph variants have compiled. Time only their synchronized compute.
+    runtime_qwen35_load.zero_resident(owner, g, 512)?
+    state = runtime_qwen35_state.new()
+    serial_compute_ns = 0
+    mut replay_at := 0
+    mut replay_index_storage := buffer.filled(4, 0 as u8)
+    mut replay_index := replay_index_storage.bytes()
+    row_bytes := g.n_vocab * 4
+    mut replay_rows_storage := buffer.filled(4 * row_bytes, 0 as u8)
+    mut replay_rows := replay_rows_storage.bytes()
+    mut serial_readback_ns := 0
+    loop {
+      if replay_at >= 4 { break }
+      runtime_qwen35_geometry.write_text_positions(replay_at, 1, position_view)?
+      runtime_inputs.update(owner, 1, 0, position_view)?
+      mut column := 0
+      loop {
+        if column >= width { break }
+        mask_view.set_u32_le(column * 4,
+          if column <= replay_at { 0 as u32 } else { 4286578688 as u32 })
+        column = column + 1
+      }
+      runtime_inputs.update(owner, 2, 0, mask_view)?
+      token_view.set_u32_le(0, if replay_at == 1 { 23066 as u32 } else { 0 as u32 })
+      runtime_inputs.update(owner, 3, 0, token_view)?
+      replay_index.set_u32_le(0, replay_at as u32)
+      runtime_inputs.update(owner, 4, 0, replay_index)?
+      serial_started = time.instant()
+      if replay_at == 0 {
+        runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, first_key, graph)?
+      } else if replay_at == 2 {
+        runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE_ALT,
+          alternate_key, alternate_graph)?
+      } else {
+        runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_DECODE,
+          attention_key, attention_graph)?
+      }
+      serial_compute_ns = serial_compute_ns + time.instant() - serial_started
+      serial_started = time.instant()
+      replay_output := replay_rows[replay_at * row_bytes..(replay_at + 1) * row_bytes]
+      if replay_at == 0 {
+        ggml_ffi.gpu_slot_get(owner, slots, runtime_qwen35_model.OUTPUT,
+          replay_output, 0, replay_output.len(), "qwen35_serial_target_first") else {
+          return Err(Error.Invalid)
+        }
+      } else if replay_at == 2 {
+        ggml_ffi.gpu_slot_get(owner, alternate_slots, runtime_qwen35_model.OUTPUT,
+          replay_output, 0, replay_output.len(), "qwen35_serial_target_alternate") else {
+          return Err(Error.Invalid)
+        }
+      } else {
+        ggml_ffi.gpu_slot_get(owner, attention_slots, runtime_qwen35_model.OUTPUT,
+          replay_output, 0, replay_output.len(), "qwen35_serial_target_decode") else {
+          return Err(Error.Invalid)
+        }
+      }
+      serial_readback_ns = serial_readback_ns + time.instant() - serial_started
+      runtime_qwen35_state.finish(state, true)
+      replay_at = replay_at + 1
+    }
+    // Publish only after all four graph executions and readbacks succeeded.
+    replay_at = 0
+    loop {
+      if replay_at >= 4 { break }
+      fs.write_file(args[7 + replay_at],
+        replay_rows[replay_at * row_bytes..(replay_at + 1) * row_bytes])?
+      replay_at = replay_at + 1
+    }
+    result := TargetSerialResult {
+      rows: 4, compute_ns: serial_compute_ns,
+      readback_ns: serial_readback_ns,
+      workspace_bytes: runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_WORKSPACE),
+    }
+    print(json.encode(result)?)
+    return Ok(())
+  }
   if benchmark {
     mut bench_index_image := buffer.filled(4, 0 as u8)
     mut bench_index := bench_index_image.bytes()
@@ -341,6 +453,105 @@ pub fn main(args: array<str>) -> Result<(), Error> {
     return Err(Error.Invalid)
   }
   print("qwen35 load: PASS")
+  return Ok(())
+}
+
+fn run_target_rows(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow g: runtime_qwen35_geometry.Geometry,
+  dump: str,
+) -> Result<(), Error> {
+  count := 4
+  width := runtime_inputs.attention_width(count, g.context_length)?
+  runtime_inputs.begin(owner, 4)?
+  token := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: count, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  positions := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 4 * count, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  mask := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 0, n_dims: 2, ne0: width, ne1: count, ne2: 1, ne3: 1,
+    })?
+  index_input := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
+    })?
+  if token != 0 || positions != 1 || mask != 2 || index_input != 3 {
+    return Err(Error.Invalid)
+  }
+  runtime_inputs.finish(owner)?
+  ctx := ggml_ffi.gpu_graph_context_open(owner, ggml_ffi.GPU_GRAPH_PREFILL, 25165824)
+  if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
+  graph := ggml_ffi.graph_new(ctx)
+  if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
+  mut slot_storage := buffer.filled(1040, 0 as u8)
+  slots := slot_storage.bytes()
+  ggml_ffi.slots_init(slots, slots.len(), "qwen35_target_rows_slots") else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, token, slots, runtime_qwen35_model.TOKEN) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, positions, slots, runtime_qwen35_model.POSITION) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_input_slot(owner, mask, slots, runtime_qwen35_model.MASK) else {
+    return Err(Error.Invalid)
+  }
+  state := runtime_qwen35_state.new()
+  runtime_qwen35_model.build_tokens_all_logits(owner, g, state, 0, count,
+    index_input, ctx, graph, slots)?
+  logits_bytes := ggml_ffi.slot_nbytes(slots, runtime_qwen35_model.OUTPUT)
+  if ggml_ffi.slot_ne(slots, runtime_qwen35_model.OUTPUT, 0) != g.n_vocab
+    || ggml_ffi.slot_ne(slots, runtime_qwen35_model.OUTPUT, 1) != count
+    || logits_bytes != g.n_vocab * count * 4 {
+    return Err(Error.Invalid)
+  }
+  key := "abababababababababababababababababababababababababababababababab"
+  runtime_execution.prepare(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+  mut token_storage := buffer.filled(count * 4, 0 as u8)
+  mut token_view := token_storage.bytes()
+  token_view.set_u32_le(4, 23066 as u32)
+  runtime_inputs.update(owner, token, 0, token_view)?
+  mut position_storage := buffer.filled(count * 16, 0 as u8)
+  mut position_view := position_storage.bytes()
+  runtime_qwen35_geometry.write_text_positions(0, count, position_view)?
+  runtime_inputs.update(owner, positions, 0, position_view)?
+  mut mask_storage := buffer.filled(width * count * 4, 0 as u8)
+  mut mask_view := mask_storage.bytes()
+  mut row := 0
+  loop {
+    if row >= count { break }
+    mut column := row + 1
+    loop {
+      if column >= width { break }
+      mask_view.set_u32_le((row * width + column) * 4, 4286578688 as u32)
+      column = column + 1
+    }
+    row = row + 1
+  }
+  runtime_inputs.update(owner, mask, 0, mask_view)?
+  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+  // Warmup may mutate recurrent/KV planes; replay from the serial arm's zero state.
+  runtime_qwen35_load.zero_resident(owner, g, 512)?
+  mut started := time.instant()
+  runtime_execution.compute(owner, ggml_ffi.GPU_GRAPH_PREFILL, key, graph)?
+  compute_ns := time.instant() - started
+  mut output_storage := buffer.filled(logits_bytes, 0 as u8)
+  mut output := output_storage.bytes()
+  started = time.instant()
+  ggml_ffi.gpu_slot_get(owner, slots, runtime_qwen35_model.OUTPUT,
+    output, 0, output.len(), "qwen35_target_rows_logits") else {
+    return Err(Error.Invalid)
+  }
+  readback_ns := time.instant() - started
+  fs.write_file(dump, output)?
+  result := TargetRowsResult {
+    rows: count, vocabulary: g.n_vocab, logits_bytes: logits_bytes,
+    compute_ns: compute_ns, readback_ns: readback_ns,
+    workspace_bytes: runtime_memory.allocated_bytes(owner, ggml_ffi.GPU_MEMORY_WORKSPACE),
+  }
+  print(json.encode(result)?)
   return Ok(())
 }
 

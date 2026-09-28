@@ -388,6 +388,19 @@ other target logit rows, and neither screen includes draft cost or safe
 DeltaNet/KV state acceptance. Keep these as feasibility evidence until a
 multi-row target graph and transactional state prove an actual request win.
 
+The subsequent [complete four-row graph screen](qwen35-target-all-rows-screen.md)
+confirmed the weight-reuse mechanism in an Align-built full-model graph, not
+just the Q6_K head. On one M1 with real 2B weights, synchronized compute took
+44.414 ms versus 115.456 ms for four serial steps, with all five paired
+comparisons favoring the four-row graph. It paid 1,987,456 more workspace
+bytes and about 0.251 ms more logits readback. Complete logits and valid
+active state met separately declared numerical bounds; whole-plane state
+hashes are misleading when active recurrent parity differs and unused KV
+tails are included. Compare the state that the next token actually reads.
+This empty-prefix graph result still excludes a draft, partial acceptance,
+rejection replay and whole-request time; those decide whether weight reuse
+can become a generation speedup.
+
 ## Decision pattern
 
 1. State a mechanism in bytes, work, or synchronization and define a reversible

@@ -1,0 +1,229 @@
+#!/usr/bin/env python3
+"""Compare an Align four-row target graph with four serial real-model steps."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import statistics
+import subprocess
+import tempfile
+import time
+
+
+TOKENS = [0, 23066, 0, 0]
+STATE_ABS = 0.005
+STATE_REL = 0.0005
+
+
+def digest(path: Path) -> str:
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def trace_state(args, base, env, work, arm, ordinal, state_count):
+    paths = ([work / f"state-serial-{i}.bin" for i in range(4)]
+             if arm == "serial" else [work / "state-batch.bin"])
+    state_path = work / f"{arm}-state.bin"
+    traced_env = dict(env, DYLD_INSERT_LIBRARIES=str(args.state_tracer.resolve()),
+                      ALIGN_STATE_COUNT=str(state_count),
+                      ALIGN_STATE_DUMP_PATH=str(state_path),
+                      ALIGN_STATE_DUMP_ORDINAL=str(ordinal))
+    command = base + (["--serial-target-rows", *map(str, paths)]
+                      if arm == "serial" else ["--target-rows", str(paths[0])])
+    completed = subprocess.run(command, env=traced_env, capture_output=True,
+                               text=True, timeout=180, check=False)
+    if completed.returncode:
+        raise RuntimeError(f"{arm} state trace failed: {completed.stderr[-2500:]}")
+    records = [json.loads(line[len("Q35_STATE "):])
+               for line in completed.stderr.splitlines()
+               if line.startswith("Q35_STATE ")]
+    complete = [entry for entry in records if entry.get("event") == "graph_complete"]
+    if not complete or complete[-1].get("ordinal") != ordinal \
+            or complete[-1].get("state_count") != state_count:
+        raise ValueError(f"{arm} state trace ended on an unexpected graph")
+    planes = [entry for entry in records if entry.get("event") == "plane"
+              and entry.get("ordinal") == ordinal]
+    if len(planes) != state_count or [entry.get("index") for entry in planes] != list(range(state_count)):
+        raise ValueError(f"{arm} state trace omitted or reordered planes")
+    if state_path.stat().st_size != sum(entry["bytes"] for entry in planes):
+        raise ValueError(f"{arm} state dump has the wrong byte extent")
+    return planes, state_path
+
+
+def compare_state(np, geometry, batch_trace, serial_trace):
+    batch_planes, batch_path = batch_trace
+    serial_planes, serial_path = serial_trace
+    model = geometry["model"]
+    attention_layers = model["n_layer"] // model["full_attention_interval"]
+    state_count = 2 * attention_layers + 4 * (model["n_layer"] - attention_layers)
+    if len(batch_planes) != state_count or len(serial_planes) != state_count:
+        raise ValueError("state geometry and trace disagree")
+
+    def mapped(planes, path):
+        offset = 0
+        arrays = []
+        for entry in planes:
+            if entry["type"] not in (0, 1) or entry["bytes"] <= 0:
+                raise ValueError("unsupported state tensor type or extent")
+            dtype = "<f4" if entry["type"] == 0 else "<f2"
+            itemsize = 4 if entry["type"] == 0 else 2
+            if entry["bytes"] % itemsize:
+                raise ValueError("unaligned state tensor extent")
+            arrays.append(np.memmap(path, mode="r", dtype=dtype, offset=offset,
+                                    shape=(entry["bytes"] // itemsize,)))
+            offset += entry["bytes"]
+        return arrays
+
+    batch = mapped(batch_planes, batch_path)
+    serial = mapped(serial_planes, serial_path)
+    result = {"bound": f"abs(batch-serial) <= {STATE_ABS} + {STATE_REL}*abs(serial)",
+              "valid_kv_elements": 0, "active_recurrent_elements": 0,
+              "valid_kv_max_abs": 0.0, "active_recurrent_max_abs": 0.0,
+              "valid_kv_violations": 0, "active_recurrent_violations": 0}
+
+    def check(kind, lhs, rhs):
+        a = np.asarray(lhs, dtype=np.float64)
+        b = np.asarray(rhs, dtype=np.float64)
+        if not np.isfinite(a).all() or not np.isfinite(b).all():
+            raise ValueError(f"nonfinite {kind} state")
+        difference = np.abs(a - b)
+        result[f"{kind}_elements"] += difference.size
+        result[f"{kind}_max_abs"] = max(result[f"{kind}_max_abs"], float(difference.max()))
+        result[f"{kind}_violations"] += int(np.count_nonzero(
+            difference > STATE_ABS + STATE_REL * np.abs(b)))
+
+    for index in range(2 * attention_layers):
+        a, b = batch_planes[index], serial_planes[index]
+        if a["type"] != 1 or b["type"] != 1 or a["ne"] != b["ne"] \
+                or a["ne"][1] < 4 or a["nb"][0] != 2 \
+                or a["nb"][1] != 2 * a["ne"][0] or a["nb"] != b["nb"]:
+            raise ValueError("unexpected KV state layout")
+        shape = (a["ne"][2], a["ne"][1], a["ne"][0])
+        check("valid_kv", batch[index].reshape(shape)[:, :4, :],
+              serial[index].reshape(shape)[:, :4, :])
+    for index in range(2 * attention_layers, state_count, 2):
+        a, b = batch_planes[index + 1], serial_planes[index]
+        if a["type"] != 0 or b["type"] != 0 or a["ne"] != b["ne"] \
+                or a["bytes"] != b["bytes"]:
+            raise ValueError("unexpected active recurrent state layout")
+        check("active_recurrent", batch[index + 1], serial[index])
+    if result["valid_kv_violations"] or result["active_recurrent_violations"]:
+        raise ValueError(f"active state exceeded predeclared bound: {result}")
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("binary", "geometry", "gguf", "pack", "backend-path", "output"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--bundle-id", required=True)
+    parser.add_argument("--library-path", required=True)
+    parser.add_argument("--state-tracer", type=Path,
+                        help="optional independent state tracer dylib")
+    parser.add_argument("--pairs", type=int, default=5)
+    args = parser.parse_args()
+    if not 1 <= args.pairs <= 20:
+        parser.error("--pairs must be 1..20")
+    if len(args.bundle_id) != 64 or any(c not in "0123456789abcdef" for c in args.bundle_id):
+        parser.error("--bundle-id must be 64 lowercase hex characters")
+    for name in ("binary", "geometry", "gguf", "pack", "backend_path"):
+        if not getattr(args, name).is_file():
+            parser.error(f"--{name.replace('_', '-')} must name a file")
+    if args.state_tracer is not None and not args.state_tracer.is_file():
+        parser.error("--state-tracer must name a file")
+
+    import numpy as np
+
+    base = [str(args.binary.resolve()), str(args.geometry.resolve()),
+            str(args.gguf.resolve()), str(args.pack.resolve()),
+            str(args.backend_path.resolve()), args.bundle_id]
+    env = dict(os.environ, DYLD_LIBRARY_PATH=args.library_path)
+    result = {"schema_version": 1, "token_ids": TOKENS,
+              "numeric_bound": "abs(batch-serial) <= 0.05 + 0.001*abs(serial)",
+              "binary_sha256": digest(args.binary),
+              "geometry_sha256": digest(args.geometry),
+              "gguf_sha256": digest(args.gguf), "pack_sha256": digest(args.pack),
+              "backend_sha256": digest(args.backend_path),
+              "bundle_id": args.bundle_id, "pairs": []}
+    if args.state_tracer is not None:
+        result["state_tracer_sha256"] = digest(args.state_tracer)
+    with tempfile.TemporaryDirectory(prefix="qwen35-target-rows-") as temporary:
+        work = Path(temporary)
+        batch_path = work / "batch.bin"
+        serial_paths = [work / f"serial-{i}.bin" for i in range(4)]
+        for pair in range(args.pairs):
+            order = ("serial", "batch") if pair % 2 == 0 else ("batch", "serial")
+            sample = {"order": list(order)}
+            for arm in order:
+                paths = serial_paths if arm == "serial" else [batch_path]
+                for path in paths:
+                    path.unlink(missing_ok=True)
+                command = base + (["--serial-target-rows", *map(str, serial_paths)]
+                                  if arm == "serial" else ["--target-rows", str(batch_path)])
+                start = time.monotonic_ns()
+                completed = subprocess.run(command, env=env, capture_output=True,
+                                           text=True, timeout=180, check=False)
+                process_ns = time.monotonic_ns() - start
+                if completed.returncode:
+                    raise RuntimeError(f"{arm} failed: {completed.stderr[-2500:]}")
+                documents = [line for line in completed.stdout.splitlines()
+                             if line.startswith("{")]
+                if len(documents) != 1:
+                    raise ValueError(f"{arm} did not emit exactly one result")
+                metrics = json.loads(documents[0])
+                if metrics.get("rows") != 4 or type(metrics.get("compute_ns")) is not int \
+                        or metrics["compute_ns"] <= 0 \
+                        or type(metrics.get("readback_ns")) is not int \
+                        or metrics["readback_ns"] < 0:
+                    raise ValueError(f"{arm} returned invalid compute metrics")
+                if not all(path.is_file() for path in paths):
+                    raise ValueError(f"{arm} omitted a logits row")
+                sample[arm] = dict(metrics, process_ns=process_ns)
+            vocab = sample["batch"]["vocabulary"]
+            if type(vocab) is not int or vocab < 8192 \
+                    or sample["batch"]["logits_bytes"] != 4 * 4 * vocab \
+                    or batch_path.stat().st_size != 4 * 4 * vocab \
+                    or any(path.stat().st_size != 4 * vocab for path in serial_paths):
+                raise ValueError("complete F32 logits extent changed")
+            batch = np.fromfile(batch_path, dtype="<f4").reshape(4, vocab)
+            serial = np.stack([np.fromfile(path, dtype="<f4") for path in serial_paths])
+            if not np.isfinite(batch).all() or not np.isfinite(serial).all():
+                raise ValueError("nonfinite complete logits")
+            difference = np.abs(batch.astype(np.float64) - serial.astype(np.float64))
+            bound = 0.05 + 0.001 * np.abs(serial.astype(np.float64))
+            if np.any(difference > bound):
+                raise ValueError(f"all-row numerical mismatch: {int(np.sum(difference > bound))}")
+            batch_choices = batch.argmax(axis=1).tolist()
+            serial_choices = serial.argmax(axis=1).tolist()
+            if batch_choices != serial_choices:
+                raise ValueError(f"greedy choices changed: {batch_choices} vs {serial_choices}")
+            sample["check"] = {"max_abs_by_row": difference.max(axis=1).tolist(),
+                               "batch_greedy": batch_choices,
+                               "serial_greedy": serial_choices}
+            result["pairs"].append(sample)
+            print(pair, {arm: round(sample[arm]["compute_ns"] / 1e6, 3)
+                         for arm in order}, flush=True)
+        if args.state_tracer is not None:
+            geometry = json.loads(args.geometry.read_text())
+            model = geometry["model"]
+            attention_layers = model["n_layer"] // model["full_attention_interval"]
+            state_count = 2 * attention_layers + 4 * (model["n_layer"] - attention_layers)
+            batch_trace = trace_state(args, base, env, work, "batch", 1, state_count)
+            serial_trace = trace_state(args, base, env, work, "serial", 7, state_count)
+            result["active_state_check"] = compare_state(
+                np, geometry, batch_trace, serial_trace)
+    differences = [(pair["serial"]["compute_ns"] - pair["batch"]["compute_ns"]) / 1e6
+                   for pair in result["pairs"]]
+    result["paired_serial_minus_batch_compute_median_ms"] = statistics.median(differences)
+    result["batch_compute_wins"] = sum(value > 0 for value in differences)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
