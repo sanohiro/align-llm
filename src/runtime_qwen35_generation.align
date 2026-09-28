@@ -23,7 +23,7 @@ import std.time
 
 MAX_PROMPT := 2048
 MAX_GENERATED := 4096
-LOOKUP_DRAFTS := 3
+MAX_LOOKUP_DRAFTS := 3
 SLOT_BYTES := 1040
 MASKED := 4286578688
 
@@ -90,9 +90,9 @@ fn key(borrow owner: ggml_ffi.GpuDevice, borrow options: runtime_options.Runtime
 }
 
 fn lookup_target_key(borrow session: Session,
-  position: i64, width: i64, parity: i64) -> string {
+  position: i64, count: i64, width: i64, parity: i64) -> string {
   base := key(session.owner, session.options, session.geometry_text,
-    ggml_ffi.GPU_GRAPH_PREFILL, position, 4, width, parity, true, false, false)
+    ggml_ffi.GPU_GRAPH_PREFILL, position, count, width, parity, true, false, false)
   mut value := builder()
   value.write(base)
   value.write(":all-logits-rows")
@@ -252,13 +252,15 @@ fn update_lookup_target(borrow owner: ggml_ffi.GpuDevice,
   borrow mut tokens: slice<u8>, borrow mut positions: slice<u8>,
   borrow mut mask: slice<u8>,
 ) -> Result<(), Error> {
-  if candidates.len() != 4 || position < 0 || position + 4 > g.context_length
-    || tokens.len() < 16 || positions.len() < 64 || mask.len() < width * 16 {
+  count := candidates.len()
+  if (count != 2 && count != 4) || position < 0 || position + count > g.context_length
+    || tokens.len() < count * 4 || positions.len() < count * 16
+    || mask.len() < width * count * 4 {
     return Err(Error.Invalid)
   }
   mut row := 0
   loop {
-    if row >= 4 { break }
+    if row >= count { break }
     if candidates[row] < 0 || candidates[row] >= g.n_vocab { return Err(Error.Invalid) }
     tokens.set_u32_le(row * 4, candidates[row] as u32)
     mut column := 0
@@ -270,12 +272,12 @@ fn update_lookup_target(borrow owner: ggml_ffi.GpuDevice,
     }
     row = row + 1
   }
-  token_view := tokens[0..16]
+  token_view := tokens[0..count * 4]
   runtime_inputs.update(owner, 0, 0, token_view)?
-  mut position_view := positions[0..64]
-  runtime_qwen35_geometry.write_text_positions(position, 4, position_view)?
+  mut position_view := positions[0..count * 16]
+  runtime_qwen35_geometry.write_text_positions(position, count, position_view)?
   runtime_inputs.update(owner, 1, 0, position_view)?
-  mask_view := mask[0..width * 16]
+  mask_view := mask[0..width * count * 4]
   runtime_inputs.update(owner, 2, 0, mask_view)?
   return Ok(())
 }
@@ -496,7 +498,7 @@ pub fn generate_session(borrow mut session: Session,
   }
   session.first_request = false
   mut unused := empty_lookup_stats()
-  ids := execute(session, prompt, eog, max_tokens, empty, false, unused)?
+  ids := execute(session, prompt, eog, max_tokens, empty, 0, unused)?
   session.healthy = true
   return Ok(ids)
 }
@@ -504,7 +506,21 @@ pub fn generate_session(borrow mut session: Session,
 pub fn generate_session_lookup_trial(borrow mut session: Session,
   borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
 ) -> Result<LookupTrialResult, Error> {
+  return generate_lookup_with_drafts(session, prompt, eog, max_tokens, MAX_LOOKUP_DRAFTS)
+}
+
+pub fn generate_session_lookup_trial_one(borrow mut session: Session,
+  borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
+) -> Result<LookupTrialResult, Error> {
+  return generate_lookup_with_drafts(session, prompt, eog, max_tokens, 1)
+}
+
+fn generate_lookup_with_drafts(borrow mut session: Session,
+  borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
+  draft_count: i64,
+) -> Result<LookupTrialResult, Error> {
   if !session.healthy { return Err(Error.Invalid) }
+  if draft_count != 1 && draft_count != MAX_LOOKUP_DRAFTS { return Err(Error.Invalid) }
   mut forced: array_builder<i64> := array_builder()
   empty := forced.build()
   validate_request(session.geometry, prompt, eog, max_tokens, empty, session.capacity)?
@@ -514,14 +530,14 @@ pub fn generate_session_lookup_trial(borrow mut session: Session,
   }
   session.first_request = false
   mut stats := empty_lookup_stats()
-  ids := execute(session, prompt, eog, max_tokens, empty, true, stats)?
+  ids := execute(session, prompt, eog, max_tokens, empty, draft_count, stats)?
   session.healthy = true
   return Ok(LookupTrialResult { token_ids: ids, stats: stats })
 }
 
 fn execute(borrow mut session: Session,
   borrow prompt: array<i64>, borrow eog: array<i64>,
-  max_tokens: i64, borrow forced: array<i64>, lookup_trial: bool,
+  max_tokens: i64, borrow forced: array<i64>, lookup_drafts: i64,
   borrow mut stats: LookupTrialStats,
 ) -> Result<array<i64>, Error> {
   mut prefill_storage := buffer.filled(SLOT_BYTES, 0 as u8)
@@ -587,9 +603,10 @@ fn execute(borrow mut session: Session,
     offset = offset + count
   }
   if token < 0 { return Err(Error.Invalid) }
-  if lookup_trial {
+  if lookup_drafts > 0 {
     stats.prefill_ns = time.instant() - prefill_started
-    return execute_lookup_tail(session, prompt, eog, max_tokens, token, state, stats)
+    return execute_lookup_tail(session, prompt, eog, max_tokens,
+      token, state, stats, lookup_drafts)
   }
   mut generated: array_builder<i64> := array_builder()
   generated.push(token)
@@ -690,8 +707,9 @@ fn append_history(borrow history: array<i64>, borrow additions: array<i64>) -> a
 fn execute_lookup_tail(borrow mut session: Session,
   borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
   token_start: i64, borrow mut state: runtime_qwen35_state.State,
-  borrow mut stats: LookupTrialStats,
+  borrow mut stats: LookupTrialStats, draft_count: i64,
 ) -> Result<array<i64>, Error> {
+  target_count := draft_count + 1
   mut token := token_start
   mut generated: array_builder<i64> := array_builder()
   generated.push(token)
@@ -714,13 +732,13 @@ fn execute_lookup_tail(borrow mut session: Session,
   mut logits := logits_storage.bytes()
   mut target_slot_storage := buffer.filled(SLOT_BYTES, 0 as u8)
   mut target_slots := target_slot_storage.bytes()
-  mut target_token_storage := buffer.filled(16, 0 as u8)
+  mut target_token_storage := buffer.filled(target_count * 4, 0 as u8)
   mut target_tokens := target_token_storage.bytes()
-  mut target_position_storage := buffer.filled(64, 0 as u8)
+  mut target_position_storage := buffer.filled(target_count * 16, 0 as u8)
   mut target_positions := target_position_storage.bytes()
-  mut target_mask_storage := buffer.filled(session.mask_capacity * 16, 0 as u8)
+  mut target_mask_storage := buffer.filled(session.mask_capacity * target_count * 4, 0 as u8)
   mut target_mask := target_mask_storage.bytes()
-  mut target_logits_storage := buffer.filled(4 * session.geometry.n_vocab * 4, 0 as u8)
+  mut target_logits_storage := buffer.filled(target_count * session.geometry.n_vocab * 4, 0 as u8)
   mut target_logits := target_logits_storage.bytes()
   mut step := 1
   mut stopped := false
@@ -728,39 +746,40 @@ fn execute_lookup_tail(borrow mut session: Session,
     if step >= max_tokens || contains(eog, token) { break }
     position := prompt.len() + step - 1
     mut complete := false
-    if !stopped && max_tokens - step >= 4 && position + 4 <= session.capacity {
+    if !stopped && max_tokens - step >= target_count
+      && position + target_count <= session.capacity {
       stats.lookup_attempts = stats.lookup_attempts + 1
       lookup_started := time.instant()
-      mut draft_builder: array_builder<i64> := array_builder(LOOKUP_DRAFTS)
+      mut draft_builder: array_builder<i64> := array_builder(draft_count)
       mut found := runtime_generation.prompt_lookup_draft(
-        history, 3, LOOKUP_DRAFTS, draft_builder)
+        history, 3, draft_count, draft_builder)
       if found == 0 {
         found = runtime_generation.prompt_lookup_draft(
-          history, 2, LOOKUP_DRAFTS, draft_builder)
+          history, 2, draft_count, draft_builder)
       }
       stats.lookup_ns = stats.lookup_ns + time.instant() - lookup_started
       draft := draft_builder.build()
-      if found == LOOKUP_DRAFTS {
+      if found == draft_count {
         stats.draft_hits = stats.draft_hits + 1
         mut has_eog := false
         mut at := 0
         loop {
-          if at >= LOOKUP_DRAFTS { break }
+          if at >= draft_count { break }
           if contains(eog, draft[at]) { has_eog = true }
           at = at + 1
         }
         if !has_eog {
           stats.verify_groups = stats.verify_groups + 1
-          mut candidate_builder: array_builder<i64> := array_builder(4)
+          mut candidate_builder: array_builder<i64> := array_builder(target_count)
           candidate_builder.push(token)
           at = 0
           loop {
-            if at >= LOOKUP_DRAFTS { break }
+            if at >= draft_count { break }
             candidate_builder.push(draft[at])
             at = at + 1
           }
           candidates := candidate_builder.build()
-          width := runtime_inputs.attention_width(position + 4,
+          width := runtime_inputs.attention_width(position + target_count,
             session.geometry.context_length)?
           update_lookup_target(session.owner, candidates, session.geometry,
             position, width, target_tokens, target_positions, target_mask)?
@@ -771,10 +790,10 @@ fn execute_lookup_tail(borrow mut session: Session,
           if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
           target_graph := ggml_ffi.graph_new(ctx)
           if ggml_ffi.handle_absent(target_graph) { return Err(Error.Invalid) }
-          bind_prefill(session.owner, ctx, 4, width, target_slots)?
+          bind_prefill(session.owner, ctx, target_count, width, target_slots)?
           runtime_qwen35_model.build_tokens_all_logits(session.owner,
-            session.geometry, state, position, 4, 6, ctx, target_graph, target_slots)?
-          target_key := lookup_target_key(session, position, width, state.active)
+            session.geometry, state, position, target_count, 6, ctx, target_graph, target_slots)?
+          target_key := lookup_target_key(session, position, target_count, width, state.active)
           runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_PREFILL,
             target_key, target_graph)?
           stats.graph_build_ns = stats.graph_build_ns + time.instant() - build_started
@@ -798,19 +817,19 @@ fn execute_lookup_tail(borrow mut session: Session,
           row_bytes := session.geometry.n_vocab * 4
           mut accepted := 0
           loop {
-            if accepted >= LOOKUP_DRAFTS { break }
+            if accepted >= draft_count { break }
             row := target_logits[accepted * row_bytes..(accepted + 1) * row_bytes]
             if runtime_generation.greedy(row, -1)? != draft[accepted] { break }
             accepted = accepted + 1
           }
-          if accepted == LOOKUP_DRAFTS {
-            bonus_row := target_logits[LOOKUP_DRAFTS * row_bytes..4 * row_bytes]
+          if accepted == draft_count {
+            bonus_row := target_logits[draft_count * row_bytes..target_count * row_bytes]
             bonus := runtime_generation.greedy(bonus_row, -1)?
             if bonus < 0 || bonus >= session.geometry.n_vocab { return Err(Error.Invalid) }
-            mut additions: array_builder<i64> := array_builder(4)
+            mut additions: array_builder<i64> := array_builder(target_count)
             at = 0
             loop {
-              if at >= LOOKUP_DRAFTS { break }
+              if at >= draft_count { break }
               generated.push(draft[at])
               additions.push(draft[at])
               at = at + 1
@@ -820,9 +839,9 @@ fn execute_lookup_tail(borrow mut session: Session,
             added_ids := additions.build()
             history = append_history(history, added_ids)
             token = bonus
-            step = step + 4
+            step = step + target_count
             stats.complete_groups = stats.complete_groups + 1
-            stats.generated_drafts = stats.generated_drafts + LOOKUP_DRAFTS
+            stats.generated_drafts = stats.generated_drafts + draft_count
             complete = true
           } else {
             state.active = before

@@ -25,8 +25,8 @@ def digest(path: Path) -> str:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
-def run_arm(base, prefix_path, target_path, env, work, arm):
-    paths = ([work / f"serial-{i}.bin" for i in range(4)]
+def run_arm(base, prefix_path, target_path, env, work, arm, count):
+    paths = ([work / f"serial-{i}.bin" for i in range(count)]
              if arm == "serial" else [work / "batch.bin"])
     for path in paths:
         path.unlink(missing_ok=True)
@@ -42,7 +42,7 @@ def run_arm(base, prefix_path, target_path, env, work, arm):
     if len(lines) != 1 or not all(path.is_file() for path in paths):
         raise ValueError(f"{arm} omitted its complete result")
     metrics = json.loads(lines[0])
-    if metrics.get("target_rows") != 4 or metrics.get("prefix_tokens") < 1 \
+    if metrics.get("target_rows") != count or metrics.get("prefix_tokens") < 1 \
             or type(metrics.get("vocabulary")) is not int \
             or type(metrics.get("prefix_greedy")) is not int:
         raise ValueError(f"{arm} returned invalid geometry")
@@ -57,13 +57,14 @@ def run_arm(base, prefix_path, target_path, env, work, arm):
     return dict(metrics, process_ns=process_ns), paths
 
 
-def traced_state(base, prefix_path, target_path, env, work, tracer, arm, ordinal, state_count):
+def traced_state(base, prefix_path, target_path, env, work, tracer, arm, ordinal, state_count,
+                 count):
     state_path = work / f"{arm}-state.bin"
     traced_env = dict(env, DYLD_INSERT_LIBRARIES=str(tracer.resolve()),
                       ALIGN_STATE_COUNT=str(state_count),
                       ALIGN_STATE_DUMP_PATH=str(state_path),
                       ALIGN_STATE_DUMP_ORDINAL=str(ordinal))
-    paths = ([work / f"trace-serial-{i}.bin" for i in range(4)]
+    paths = ([work / f"trace-serial-{i}.bin" for i in range(count)]
              if arm == "serial" else [work / "trace-batch.bin"])
     mode = "--serial-continuation" if arm == "serial" else "--target-continuation"
     completed = subprocess.run([*base, mode, str(prefix_path), str(target_path),
@@ -87,7 +88,7 @@ def traced_state(base, prefix_path, target_path, env, work, tracer, arm, ordinal
     return planes, state_path
 
 
-def compare_state(np, model, prefix_count, batch_trace, serial_trace):
+def compare_state(np, model, prefix_count, count, batch_trace, serial_trace):
     batch_planes, batch_path = batch_trace
     serial_planes, serial_path = serial_trace
     attention_layers = model["n_layer"] // model["full_attention_interval"]
@@ -128,7 +129,7 @@ def compare_state(np, model, prefix_count, batch_trace, serial_trace):
         result[f"{kind}_violations"] += int(np.count_nonzero(
             difference > STATE_ABS + STATE_REL * np.abs(b)))
 
-    valid = prefix_count + 4
+    valid = prefix_count + count
     for index in range(2 * attention_layers):
         a, b = batch_planes[index], serial_planes[index]
         if a["type"] != 1 or b["type"] != 1 or a["ne"] != b["ne"] \
@@ -171,7 +172,9 @@ def main() -> int:
     prefix, targets = fixture.get("prefix_token_ids"), fixture.get("target_token_ids")
     if fixture.get("schema_version") != 1 or not isinstance(prefix, list) \
             or not isinstance(targets, list) or not 1 <= len(prefix) <= 508 \
-            or len(targets) != 4 or any(type(value) is not int or value < 0 for value in prefix + targets):
+            or len(targets) not in (2, 4) \
+            or len(prefix) + len(targets) > 512 \
+            or any(type(value) is not int or value < 0 for value in prefix + targets):
         parser.error("invalid continuation fixture")
     if fixture.get("prefix_source") == "eval/benchmarks/qwen35-target-batch-bound-2026-09-28.json:cases[0].base_prompt_ids":
         source_path = Path(__file__).resolve().parent.parent / "eval/benchmarks/qwen35-target-batch-bound-2026-09-28.json"
@@ -183,7 +186,7 @@ def main() -> int:
     if expected_prefix is not None and (type(expected_prefix) is not int or expected_prefix < 0):
         parser.error("invalid expected prefix greedy ID")
     if expected_target_prefix is not None and (not isinstance(expected_target_prefix, list)
-            or len(expected_target_prefix) > 4
+            or len(expected_target_prefix) > len(targets)
             or any(type(value) is not int or value < 0 for value in expected_target_prefix)):
         parser.error("invalid expected target greedy IDs")
     geometry = json.loads(args.geometry.read_text())
@@ -219,7 +222,8 @@ def main() -> int:
             order = ("serial", "batch") if pair % 2 == 0 else ("batch", "serial")
             sample = {"order": list(order)}
             for arm in order:
-                metrics, paths = run_arm(base, prefix_path, target_path, env, work, arm)
+                metrics, paths = run_arm(base, prefix_path, target_path, env, work, arm,
+                                         len(targets))
                 if metrics["prefix_tokens"] != len(prefix) \
                         or metrics["vocabulary"] != model["n_vocab"] \
                         or (expected_prefix is not None
@@ -227,13 +231,14 @@ def main() -> int:
                     raise ValueError(f"{arm} prefix/target identity changed")
                 vocab = model["n_vocab"]
                 bad_extent = (any(path.stat().st_size != 4 * vocab for path in paths)
-                              if arm == "serial" else paths[0].stat().st_size != 16 * vocab)
+                              if arm == "serial" else paths[0].stat().st_size != 4 * len(targets) * vocab)
                 if bad_extent:
                     raise ValueError(f"{arm} complete logits extent changed")
                 sample[arm] = metrics
             vocab = model["n_vocab"]
-            batch = np.fromfile(work / "batch.bin", dtype="<f4").reshape(4, vocab)
-            serial = np.stack([np.fromfile(work / f"serial-{i}.bin", dtype="<f4") for i in range(4)])
+            batch = np.fromfile(work / "batch.bin", dtype="<f4").reshape(len(targets), vocab)
+            serial = np.stack([np.fromfile(work / f"serial-{i}.bin", dtype="<f4")
+                               for i in range(len(targets))])
             if not np.isfinite(batch).all() or not np.isfinite(serial).all():
                 raise ValueError("nonfinite complete logits")
             difference = np.abs(batch.astype(np.float64) - serial.astype(np.float64))
@@ -250,11 +255,12 @@ def main() -> int:
             print(pair, {arm: round(sample[arm]["target_compute_ns"] / 1e6, 3)
                          for arm in order}, flush=True)
         batch_trace = traced_state(base, prefix_path, target_path, env, work,
-                                   args.state_tracer, "batch", 3, state_count)
+                                   args.state_tracer, "batch", 3, state_count, len(targets))
         serial_trace = traced_state(base, prefix_path, target_path, env, work,
-                                    args.state_tracer, "serial", 9, state_count)
+                                    args.state_tracer, "serial", 2 * (len(targets) + 1) - 1,
+                                    state_count, len(targets))
         result["active_state_check"] = compare_state(
-            np, model, len(prefix), batch_trace, serial_trace)
+            np, model, len(prefix), len(targets), batch_trace, serial_trace)
     deltas = []
     for sample in result["pairs"]:
         serial = sample["serial"]

@@ -72,8 +72,8 @@ PR #321 passed final owner/preflight, a clean comprehensive review and all
 three hosted checks. Final check evidence was recorded on the PR, then it
 merged into `main` as `70112200`.
 
-Current branch `agent/qwen35-lookup-continuous-trial` starts from that merge.
-It contains the default-off trial capability in:
+PR #322 merged the default-off continuous trial into `main` as `dfb39613`.
+It contains the Align-owned route and diagnostic in:
 `src/runtime_qwen35_generation.align`,
 `src/runtime_qwen35_lookup_trial_smoke.align`,
 `scripts/measure-qwen35-lookup-continuous`,
@@ -91,25 +91,36 @@ median against normal Align, 5/5; test-writing 72/96 lost 74.4 ms, 0/5.
 The trial beat pinned llama.cpp generation in all 15 paired samples but beat
 fresh-process wall time only on the bug-fix case. Phase and startup details,
 limits and raw receipts are in `docs/qwen35-lookup-continuous-trial.md`.
-The Python boundary guard and its mutation suite pass. The final binary
-also passed repeated-position, EOG-draft and empty-prompt qualification after
-phase counter addition. Align formatting and the real-shim Qwen3.5 product
-generation owner pass. One comprehensive high-effort `codex review
---uncommitted` found no actionable defects; a subsequent narrow EOG-draft
-regression addition was checked directly. Publication preflight, PR and merge
-remain.
+The Python boundary guard and its mutation suite, Align formatting,
+real-shim product generation owner, exact-head publication preflight, one
+clean comprehensive review and all three CI checks passed. Final review and
+integration evidence are on PR #322. Repeated-position, EOG-draft and
+empty-prompt qualification passed on the final diagnostic binary.
 Connected stepwise logits/state and forced target failure remain
 unverified, so this route is not enabled for product requests.
 
-Next in priority order: (1) commit the reviewed candidate and run exact-head
-publication preflight; (2) publish and merge the default-off trial capability
-with the measured negative case intact; (3)
-screen a lower-cost first group or confidence gate for the immediate
-rejection case, with connected state/fault checks before any default adoption.
-Other Metal generations, CUDA, Q4_1 down, five-row verification and Gemma
-remain unmeasured/deferred in `docs/backend-parity.md`. No ggml source patch
-is proposed. Earlier local screens alone did not establish the measured
-request effects of this continuous trial.
+Current branch `agent/qwen35-lookup-one-draft-trial` starts from merged `main`
+`dfb39613`. Its authoritative plan and report are
+`docs/specs/qwen35-lookup-one-draft-trial.md` and
+`docs/qwen35-lookup-one-draft-trial.md`. The explicit default-off two-row path,
+diagnostic and independent comparison are implemented. Actual-weight full F32
+and valid-state checks passed the predeclared bounds; five local pairs favored
+two rows over two serial steps by 11.274 ms paired median. Repeated full and
+rejected first groups, short output, EOG draft, invalid prompt and the old
+four-row owner passed. Five alternating real-model pairs per task/control
+found one-draft 118.7 ms faster than normal Align on bug fix but 407.1 ms
+slower than three-draft; function and test-writing regressed against normal
+Align. All output IDs matched. Keep one-draft diagnostic only; do not replace
+three-draft or enable either for product. Raw receipts are in `eval/benchmarks/`.
+Next in priority order: (1) finish owner/format/Python-boundary verification,
+review, exact-head preflight and publication of this bounded negative result;
+(2) test a lookup-evidence/target-cost group-selection hypothesis against the
+same workload; (3) complete connected stepwise state and forced-failure checks
+before any product admission. Other Metal generations, CUDA, Q4_1 down,
+five-row verification and Gemma remain unmeasured/deferred in
+`docs/backend-parity.md`.
+No ggml source patch is proposed. A local target win alone did not establish
+the measured request effect.
 
 ## Completed native Metal Q4_0 complete-FFN capture screen (2026-09-28)
 

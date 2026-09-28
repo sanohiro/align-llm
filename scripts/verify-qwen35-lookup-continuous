@@ -50,6 +50,7 @@ def main() -> int:
                  "options", "output"):
         parser.add_argument(f"--{name}", required=True, type=Path)
     parser.add_argument("--library-path", required=True)
+    parser.add_argument("--trial-arm", choices=("trial", "trial1"), default="trial")
     args = parser.parse_args()
     for name in ("fixture", "screen", "binary", "gguf", "pack", "geometry", "options"):
         value = getattr(args, name).resolve()
@@ -64,15 +65,18 @@ def main() -> int:
     args.eog_token_id = fixture["eog_token_id"]
     receipt = {"schema_version": 1, "fixture_sha256": digest(args.fixture),
                "screen_sha256": digest(args.screen), "binary_sha256": digest(args.binary),
-               "gguf_sha256": digest(args.gguf), "cases": []}
+               "gguf_sha256": digest(args.gguf), "trial_arm": args.trial_arm,
+               "cases": []}
     with tempfile.TemporaryDirectory(prefix="qwen35-lookup-verify-") as directory:
         work = Path(directory)
-        for accepted in range(4):
+        for accepted in range(2 if args.trial_arm == "trial1" else 4):
             selected = None
             for case, measured in zip(fixture["cases"], screen["cases"]):
                 groups = next(row["groups"] for row in measured["screens"] if row["k"] == 3)
                 group = next((row for row in groups
-                              if row["accepted_drafts"] == accepted), None)
+                              if (row["accepted_drafts"] == accepted
+                                  if args.trial_arm == "trial"
+                                  else (row["accepted_drafts"] >= 1) == (accepted == 1))), None)
                 if group is not None:
                     selected = case, group
                     break
@@ -83,11 +87,12 @@ def main() -> int:
             prompt = case["prompt_token_ids"] + case["greedy_token_ids"][:position]
             expected = case["greedy_token_ids"][position:position + 8]
             normal = run(args, work, prompt, expected, "normal", 3)
-            trial = run(args, work, prompt, expected, "trial", 3)
+            trial = run(args, work, prompt, expected, args.trial_arm, 3)
             for sample in trial:
                 stats = sample["verify_groups"], sample["complete_groups"], sample["discarded_groups"]
-                if stats[0] < 1 or (accepted == 3 and stats[1] < 1) \
-                        or (accepted < 3 and (stats[1] != 0 or stats[2] != 1)):
+                full = accepted == (1 if args.trial_arm == "trial1" else 3)
+                if stats[0] < 1 or (full and stats[1] < 1) \
+                        or (not full and (stats[1] != 0 or stats[2] != 1)):
                     raise ValueError(f"unexpected first target outcome for accepted={accepted}: {stats}")
             receipt["cases"].append({"name": case["name"], "position": position,
                                      "accepted_drafts": accepted, "prompt_tokens": len(prompt),
@@ -95,16 +100,16 @@ def main() -> int:
                                      "trial": trial})
             print(f"accepted={accepted}: {case['name']} position={position}, "
                   "3 repeated requests match pinned IDs", flush=True)
-        # A short output cannot admit a four-row target group.
+        # Short output cannot admit the selected target group size.
         case = fixture["cases"][1]
-        for count in (1, 2, 3, 4):
+        for count in (1, 2) if args.trial_arm == "trial1" else (1, 2, 3, 4):
             expected = case["greedy_token_ids"][:count]
-            trial = run(args, work, case["prompt_token_ids"], expected, "trial", 3)
+            trial = run(args, work, case["prompt_token_ids"], expected, args.trial_arm, 3)
             if any(sample["verify_groups"] for sample in trial):
                 raise ValueError("short output constructed a target group")
             receipt["cases"].append({"name": f"short-{count}", "trial": trial})
         # A candidate draft marked as EOG must be decoded normally, even with
-        # enough requested output room for a four-row target.
+        # enough requested output room for the selected target graph.
         case = fixture["cases"][0]
         groups = next(row["groups"] for row in screen["cases"][0]["screens"]
                       if row["k"] == 3)
@@ -115,7 +120,7 @@ def main() -> int:
         candidate_eog = [full["draft"][0]]
         normal = run(args, work, prompt, expected, "normal", 3,
                      eog=candidate_eog, max_tokens=8)
-        trial = run(args, work, prompt, expected, "trial", 3,
+        trial = run(args, work, prompt, expected, args.trial_arm, 3,
                     eog=candidate_eog, max_tokens=8)
         if any(sample["draft_hits"] < 1 or sample["verify_groups"] != 0
                for sample in trial):
@@ -127,7 +132,7 @@ def main() -> int:
         invalid = subprocess.run(
             [str(args.binary), str(args.gguf), str(args.pack), str(args.geometry),
              str(args.options), str(prompt_path), str(work / "eog.json"),
-             "8", "trial", "1"], cwd=ROOT,
+             "8", args.trial_arm, "1"], cwd=ROOT,
             env=dict(os.environ, DYLD_LIBRARY_PATH=args.library_path),
             capture_output=True, text=True, timeout=180, check=False)
         if invalid.returncode == 0 or invalid.stdout.strip():

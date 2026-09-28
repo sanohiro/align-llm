@@ -71,10 +71,11 @@ def one_request(args: argparse.Namespace, env: dict[str, str], work: Path,
                                 "complete_groups", "discarded_groups", "generated_drafts",
                                 "prefill_ns", "serial_decode_ns")):
         raise ValueError("normal path emitted trial counters")
-    if arm == "trial" and (receipt["discarded_groups"] > 1
+    draft_count = 1 if arm == "trial1" else 3
+    if arm in ("trial", "trial1") and (receipt["discarded_groups"] > 1
                            or receipt["verify_groups"] != receipt["complete_groups"]
                            + receipt["discarded_groups"]
-                           or receipt["generated_drafts"] != 3 * receipt["complete_groups"]
+                           or receipt["generated_drafts"] != draft_count * receipt["complete_groups"]
                            or receipt["prefill_ns"] <= 0
                            or receipt["prefill_ns"] + receipt["serial_decode_ns"]
                            > elapsed_ns):
