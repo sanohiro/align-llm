@@ -1,0 +1,1524 @@
+{
+  "schema_version": 1,
+  "fixture_sha256": "364ef68bbb83d778a47fc7f9ca33a20cb187bab4a1232442fe09a24d5725f491",
+  "binary_sha256": "74c7b77181bef5b4e09258eb8d0c84c29d6dd25640097cd9079ebae74387a79f",
+  "geometry_sha256": "39baceca01ea59dba7f989f3b6c15214f8927880926e2e87d18ffc56fd813c98",
+  "gguf_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+  "pack_sha256": "b4b418ebef9f83f911e4d604bdcce03e589fb7d2afa35f7e3bbdff3111b810b1",
+  "backend_sha256": "a901a131109e42de39919c74562947ad8783b32d63c2ce88be13e9812b07fdf5",
+  "state_tracer_sha256": "42ebe5d78b6ff4656baf851cda42db7d01b424c7416f753ac4a92461ff45c101",
+  "bundle_id": "0a472538ef35e2722fb9488d677196081ab8f726eff825a4e7837ddade57814b",
+  "logit_bound": "abs(batch-serial) <= 0.05 + 0.001*abs(serial)",
+  "cases": [
+    {
+      "accepted": 0,
+      "candidate_ids": [
+        0,
+        220,
+        17,
+        220
+      ],
+      "pairs": [
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 0,
+            "selected_greedy": 16,
+            "prefix_compute_ns": 379478334,
+            "prefix_readback_ns": 105500,
+            "decode_prepare_ns": 4680209,
+            "accepted_steps_ns": 0,
+            "next_step_ns": 29749000,
+            "connected_ns": 29859250,
+            "workspace_bytes": 18360544,
+            "process_ns": 2287438166
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 0,
+            "selected_greedy": 16,
+            "prefix_compute_ns": 380009833,
+            "prefix_readback_ns": 185625,
+            "switch_ns": 7814042,
+            "target_compute_ns": 45989250,
+            "target_readback_ns": 1060000,
+            "decode_prepare_ns": 4832208,
+            "replay_ns": 0,
+            "next_compute_ns": 29273375,
+            "next_readback_ns": 137834,
+            "connected_ns": 84404917,
+            "workspace_bytes": 4220000,
+            "process_ns": 1998156042
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0,
+              0.0
+            ],
+            "batch_greedy": [
+              16,
+              220
+            ],
+            "serial_greedy": [
+              16,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 0,
+            "selected_greedy": 16,
+            "prefix_compute_ns": 379788542,
+            "prefix_readback_ns": 370958,
+            "switch_ns": 9117500,
+            "target_compute_ns": 45816084,
+            "target_readback_ns": 1501708,
+            "decode_prepare_ns": 4913042,
+            "replay_ns": 0,
+            "next_compute_ns": 28404209,
+            "next_readback_ns": 257084,
+            "connected_ns": 85362916,
+            "workspace_bytes": 4220000,
+            "process_ns": 1994968291
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 0,
+            "selected_greedy": 16,
+            "prefix_compute_ns": 379248125,
+            "prefix_readback_ns": 105625,
+            "decode_prepare_ns": 5408917,
+            "accepted_steps_ns": 0,
+            "next_step_ns": 28978000,
+            "connected_ns": 29088458,
+            "workspace_bytes": 18360544,
+            "process_ns": 1915662459
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0,
+              0.0
+            ],
+            "batch_greedy": [
+              16,
+              220
+            ],
+            "serial_greedy": [
+              16,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 0,
+            "selected_greedy": 16,
+            "prefix_compute_ns": 380090625,
+            "prefix_readback_ns": 102167,
+            "decode_prepare_ns": 5431625,
+            "accepted_steps_ns": 0,
+            "next_step_ns": 29872750,
+            "connected_ns": 29986041,
+            "workspace_bytes": 18360544,
+            "process_ns": 1910054084
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 0,
+            "selected_greedy": 16,
+            "prefix_compute_ns": 380008875,
+            "prefix_readback_ns": 161500,
+            "switch_ns": 7617459,
+            "target_compute_ns": 45518917,
+            "target_readback_ns": 615416,
+            "decode_prepare_ns": 4579667,
+            "replay_ns": 0,
+            "next_compute_ns": 28322625,
+            "next_readback_ns": 101375,
+            "connected_ns": 82254291,
+            "workspace_bytes": 4220000,
+            "process_ns": 1964233667
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0,
+              0.0
+            ],
+            "batch_greedy": [
+              16,
+              220
+            ],
+            "serial_greedy": [
+              16,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 0,
+            "selected_greedy": 16,
+            "prefix_compute_ns": 379434625,
+            "prefix_readback_ns": 336209,
+            "switch_ns": 9172208,
+            "target_compute_ns": 45947542,
+            "target_readback_ns": 801959,
+            "decode_prepare_ns": 4262708,
+            "replay_ns": 0,
+            "next_compute_ns": 28116458,
+            "next_readback_ns": 108500,
+            "connected_ns": 84239375,
+            "workspace_bytes": 4220000,
+            "process_ns": 1969215167
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 0,
+            "selected_greedy": 16,
+            "prefix_compute_ns": 379162542,
+            "prefix_readback_ns": 73167,
+            "decode_prepare_ns": 4689292,
+            "accepted_steps_ns": 0,
+            "next_step_ns": 28528500,
+            "connected_ns": 28609500,
+            "workspace_bytes": 18360544,
+            "process_ns": 1848498458
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0,
+              0.0
+            ],
+            "batch_greedy": [
+              16,
+              220
+            ],
+            "serial_greedy": [
+              16,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 0,
+            "selected_greedy": 16,
+            "prefix_compute_ns": 379775875,
+            "prefix_readback_ns": 99125,
+            "decode_prepare_ns": 4330916,
+            "accepted_steps_ns": 0,
+            "next_step_ns": 29317166,
+            "connected_ns": 29428167,
+            "workspace_bytes": 18360544,
+            "process_ns": 1843723250
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 0,
+            "selected_greedy": 16,
+            "prefix_compute_ns": 379969791,
+            "prefix_readback_ns": 367333,
+            "switch_ns": 10924916,
+            "target_compute_ns": 45863666,
+            "target_readback_ns": 991959,
+            "decode_prepare_ns": 4785833,
+            "replay_ns": 0,
+            "next_compute_ns": 28909958,
+            "next_readback_ns": 169416,
+            "connected_ns": 86965042,
+            "workspace_bytes": 4220000,
+            "process_ns": 1988870084
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0,
+              0.0
+            ],
+            "batch_greedy": [
+              16,
+              220
+            ],
+            "serial_greedy": [
+              16,
+              220
+            ]
+          }
+        }
+      ],
+      "committed_state": {
+        "bound": "abs(batch-serial) <= 0.005 + 0.0005*abs(serial)",
+        "valid_kv_elements": 1228800,
+        "active_recurrent_elements": 5050368,
+        "valid_kv_max_abs": 0.0,
+        "active_recurrent_max_abs": 0.0,
+        "valid_kv_violations": 0,
+        "active_recurrent_violations": 0
+      },
+      "paired_serial_minus_batch_connected_median_ms": -55.629875,
+      "batch_wins": 0
+    },
+    {
+      "accepted": 1,
+      "candidate_ids": [
+        16,
+        0,
+        17,
+        220
+      ],
+      "pairs": [
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 1,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379275959,
+            "prefix_readback_ns": 378042,
+            "switch_ns": 8823500,
+            "target_compute_ns": 45961875,
+            "target_readback_ns": 1267125,
+            "decode_prepare_ns": 5031833,
+            "replay_ns": 28776833,
+            "next_compute_ns": 29607291,
+            "next_readback_ns": 154250,
+            "connected_ns": 115061416,
+            "workspace_bytes": 4220000,
+            "process_ns": 2076271375
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 1,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 380007458,
+            "prefix_readback_ns": 135625,
+            "decode_prepare_ns": 4837292,
+            "accepted_steps_ns": 29905666,
+            "next_step_ns": 29619875,
+            "connected_ns": 59640041,
+            "workspace_bytes": 18360544,
+            "process_ns": 1953484875
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0010693073272705078,
+              0.0
+            ],
+            "batch_greedy": [
+              220,
+              17
+            ],
+            "serial_greedy": [
+              220,
+              17
+            ]
+          }
+        },
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 1,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379572375,
+            "prefix_readback_ns": 102708,
+            "decode_prepare_ns": 4160041,
+            "accepted_steps_ns": 30435792,
+            "next_step_ns": 29989542,
+            "connected_ns": 60544250,
+            "workspace_bytes": 18360544,
+            "process_ns": 1851879417
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 1,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379643458,
+            "prefix_readback_ns": 354167,
+            "switch_ns": 8727250,
+            "target_compute_ns": 45243625,
+            "target_readback_ns": 1141625,
+            "decode_prepare_ns": 4887958,
+            "replay_ns": 28846125,
+            "next_compute_ns": 28787416,
+            "next_readback_ns": 282000,
+            "connected_ns": 113591708,
+            "workspace_bytes": 4220000,
+            "process_ns": 2052980709
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0010693073272705078,
+              0.0
+            ],
+            "batch_greedy": [
+              220,
+              17
+            ],
+            "serial_greedy": [
+              220,
+              17
+            ]
+          }
+        },
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 1,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379664208,
+            "prefix_readback_ns": 366500,
+            "switch_ns": 8950208,
+            "target_compute_ns": 45141417,
+            "target_readback_ns": 1009083,
+            "decode_prepare_ns": 5368041,
+            "replay_ns": 28316666,
+            "next_compute_ns": 29019125,
+            "next_readback_ns": 149625,
+            "connected_ns": 112933083,
+            "workspace_bytes": 4220000,
+            "process_ns": 2099856875
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 1,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379428000,
+            "prefix_readback_ns": 99584,
+            "decode_prepare_ns": 3430541,
+            "accepted_steps_ns": 30153459,
+            "next_step_ns": 29338292,
+            "connected_ns": 59603917,
+            "workspace_bytes": 18360544,
+            "process_ns": 1780563084
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0010693073272705078,
+              0.0
+            ],
+            "batch_greedy": [
+              220,
+              17
+            ],
+            "serial_greedy": [
+              220,
+              17
+            ]
+          }
+        },
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 1,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 378898958,
+            "prefix_readback_ns": 99875,
+            "decode_prepare_ns": 4207792,
+            "accepted_steps_ns": 29605375,
+            "next_step_ns": 29273333,
+            "connected_ns": 58989750,
+            "workspace_bytes": 18360544,
+            "process_ns": 1860869083
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 1,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379759417,
+            "prefix_readback_ns": 421792,
+            "switch_ns": 7967917,
+            "target_compute_ns": 45724666,
+            "target_readback_ns": 1015375,
+            "decode_prepare_ns": 3823500,
+            "replay_ns": 29012792,
+            "next_compute_ns": 30098875,
+            "next_readback_ns": 90458,
+            "connected_ns": 114289125,
+            "workspace_bytes": 4220000,
+            "process_ns": 1969065750
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0010693073272705078,
+              0.0
+            ],
+            "batch_greedy": [
+              220,
+              17
+            ],
+            "serial_greedy": [
+              220,
+              17
+            ]
+          }
+        },
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 1,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 380065666,
+            "prefix_readback_ns": 245125,
+            "switch_ns": 9217625,
+            "target_compute_ns": 45664375,
+            "target_readback_ns": 1441000,
+            "decode_prepare_ns": 3039333,
+            "replay_ns": 28864625,
+            "next_compute_ns": 28920500,
+            "next_readback_ns": 151500,
+            "connected_ns": 114783375,
+            "workspace_bytes": 4220000,
+            "process_ns": 1933050125
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 1,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 380084042,
+            "prefix_readback_ns": 75417,
+            "decode_prepare_ns": 4295458,
+            "accepted_steps_ns": 29951750,
+            "next_step_ns": 29077250,
+            "connected_ns": 59113208,
+            "workspace_bytes": 18360544,
+            "process_ns": 1900620208
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0010693073272705078,
+              0.0
+            ],
+            "batch_greedy": [
+              220,
+              17
+            ],
+            "serial_greedy": [
+              220,
+              17
+            ]
+          }
+        }
+      ],
+      "committed_state": {
+        "bound": "abs(batch-serial) <= 0.005 + 0.0005*abs(serial)",
+        "valid_kv_elements": 1234944,
+        "active_recurrent_elements": 5050368,
+        "valid_kv_max_abs": 0.0,
+        "active_recurrent_max_abs": 0.0,
+        "valid_kv_violations": 0,
+        "active_recurrent_violations": 0
+      },
+      "paired_serial_minus_batch_connected_median_ms": -55.299375,
+      "batch_wins": 0
+    },
+    {
+      "accepted": 2,
+      "candidate_ids": [
+        16,
+        220,
+        0,
+        220
+      ],
+      "pairs": [
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 2,
+            "selected_greedy": 17,
+            "prefix_compute_ns": 379652166,
+            "prefix_readback_ns": 104333,
+            "decode_prepare_ns": 3853958,
+            "accepted_steps_ns": 60474501,
+            "next_step_ns": 29659250,
+            "connected_ns": 90246458,
+            "workspace_bytes": 18360544,
+            "process_ns": 1914557125
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 2,
+            "selected_greedy": 17,
+            "prefix_compute_ns": 379256459,
+            "prefix_readback_ns": 502041,
+            "switch_ns": 9564417,
+            "target_compute_ns": 45333500,
+            "target_readback_ns": 1334541,
+            "decode_prepare_ns": 4598584,
+            "replay_ns": 56126250,
+            "next_compute_ns": 27837750,
+            "next_readback_ns": 131416,
+            "connected_ns": 141083750,
+            "workspace_bytes": 4220000,
+            "process_ns": 2096618541
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0011674165725708008,
+              0.0
+            ],
+            "batch_greedy": [
+              17,
+              220
+            ],
+            "serial_greedy": [
+              17,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 2,
+            "selected_greedy": 17,
+            "prefix_compute_ns": 379820916,
+            "prefix_readback_ns": 287375,
+            "switch_ns": 8837000,
+            "target_compute_ns": 45909292,
+            "target_readback_ns": 1376042,
+            "decode_prepare_ns": 4821959,
+            "replay_ns": 58821459,
+            "next_compute_ns": 27996250,
+            "next_readback_ns": 87542,
+            "connected_ns": 143785250,
+            "workspace_bytes": 4220000,
+            "process_ns": 2130979667
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 2,
+            "selected_greedy": 17,
+            "prefix_compute_ns": 379685625,
+            "prefix_readback_ns": 102416,
+            "decode_prepare_ns": 3685375,
+            "accepted_steps_ns": 59849291,
+            "next_step_ns": 28763583,
+            "connected_ns": 88726208,
+            "workspace_bytes": 18360544,
+            "process_ns": 1919399375
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0011674165725708008,
+              0.0
+            ],
+            "batch_greedy": [
+              17,
+              220
+            ],
+            "serial_greedy": [
+              17,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 2,
+            "selected_greedy": 17,
+            "prefix_compute_ns": 379157167,
+            "prefix_readback_ns": 110292,
+            "decode_prepare_ns": 4844416,
+            "accepted_steps_ns": 60961001,
+            "next_step_ns": 29605084,
+            "connected_ns": 90693500,
+            "workspace_bytes": 18360544,
+            "process_ns": 2001321542
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 2,
+            "selected_greedy": 17,
+            "prefix_compute_ns": 380219084,
+            "prefix_readback_ns": 310958,
+            "switch_ns": 8137083,
+            "target_compute_ns": 45352958,
+            "target_readback_ns": 1083667,
+            "decode_prepare_ns": 4785875,
+            "replay_ns": 58740417,
+            "next_compute_ns": 29724083,
+            "next_readback_ns": 139500,
+            "connected_ns": 143996208,
+            "workspace_bytes": 4220000,
+            "process_ns": 2109191833
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0011674165725708008,
+              0.0
+            ],
+            "batch_greedy": [
+              17,
+              220
+            ],
+            "serial_greedy": [
+              17,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 2,
+            "selected_greedy": 17,
+            "prefix_compute_ns": 379647667,
+            "prefix_readback_ns": 343625,
+            "switch_ns": 8831916,
+            "target_compute_ns": 45919292,
+            "target_readback_ns": 984584,
+            "decode_prepare_ns": 4252167,
+            "replay_ns": 56740875,
+            "next_compute_ns": 29425125,
+            "next_readback_ns": 118958,
+            "connected_ns": 142648416,
+            "workspace_bytes": 4220000,
+            "process_ns": 2071287209
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 2,
+            "selected_greedy": 17,
+            "prefix_compute_ns": 379486750,
+            "prefix_readback_ns": 123666,
+            "decode_prepare_ns": 2664166,
+            "accepted_steps_ns": 58888292,
+            "next_step_ns": 27554667,
+            "connected_ns": 86555250,
+            "workspace_bytes": 18360544,
+            "process_ns": 1831775542
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0011674165725708008,
+              0.0
+            ],
+            "batch_greedy": [
+              17,
+              220
+            ],
+            "serial_greedy": [
+              17,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 2,
+            "selected_greedy": 17,
+            "prefix_compute_ns": 379554083,
+            "prefix_readback_ns": 99250,
+            "decode_prepare_ns": 4568792,
+            "accepted_steps_ns": 58484624,
+            "next_step_ns": 28105750,
+            "connected_ns": 86730750,
+            "workspace_bytes": 18360544,
+            "process_ns": 1938739208
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 2,
+            "selected_greedy": 17,
+            "prefix_compute_ns": 379047375,
+            "prefix_readback_ns": 214750,
+            "switch_ns": 7382542,
+            "target_compute_ns": 45104917,
+            "target_readback_ns": 1007458,
+            "decode_prepare_ns": 4235750,
+            "replay_ns": 57426166,
+            "next_compute_ns": 28721333,
+            "next_readback_ns": 164042,
+            "connected_ns": 140397416,
+            "workspace_bytes": 4220000,
+            "process_ns": 2061907375
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0011674165725708008,
+              0.0
+            ],
+            "batch_greedy": [
+              17,
+              220
+            ],
+            "serial_greedy": [
+              17,
+              220
+            ]
+          }
+        }
+      ],
+      "committed_state": {
+        "bound": "abs(batch-serial) <= 0.005 + 0.0005*abs(serial)",
+        "valid_kv_elements": 1241088,
+        "active_recurrent_elements": 5050368,
+        "valid_kv_max_abs": 0.0,
+        "active_recurrent_max_abs": 0.0,
+        "valid_kv_violations": 0,
+        "active_recurrent_violations": 0
+      },
+      "paired_serial_minus_batch_connected_median_ms": -53.666666,
+      "batch_wins": 0
+    },
+    {
+      "accepted": 3,
+      "candidate_ids": [
+        16,
+        220,
+        17,
+        0
+      ],
+      "pairs": [
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 3,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379697500,
+            "prefix_readback_ns": 342875,
+            "switch_ns": 8633750,
+            "target_compute_ns": 46075666,
+            "target_readback_ns": 1386583,
+            "decode_prepare_ns": 4977959,
+            "replay_ns": 88673542,
+            "next_compute_ns": 29414292,
+            "next_readback_ns": 209125,
+            "connected_ns": 175412750,
+            "workspace_bytes": 4220000,
+            "process_ns": 2213469209
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 3,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379950708,
+            "prefix_readback_ns": 102458,
+            "decode_prepare_ns": 4216583,
+            "accepted_steps_ns": 88852333,
+            "next_step_ns": 29612375,
+            "connected_ns": 118577209,
+            "workspace_bytes": 18360544,
+            "process_ns": 2003615500
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0014960765838623047,
+              0.0
+            ],
+            "batch_greedy": [
+              220,
+              18
+            ],
+            "serial_greedy": [
+              220,
+              18
+            ]
+          }
+        },
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 3,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379358333,
+            "prefix_readback_ns": 100791,
+            "decode_prepare_ns": 5047459,
+            "accepted_steps_ns": 89549416,
+            "next_step_ns": 28000125,
+            "connected_ns": 117662833,
+            "workspace_bytes": 18360544,
+            "process_ns": 2041755459
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 3,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379630000,
+            "prefix_readback_ns": 287958,
+            "switch_ns": 8365292,
+            "target_compute_ns": 45634875,
+            "target_readback_ns": 1298833,
+            "decode_prepare_ns": 4213125,
+            "replay_ns": 88734292,
+            "next_compute_ns": 28548416,
+            "next_readback_ns": 144833,
+            "connected_ns": 173892042,
+            "workspace_bytes": 4220000,
+            "process_ns": 2128095958
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0014960765838623047,
+              0.0
+            ],
+            "batch_greedy": [
+              220,
+              18
+            ],
+            "serial_greedy": [
+              220,
+              18
+            ]
+          }
+        },
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 3,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 380536542,
+            "prefix_readback_ns": 251208,
+            "switch_ns": 7948292,
+            "target_compute_ns": 45526750,
+            "target_readback_ns": 992833,
+            "decode_prepare_ns": 4209875,
+            "replay_ns": 86638250,
+            "next_compute_ns": 28884000,
+            "next_readback_ns": 153250,
+            "connected_ns": 171135917,
+            "workspace_bytes": 4220000,
+            "process_ns": 2137676292
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 3,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379457458,
+            "prefix_readback_ns": 104750,
+            "decode_prepare_ns": 4204125,
+            "accepted_steps_ns": 87353041,
+            "next_step_ns": 27869542,
+            "connected_ns": 115335166,
+            "workspace_bytes": 18360544,
+            "process_ns": 2014393250
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0014960765838623047,
+              0.0
+            ],
+            "batch_greedy": [
+              220,
+              18
+            ],
+            "serial_greedy": [
+              220,
+              18
+            ]
+          }
+        },
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 3,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 378918208,
+            "prefix_readback_ns": 75542,
+            "decode_prepare_ns": 3797084,
+            "accepted_steps_ns": 86169291,
+            "next_step_ns": 29683958,
+            "connected_ns": 115944791,
+            "workspace_bytes": 18360544,
+            "process_ns": 1950220833
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 3,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379202500,
+            "prefix_readback_ns": 362834,
+            "switch_ns": 9606417,
+            "target_compute_ns": 45213584,
+            "target_readback_ns": 904417,
+            "decode_prepare_ns": 4339833,
+            "replay_ns": 84313459,
+            "next_compute_ns": 28468291,
+            "next_readback_ns": 93167,
+            "connected_ns": 169340875,
+            "workspace_bytes": 4220000,
+            "process_ns": 2136630834
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0014960765838623047,
+              0.0
+            ],
+            "batch_greedy": [
+              220,
+              18
+            ],
+            "serial_greedy": [
+              220,
+              18
+            ]
+          }
+        },
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 3,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 378953083,
+            "prefix_readback_ns": 342833,
+            "switch_ns": 11265958,
+            "target_compute_ns": 45472292,
+            "target_readback_ns": 941250,
+            "decode_prepare_ns": 4832167,
+            "replay_ns": 86678042,
+            "next_compute_ns": 28789667,
+            "next_readback_ns": 82375,
+            "connected_ns": 174206375,
+            "workspace_bytes": 4220000,
+            "process_ns": 2153968917
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 3,
+            "selected_greedy": 220,
+            "prefix_compute_ns": 379395208,
+            "prefix_readback_ns": 66500,
+            "decode_prepare_ns": 2630708,
+            "accepted_steps_ns": 84278376,
+            "next_step_ns": 27769459,
+            "connected_ns": 112101833,
+            "workspace_bytes": 18360544,
+            "process_ns": 1806768708
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0014960765838623047,
+              0.0
+            ],
+            "batch_greedy": [
+              220,
+              18
+            ],
+            "serial_greedy": [
+              220,
+              18
+            ]
+          }
+        }
+      ],
+      "committed_state": {
+        "bound": "abs(batch-serial) <= 0.005 + 0.0005*abs(serial)",
+        "valid_kv_elements": 1247232,
+        "active_recurrent_elements": 5050368,
+        "valid_kv_max_abs": 0.0,
+        "active_recurrent_max_abs": 0.0,
+        "valid_kv_violations": 0,
+        "active_recurrent_violations": 0
+      },
+      "paired_serial_minus_batch_connected_median_ms": -56.229209,
+      "batch_wins": 0
+    },
+    {
+      "accepted": 4,
+      "candidate_ids": [
+        16,
+        220,
+        17,
+        220
+      ],
+      "pairs": [
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 4,
+            "selected_greedy": 18,
+            "prefix_compute_ns": 379178041,
+            "prefix_readback_ns": 98917,
+            "decode_prepare_ns": 4662542,
+            "accepted_steps_ns": 119235500,
+            "next_step_ns": 29411542,
+            "connected_ns": 148759084,
+            "workspace_bytes": 18360544,
+            "process_ns": 2108446500
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 4,
+            "selected_greedy": 18,
+            "prefix_compute_ns": 379554416,
+            "prefix_readback_ns": 377792,
+            "switch_ns": 8911917,
+            "target_compute_ns": 45713958,
+            "target_readback_ns": 1035542,
+            "decode_prepare_ns": 4217208,
+            "replay_ns": 0,
+            "next_compute_ns": 28827167,
+            "next_readback_ns": 152666,
+            "connected_ns": 85719666,
+            "workspace_bytes": 4220000,
+            "process_ns": 1989976416
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0013799667358398438,
+              0.001173257827758789
+            ],
+            "batch_greedy": [
+              18,
+              220
+            ],
+            "serial_greedy": [
+              18,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 4,
+            "selected_greedy": 18,
+            "prefix_compute_ns": 380054667,
+            "prefix_readback_ns": 322958,
+            "switch_ns": 8783500,
+            "target_compute_ns": 45530500,
+            "target_readback_ns": 653875,
+            "decode_prepare_ns": 3373625,
+            "replay_ns": 0,
+            "next_compute_ns": 28066583,
+            "next_readback_ns": 83500,
+            "connected_ns": 83852750,
+            "workspace_bytes": 4220000,
+            "process_ns": 1897159583
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 4,
+            "selected_greedy": 18,
+            "prefix_compute_ns": 378827833,
+            "prefix_readback_ns": 98833,
+            "decode_prepare_ns": 2404125,
+            "accepted_steps_ns": 115549251,
+            "next_step_ns": 28564875,
+            "connected_ns": 144227458,
+            "workspace_bytes": 18360544,
+            "process_ns": 1873084250
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0013799667358398438,
+              0.001173257827758789
+            ],
+            "batch_greedy": [
+              18,
+              220
+            ],
+            "serial_greedy": [
+              18,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 4,
+            "selected_greedy": 18,
+            "prefix_compute_ns": 379261792,
+            "prefix_readback_ns": 114083,
+            "decode_prepare_ns": 5019541,
+            "accepted_steps_ns": 119131125,
+            "next_step_ns": 29836041,
+            "connected_ns": 149080125,
+            "workspace_bytes": 18360544,
+            "process_ns": 2139355208
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 4,
+            "selected_greedy": 18,
+            "prefix_compute_ns": 380043417,
+            "prefix_readback_ns": 357334,
+            "switch_ns": 9809042,
+            "target_compute_ns": 46254833,
+            "target_readback_ns": 1400834,
+            "decode_prepare_ns": 3722917,
+            "replay_ns": 0,
+            "next_compute_ns": 28843458,
+            "next_readback_ns": 172459,
+            "connected_ns": 88137708,
+            "workspace_bytes": 4220000,
+            "process_ns": 1956898334
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0013799667358398438,
+              0.001173257827758789
+            ],
+            "batch_greedy": [
+              18,
+              220
+            ],
+            "serial_greedy": [
+              18,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "batch",
+            "serial"
+          ],
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 4,
+            "selected_greedy": 18,
+            "prefix_compute_ns": 379961792,
+            "prefix_readback_ns": 353667,
+            "switch_ns": 9542209,
+            "target_compute_ns": 45904583,
+            "target_readback_ns": 706000,
+            "decode_prepare_ns": 2814917,
+            "replay_ns": 0,
+            "next_compute_ns": 28163084,
+            "next_readback_ns": 88625,
+            "connected_ns": 85254417,
+            "workspace_bytes": 4220000,
+            "process_ns": 1849550833
+          },
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 4,
+            "selected_greedy": 18,
+            "prefix_compute_ns": 379739292,
+            "prefix_readback_ns": 58542,
+            "decode_prepare_ns": 3071041,
+            "accepted_steps_ns": 118012667,
+            "next_step_ns": 29502417,
+            "connected_ns": 147579125,
+            "workspace_bytes": 18360544,
+            "process_ns": 1932932500
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0013799667358398438,
+              0.001173257827758789
+            ],
+            "batch_greedy": [
+              18,
+              220
+            ],
+            "serial_greedy": [
+              18,
+              220
+            ]
+          }
+        },
+        {
+          "order": [
+            "serial",
+            "batch"
+          ],
+          "serial": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 4,
+            "selected_greedy": 18,
+            "prefix_compute_ns": 379915209,
+            "prefix_readback_ns": 99958,
+            "decode_prepare_ns": 4848875,
+            "accepted_steps_ns": 120563915,
+            "next_step_ns": 28844208,
+            "connected_ns": 149523291,
+            "workspace_bytes": 18360544,
+            "process_ns": 2104198125
+          },
+          "batch": {
+            "prefix_tokens": 200,
+            "target_rows": 4,
+            "vocabulary": 248320,
+            "prefix_greedy": 16,
+            "accepted": 4,
+            "selected_greedy": 18,
+            "prefix_compute_ns": 379087625,
+            "prefix_readback_ns": 371500,
+            "switch_ns": 8583417,
+            "target_compute_ns": 45930292,
+            "target_readback_ns": 589791,
+            "decode_prepare_ns": 3866459,
+            "replay_ns": 0,
+            "next_compute_ns": 27948417,
+            "next_readback_ns": 98584,
+            "connected_ns": 83850375,
+            "workspace_bytes": 4220000,
+            "process_ns": 1886113000
+          },
+          "check": {
+            "max_abs_by_row": [
+              0.0013799667358398438,
+              0.001173257827758789
+            ],
+            "batch_greedy": [
+              18,
+              220
+            ],
+            "serial_greedy": [
+              18,
+              220
+            ]
+          }
+        }
+      ],
+      "committed_state": {
+        "bound": "abs(batch-serial) <= 0.005 + 0.0005*abs(serial)",
+        "valid_kv_elements": 1253376,
+        "active_recurrent_elements": 5050368,
+        "valid_kv_max_abs": 0.00390625,
+        "active_recurrent_max_abs": 0.00174713134765625,
+        "valid_kv_violations": 0,
+        "active_recurrent_violations": 0
+      },
+      "paired_serial_minus_batch_connected_median_ms": 62.324708,
+      "batch_wins": 5
+    }
+  ]
+}

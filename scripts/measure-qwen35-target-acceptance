@@ -1,0 +1,271 @@
+#!/usr/bin/env python3
+"""Measure Align-owned four-row acceptance and serial replay on real Qwen3.5."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import statistics
+import subprocess
+import tempfile
+import time
+
+
+LOGIT_ABS = 0.05
+LOGIT_REL = 0.001
+STATE_ABS = 0.005
+STATE_REL = 0.0005
+VOCAB_ROW_COUNT = 2
+TARGET_COUNT = 4
+
+
+def digest(path: Path) -> str:
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def run_arm(base, env, work, prefix_path, target_path, arm, vocab):
+    mode = "--verify-acceptance" if arm == "batch" else "--serial-acceptance"
+    output = work / f"{arm}.bin"
+    output.unlink(missing_ok=True)
+    start = time.monotonic_ns()
+    completed = subprocess.run([*base, mode, str(prefix_path), str(target_path), str(output)],
+                               env=env, capture_output=True, text=True, timeout=180, check=False)
+    process_ns = time.monotonic_ns() - start
+    if completed.returncode:
+        raise RuntimeError(f"{arm} failed: {completed.stderr[-2500:]}")
+    lines = [line for line in completed.stdout.splitlines() if line.startswith("{")]
+    if len(lines) != 1 or not output.is_file() or output.stat().st_size != VOCAB_ROW_COUNT * vocab * 4:
+        raise ValueError(f"{arm} omitted complete selected/next logits")
+    metrics = json.loads(lines[0])
+    if metrics.get("target_rows") != TARGET_COUNT or metrics.get("vocabulary") != vocab \
+            or type(metrics.get("prefix_tokens")) is not int \
+            or type(metrics.get("accepted")) is not int \
+            or type(metrics.get("selected_greedy")) is not int \
+            or type(metrics.get("prefix_greedy")) is not int:
+        raise ValueError(f"{arm} returned invalid geometry or selection")
+    keys = ("prefix_compute_ns", "prefix_readback_ns", "decode_prepare_ns", "connected_ns",
+            "workspace_bytes")
+    keys += (("switch_ns", "target_compute_ns", "target_readback_ns", "replay_ns",
+              "next_compute_ns", "next_readback_ns") if arm == "batch"
+             else ("accepted_steps_ns", "next_step_ns"))
+    for key in keys:
+        if type(metrics.get(key)) is not int or metrics[key] < 0:
+            raise ValueError(f"{arm} returned invalid {key}")
+    if metrics["prefix_compute_ns"] <= 0 or metrics["connected_ns"] <= 0:
+        raise ValueError(f"{arm} omitted synchronized work")
+    return dict(metrics, process_ns=process_ns), output
+
+
+def trace_state(base, env, work, tracer, prefix_path, target_path, arm,
+                ordinal, state_count, vocab):
+    path = work / f"{arm}-state.bin"
+    path.unlink(missing_ok=True)
+    traced_env = dict(env, DYLD_INSERT_LIBRARIES=str(tracer.resolve()),
+                      ALIGN_STATE_COUNT=str(state_count),
+                      ALIGN_STATE_DUMP_PATH=str(path),
+                      ALIGN_STATE_DUMP_ORDINAL=str(ordinal))
+    mode = "--verify-acceptance" if arm == "batch" else "--serial-acceptance"
+    output = work / f"trace-{arm}.bin"
+    output.unlink(missing_ok=True)
+    completed = subprocess.run([*base, mode, str(prefix_path), str(target_path), str(output)],
+                               env=traced_env, capture_output=True, text=True,
+                               timeout=180, check=False)
+    if completed.returncode or not output.is_file() \
+            or output.stat().st_size != VOCAB_ROW_COUNT * vocab * 4:
+        raise RuntimeError(f"{arm} state trace failed: {completed.stderr[-2500:]}")
+    records = [json.loads(line[len("Q35_STATE "):])
+               for line in completed.stderr.splitlines()
+               if line.startswith("Q35_STATE ")]
+    complete = [entry for entry in records if entry.get("event") == "graph_complete"
+                and entry.get("ordinal") == ordinal]
+    planes = [entry for entry in records if entry.get("event") == "plane"
+              and entry.get("ordinal") == ordinal]
+    if len(complete) != 1 or complete[0].get("state_count") != state_count \
+            or len(planes) != state_count \
+            or [entry.get("index") for entry in planes] != list(range(state_count)) \
+            or not path.is_file() or path.stat().st_size != sum(entry["bytes"] for entry in planes):
+        raise ValueError(f"{arm} state trace omitted committed planes")
+    return planes, path
+
+
+def compare_state(np, model, valid, batch_active, serial_active,
+                  batch_trace, serial_trace):
+    batch_planes, batch_path = batch_trace
+    serial_planes, serial_path = serial_trace
+    attention = model["n_layer"] // model["full_attention_interval"]
+    state_count = 2 * attention + 4 * (model["n_layer"] - attention)
+    if len(batch_planes) != state_count or len(serial_planes) != state_count:
+        raise ValueError("state geometry changed")
+
+    def map_planes(planes, path):
+        offset = 0
+        arrays = []
+        for entry in planes:
+            if entry["type"] not in (0, 1) or entry["bytes"] <= 0:
+                raise ValueError("unsupported state type or extent")
+            dtype = "<f4" if entry["type"] == 0 else "<f2"
+            size = np.dtype(dtype).itemsize
+            if entry["bytes"] % size:
+                raise ValueError("unaligned state extent")
+            arrays.append(np.memmap(path, mode="r", dtype=dtype, offset=offset,
+                                    shape=(entry["bytes"] // size,)))
+            offset += entry["bytes"]
+        return arrays
+
+    batch = map_planes(batch_planes, batch_path)
+    serial = map_planes(serial_planes, serial_path)
+    result = {"bound": f"abs(batch-serial) <= {STATE_ABS} + {STATE_REL}*abs(serial)",
+              "valid_kv_elements": 0, "active_recurrent_elements": 0,
+              "valid_kv_max_abs": 0.0, "active_recurrent_max_abs": 0.0,
+              "valid_kv_violations": 0, "active_recurrent_violations": 0}
+
+    def check(kind, left, right):
+        lhs, rhs = np.asarray(left, dtype=np.float64), np.asarray(right, dtype=np.float64)
+        if not np.isfinite(lhs).all() or not np.isfinite(rhs).all():
+            raise ValueError(f"nonfinite {kind} state")
+        difference = np.abs(lhs - rhs)
+        result[f"{kind}_elements"] += difference.size
+        result[f"{kind}_max_abs"] = max(result[f"{kind}_max_abs"], float(difference.max()))
+        result[f"{kind}_violations"] += int(np.count_nonzero(
+            difference > STATE_ABS + STATE_REL * np.abs(rhs)))
+
+    for index in range(2 * attention):
+        a, b = batch_planes[index], serial_planes[index]
+        if a["type"] != 1 or b["type"] != 1 or a["ne"] != b["ne"] \
+                or a["ne"][1] < valid or a["nb"][0] != 2 \
+                or a["nb"][1] != 2 * a["ne"][0] or a["nb"] != b["nb"]:
+            raise ValueError("unexpected KV state layout")
+        shape = (a["ne"][2], a["ne"][1], a["ne"][0])
+        check("valid_kv", batch[index].reshape(shape)[:, :valid, :],
+              serial[index].reshape(shape)[:, :valid, :])
+    for index in range(2 * attention, state_count, 2):
+        a, b = batch_planes[index + batch_active], serial_planes[index + serial_active]
+        if a["type"] != 0 or b["type"] != 0 or a["ne"] != b["ne"] \
+                or a["bytes"] != b["bytes"]:
+            raise ValueError("unexpected active recurrent state layout")
+        check("active_recurrent", batch[index + batch_active],
+              serial[index + serial_active])
+    if result["valid_kv_violations"] or result["active_recurrent_violations"]:
+        raise ValueError(f"committed state exceeded predeclared bound: {result}")
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("binary", "geometry", "gguf", "pack", "backend-path",
+                 "fixture", "state-tracer", "output"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--bundle-id", required=True)
+    parser.add_argument("--library-path", required=True)
+    parser.add_argument("--pairs", type=int, default=5)
+    args = parser.parse_args()
+    if not 1 <= args.pairs <= 20:
+        parser.error("--pairs must be 1..20")
+    if len(args.bundle_id) != 64 or any(c not in "0123456789abcdef" for c in args.bundle_id):
+        parser.error("--bundle-id must be 64 lowercase hex characters")
+    for name in ("binary", "geometry", "gguf", "pack", "backend_path", "fixture", "state_tracer"):
+        if not getattr(args, name).is_file():
+            parser.error(f"--{name.replace('_', '-')} must name a file")
+    fixture = json.loads(args.fixture.read_text())
+    prefix, oracle = fixture["prefix_token_ids"], fixture["target_token_ids"]
+    if fixture.get("schema_version") != 1 or len(prefix) != 200 or oracle != [16, 220, 17, 220]:
+        parser.error("expected the recorded 200-token oracle fixture")
+    source_path = Path(__file__).resolve().parent.parent / "eval/benchmarks/qwen35-target-batch-bound-2026-09-28.json"
+    source = json.loads(source_path.read_text())
+    if fixture.get("prefix_source") != "eval/benchmarks/qwen35-target-batch-bound-2026-09-28.json:cases[0].base_prompt_ids" \
+            or prefix != source["cases"][0]["base_prompt_ids"]:
+        parser.error("prefix differs from its recorded source")
+    model = json.loads(args.geometry.read_text())["model"]
+    if any(type(value) is not int or value < 0 or value >= model["n_vocab"]
+           for value in prefix + oracle):
+        parser.error("fixture token outside model vocabulary")
+    attention = model["n_layer"] // model["full_attention_interval"]
+    state_count = 2 * attention + 4 * (model["n_layer"] - attention)
+
+    import numpy as np
+
+    base = [str(args.binary.resolve()), str(args.geometry.resolve()),
+            str(args.gguf.resolve()), str(args.pack.resolve()),
+            str(args.backend_path.resolve()), args.bundle_id]
+    env = dict(os.environ, DYLD_LIBRARY_PATH=args.library_path)
+    result = {"schema_version": 1, "fixture_sha256": digest(args.fixture),
+              "binary_sha256": digest(args.binary), "geometry_sha256": digest(args.geometry),
+              "gguf_sha256": digest(args.gguf), "pack_sha256": digest(args.pack),
+              "backend_sha256": digest(args.backend_path),
+              "state_tracer_sha256": digest(args.state_tracer),
+              "bundle_id": args.bundle_id,
+              "logit_bound": f"abs(batch-serial) <= {LOGIT_ABS} + {LOGIT_REL}*abs(serial)",
+              "cases": [{"accepted": k, "candidate_ids": oracle[:k] +
+                         ([0 if oracle[k] else 1] + oracle[k + 1:] if k < 4 else []),
+                         "pairs": []} for k in range(5)]}
+    with tempfile.TemporaryDirectory(prefix="qwen35-target-acceptance-") as temporary:
+        work = Path(temporary)
+        prefix_path = work / "prefix.json"
+        prefix_path.write_text(json.dumps(prefix) + "\n")
+        for case in result["cases"]:
+            target_path = work / f"target-{case['accepted']}.json"
+            target_path.write_text(json.dumps(case["candidate_ids"]) + "\n")
+        for pair in range(args.pairs):
+            for shift in range(5):
+                case = result["cases"][(pair + shift) % 5]
+                k = case["accepted"]
+                target_path = work / f"target-{k}.json"
+                order = ("serial", "batch") if (pair + k) % 2 == 0 else ("batch", "serial")
+                sample = {"order": list(order)}
+                for arm in order:
+                    metrics, _ = run_arm(base, env, work, prefix_path, target_path,
+                                         arm, model["n_vocab"])
+                    if metrics["prefix_tokens"] != len(prefix) or metrics["accepted"] != k \
+                            or metrics["prefix_greedy"] != oracle[0]:
+                        raise ValueError(f"{arm} changed the recorded acceptance case {k}")
+                    sample[arm] = metrics
+                batch = np.fromfile(work / "batch.bin", dtype="<f4").reshape(2, model["n_vocab"])
+                serial = np.fromfile(work / "serial.bin", dtype="<f4").reshape(2, model["n_vocab"])
+                if not np.isfinite(batch).all() or not np.isfinite(serial).all():
+                    raise ValueError("nonfinite selected or next logits")
+                difference = np.abs(batch.astype(np.float64) - serial.astype(np.float64))
+                if np.any(difference > LOGIT_ABS + LOGIT_REL * np.abs(serial.astype(np.float64))):
+                    raise ValueError(f"case {k} logits exceeded predeclared bound")
+                choices = batch.argmax(axis=1).tolist()
+                if choices != serial.argmax(axis=1).tolist() \
+                        or choices[0] != sample["batch"]["selected_greedy"] \
+                        or choices[0] != sample["serial"]["selected_greedy"]:
+                    raise ValueError(f"case {k} greedy selection changed")
+                sample["check"] = {"max_abs_by_row": difference.max(axis=1).tolist(),
+                                   "batch_greedy": choices, "serial_greedy": choices}
+                case["pairs"].append(sample)
+                print(f"pair={pair} accepted={k} serial={sample['serial']['connected_ns']/1e6:.3f} "
+                      f"batch={sample['batch']['connected_ns']/1e6:.3f}", flush=True)
+        for case in result["cases"]:
+            k = case["accepted"]
+            target_path = work / f"target-{k}.json"
+            batch_ordinal = 4 + 2 * k if k < 4 else 4
+            serial_ordinal = 2 + 2 * k
+            batch_trace = trace_state(base, env, work, args.state_tracer, prefix_path,
+                                      target_path, "batch", batch_ordinal,
+                                      state_count, model["n_vocab"])
+            serial_trace = trace_state(base, env, work, args.state_tracer, prefix_path,
+                                       target_path, "serial", serial_ordinal,
+                                       state_count, model["n_vocab"])
+            batch_active = 0 if k == 4 or k % 2 == 1 else 1
+            serial_active = 1 - k % 2
+            case["committed_state"] = compare_state(
+                np, model, len(prefix) + k, batch_active, serial_active,
+                batch_trace, serial_trace)
+            del batch_trace, serial_trace
+    for case in result["cases"]:
+        deltas = [(sample["serial"]["connected_ns"] - sample["batch"]["connected_ns"]) / 1e6
+                  for sample in case["pairs"]]
+        case["paired_serial_minus_batch_connected_median_ms"] = statistics.median(deltas)
+        case["batch_wins"] = sum(delta > 0 for delta in deltas)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

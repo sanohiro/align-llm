@@ -412,6 +412,18 @@ current context switch. The serial diagnostic retains both decode parity
 graphs, so process wall and workspace are not a product comparison. Acceptance
 rollback, draft cost and complete-request results still decide adoption.
 
+The [acceptance-state screen](qwen35-target-acceptance-screen.md) measured the
+missing rejection cost. With a real 200-token Qwen3.5-2B state on M1, four
+accepted candidates saved 62.325 ms at the paired median over equal serial
+progress. First rejection after 0, 1, 2 or 3 matches lost 55.630, 55.299,
+53.667 or 56.229 ms respectively, each in all five pairs. Partial replay
+needed about one 29 ms decode per accepted token; valid KV/recurrent state
+and one subsequent complete row agreed with serial. This makes candidate
+quality and full-group acceptance a first-order GPU performance input. Measure
+a real cheap draft and consider shorter/adaptive groups before product
+integration; no local four-row speed result can stand in for accepted-token
+throughput.
+
 ## Decision pattern
 
 1. State a mechanism in bytes, work, or synchronization and define a reversible
