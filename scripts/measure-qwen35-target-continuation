@@ -1,0 +1,273 @@
+#!/usr/bin/env python3
+"""Compare exact-prefix Qwen3.5 target rows with serial continuation."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import statistics
+import subprocess
+import tempfile
+import time
+
+
+LOGIT_ABS = 0.05
+LOGIT_REL = 0.001
+STATE_ABS = 0.005
+STATE_REL = 0.0005
+
+
+def digest(path: Path) -> str:
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def run_arm(base, prefix_path, target_path, env, work, arm):
+    paths = ([work / f"serial-{i}.bin" for i in range(4)]
+             if arm == "serial" else [work / "batch.bin"])
+    for path in paths:
+        path.unlink(missing_ok=True)
+    mode = "--serial-continuation" if arm == "serial" else "--target-continuation"
+    start = time.monotonic_ns()
+    completed = subprocess.run([*base, mode, str(prefix_path), str(target_path),
+                                *map(str, paths)], env=env,
+                               capture_output=True, text=True, timeout=180, check=False)
+    process_ns = time.monotonic_ns() - start
+    if completed.returncode:
+        raise RuntimeError(f"{arm} failed: {completed.stderr[-2500:]}")
+    lines = [line for line in completed.stdout.splitlines() if line.startswith("{")]
+    if len(lines) != 1 or not all(path.is_file() for path in paths):
+        raise ValueError(f"{arm} omitted its complete result")
+    metrics = json.loads(lines[0])
+    if metrics.get("target_rows") != 4 or metrics.get("prefix_tokens") < 1 \
+            or type(metrics.get("vocabulary")) is not int \
+            or type(metrics.get("prefix_greedy")) is not int:
+        raise ValueError(f"{arm} returned invalid geometry")
+    for key in ("prefix_compute_ns", "prefix_readback_ns", "switch_ns",
+                "target_compute_ns", "target_readback_ns", "workspace_bytes"):
+        if type(metrics.get(key)) is not int or metrics[key] < 0:
+            raise ValueError(f"{arm} returned invalid {key}")
+    if metrics["prefix_compute_ns"] <= 0 or metrics["target_compute_ns"] <= 0:
+        raise ValueError(f"{arm} omitted synchronized computation")
+    if arm == "serial" and metrics["switch_ns"] != 0:
+        raise ValueError("serial arm reported a graph switch")
+    return dict(metrics, process_ns=process_ns), paths
+
+
+def traced_state(base, prefix_path, target_path, env, work, tracer, arm, ordinal, state_count):
+    state_path = work / f"{arm}-state.bin"
+    traced_env = dict(env, DYLD_INSERT_LIBRARIES=str(tracer.resolve()),
+                      ALIGN_STATE_COUNT=str(state_count),
+                      ALIGN_STATE_DUMP_PATH=str(state_path),
+                      ALIGN_STATE_DUMP_ORDINAL=str(ordinal))
+    paths = ([work / f"trace-serial-{i}.bin" for i in range(4)]
+             if arm == "serial" else [work / "trace-batch.bin"])
+    mode = "--serial-continuation" if arm == "serial" else "--target-continuation"
+    completed = subprocess.run([*base, mode, str(prefix_path), str(target_path),
+                                *map(str, paths)], env=traced_env,
+                               capture_output=True, text=True, timeout=180, check=False)
+    if completed.returncode:
+        raise RuntimeError(f"{arm} state trace failed: {completed.stderr[-2500:]}")
+    records = [json.loads(line[len("Q35_STATE "):])
+               for line in completed.stderr.splitlines()
+               if line.startswith("Q35_STATE ")]
+    complete = [entry for entry in records if entry.get("event") == "graph_complete"]
+    if not complete or complete[-1].get("ordinal") != ordinal \
+            or complete[-1].get("state_count") != state_count:
+        raise ValueError(f"{arm} state trace ended on an unexpected graph")
+    planes = [entry for entry in records if entry.get("event") == "plane"
+              and entry.get("ordinal") == ordinal]
+    if len(planes) != state_count or [entry.get("index") for entry in planes] != list(range(state_count)):
+        raise ValueError(f"{arm} state trace omitted or reordered planes")
+    if state_path.stat().st_size != sum(entry["bytes"] for entry in planes):
+        raise ValueError(f"{arm} state dump extent changed")
+    return planes, state_path
+
+
+def compare_state(np, model, prefix_count, batch_trace, serial_trace):
+    batch_planes, batch_path = batch_trace
+    serial_planes, serial_path = serial_trace
+    attention_layers = model["n_layer"] // model["full_attention_interval"]
+    state_count = 2 * attention_layers + 4 * (model["n_layer"] - attention_layers)
+    if len(batch_planes) != state_count or len(serial_planes) != state_count:
+        raise ValueError("state geometry and trace disagree")
+
+    def mapped(planes, path):
+        offset = 0
+        arrays = []
+        for entry in planes:
+            if entry["type"] not in (0, 1) or entry["bytes"] <= 0:
+                raise ValueError("unsupported state tensor type or extent")
+            dtype = "<f4" if entry["type"] == 0 else "<f2"
+            itemsize = 4 if entry["type"] == 0 else 2
+            if entry["bytes"] % itemsize:
+                raise ValueError("unaligned state tensor extent")
+            arrays.append(np.memmap(path, mode="r", dtype=dtype, offset=offset,
+                                    shape=(entry["bytes"] // itemsize,)))
+            offset += entry["bytes"]
+        return arrays
+
+    batch = mapped(batch_planes, batch_path)
+    serial = mapped(serial_planes, serial_path)
+    result = {"bound": f"abs(batch-serial) <= {STATE_ABS} + {STATE_REL}*abs(serial)",
+              "valid_kv_elements": 0, "active_recurrent_elements": 0,
+              "valid_kv_max_abs": 0.0, "active_recurrent_max_abs": 0.0,
+              "valid_kv_violations": 0, "active_recurrent_violations": 0}
+
+    def check(kind, lhs, rhs):
+        a = np.asarray(lhs, dtype=np.float64)
+        b = np.asarray(rhs, dtype=np.float64)
+        if not np.isfinite(a).all() or not np.isfinite(b).all():
+            raise ValueError(f"nonfinite {kind} state")
+        difference = np.abs(a - b)
+        result[f"{kind}_elements"] += difference.size
+        result[f"{kind}_max_abs"] = max(result[f"{kind}_max_abs"], float(difference.max()))
+        result[f"{kind}_violations"] += int(np.count_nonzero(
+            difference > STATE_ABS + STATE_REL * np.abs(b)))
+
+    valid = prefix_count + 4
+    for index in range(2 * attention_layers):
+        a, b = batch_planes[index], serial_planes[index]
+        if a["type"] != 1 or b["type"] != 1 or a["ne"] != b["ne"] \
+                or a["ne"][1] < valid or a["nb"][0] != 2 \
+                or a["nb"][1] != 2 * a["ne"][0] or a["nb"] != b["nb"]:
+            raise ValueError("unexpected KV state layout")
+        shape = (a["ne"][2], a["ne"][1], a["ne"][0])
+        check("valid_kv", batch[index].reshape(shape)[:, :valid, :],
+              serial[index].reshape(shape)[:, :valid, :])
+    for index in range(2 * attention_layers, state_count, 2):
+        a, b = batch_planes[index], serial_planes[index + 1]
+        if a["type"] != 0 or b["type"] != 0 or a["ne"] != b["ne"] \
+                or a["bytes"] != b["bytes"]:
+            raise ValueError("unexpected active recurrent state layout")
+        check("active_recurrent", batch[index], serial[index + 1])
+    if result["valid_kv_violations"] or result["active_recurrent_violations"]:
+        raise ValueError(f"active state exceeded predeclared bound: {result}")
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("binary", "geometry", "gguf", "pack", "backend-path",
+                 "fixture", "state-tracer", "output"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--bundle-id", required=True)
+    parser.add_argument("--library-path", required=True)
+    parser.add_argument("--pairs", type=int, default=5)
+    args = parser.parse_args()
+    if not 1 <= args.pairs <= 20:
+        parser.error("--pairs must be 1..20")
+    if len(args.bundle_id) != 64 or any(c not in "0123456789abcdef" for c in args.bundle_id):
+        parser.error("--bundle-id must be 64 lowercase hex characters")
+    for name in ("binary", "geometry", "gguf", "pack", "backend_path", "fixture", "state_tracer"):
+        if not getattr(args, name).is_file():
+            parser.error(f"--{name.replace('_', '-')} must name a file")
+    fixture = json.loads(args.fixture.read_text())
+    if not isinstance(fixture, dict):
+        parser.error("invalid continuation fixture")
+    prefix, targets = fixture.get("prefix_token_ids"), fixture.get("target_token_ids")
+    if fixture.get("schema_version") != 1 or not isinstance(prefix, list) \
+            or not isinstance(targets, list) or not 1 <= len(prefix) <= 508 \
+            or len(targets) != 4 or any(type(value) is not int or value < 0 for value in prefix + targets):
+        parser.error("invalid continuation fixture")
+    if fixture.get("prefix_source") == "eval/benchmarks/qwen35-target-batch-bound-2026-09-28.json:cases[0].base_prompt_ids":
+        source_path = Path(__file__).resolve().parent.parent / "eval/benchmarks/qwen35-target-batch-bound-2026-09-28.json"
+        source = json.loads(source_path.read_text())
+        if prefix != source["cases"][0]["base_prompt_ids"]:
+            parser.error("prefix IDs differ from their declared source")
+    expected_prefix = fixture.get("expected_prefix_greedy_id")
+    expected_target_prefix = fixture.get("expected_target_greedy_prefix_ids")
+    if expected_prefix is not None and (type(expected_prefix) is not int or expected_prefix < 0):
+        parser.error("invalid expected prefix greedy ID")
+    if expected_target_prefix is not None and (not isinstance(expected_target_prefix, list)
+            or len(expected_target_prefix) > 4
+            or any(type(value) is not int or value < 0 for value in expected_target_prefix)):
+        parser.error("invalid expected target greedy IDs")
+    geometry = json.loads(args.geometry.read_text())
+    model = geometry["model"]
+    if any(value >= model["n_vocab"] for value in prefix + targets) \
+            or (expected_prefix is not None and expected_prefix >= model["n_vocab"]) \
+            or (expected_target_prefix is not None
+                and any(value >= model["n_vocab"] for value in expected_target_prefix)):
+        parser.error("fixture token exceeds model vocabulary")
+    attention_layers = model["n_layer"] // model["full_attention_interval"]
+    state_count = 2 * attention_layers + 4 * (model["n_layer"] - attention_layers)
+
+    import numpy as np
+
+    result = {"schema_version": 1, "prefix_token_ids": prefix, "target_token_ids": targets,
+              "logit_bound": f"abs(batch-serial) <= {LOGIT_ABS} + {LOGIT_REL}*abs(serial)",
+              "binary_sha256": digest(args.binary), "geometry_sha256": digest(args.geometry),
+              "gguf_sha256": digest(args.gguf), "pack_sha256": digest(args.pack),
+              "backend_sha256": digest(args.backend_path),
+              "state_tracer_sha256": digest(args.state_tracer),
+              "fixture_sha256": digest(args.fixture), "bundle_id": args.bundle_id, "pairs": []}
+    env = dict(os.environ, DYLD_LIBRARY_PATH=args.library_path)
+    with tempfile.TemporaryDirectory(prefix="qwen35-target-continuation-") as temporary:
+        work = Path(temporary)
+        prefix_path = work / "prefix.json"
+        target_path = work / "targets.json"
+        prefix_path.write_text(json.dumps(prefix) + "\n")
+        target_path.write_text(json.dumps(targets) + "\n")
+        base = [str(args.binary.resolve()), str(args.geometry.resolve()),
+                str(args.gguf.resolve()), str(args.pack.resolve()),
+                str(args.backend_path.resolve()), args.bundle_id]
+        for pair in range(args.pairs):
+            order = ("serial", "batch") if pair % 2 == 0 else ("batch", "serial")
+            sample = {"order": list(order)}
+            for arm in order:
+                metrics, paths = run_arm(base, prefix_path, target_path, env, work, arm)
+                if metrics["prefix_tokens"] != len(prefix) \
+                        or metrics["vocabulary"] != model["n_vocab"] \
+                        or (expected_prefix is not None
+                            and metrics["prefix_greedy"] != expected_prefix):
+                    raise ValueError(f"{arm} prefix/target identity changed")
+                vocab = model["n_vocab"]
+                bad_extent = (any(path.stat().st_size != 4 * vocab for path in paths)
+                              if arm == "serial" else paths[0].stat().st_size != 16 * vocab)
+                if bad_extent:
+                    raise ValueError(f"{arm} complete logits extent changed")
+                sample[arm] = metrics
+            vocab = model["n_vocab"]
+            batch = np.fromfile(work / "batch.bin", dtype="<f4").reshape(4, vocab)
+            serial = np.stack([np.fromfile(work / f"serial-{i}.bin", dtype="<f4") for i in range(4)])
+            if not np.isfinite(batch).all() or not np.isfinite(serial).all():
+                raise ValueError("nonfinite complete logits")
+            difference = np.abs(batch.astype(np.float64) - serial.astype(np.float64))
+            if np.any(difference > LOGIT_ABS + LOGIT_REL * np.abs(serial.astype(np.float64))):
+                raise ValueError("target logits exceeded predeclared bound")
+            choices = batch.argmax(axis=1).tolist()
+            if choices != serial.argmax(axis=1).tolist() \
+                    or (expected_target_prefix is not None
+                        and choices[:len(expected_target_prefix)] != expected_target_prefix):
+                raise ValueError("target greedy continuation changed")
+            sample["check"] = {"max_abs_by_row": difference.max(axis=1).tolist(),
+                               "batch_greedy": choices, "serial_greedy": serial.argmax(axis=1).tolist()}
+            result["pairs"].append(sample)
+            print(pair, {arm: round(sample[arm]["target_compute_ns"] / 1e6, 3)
+                         for arm in order}, flush=True)
+        batch_trace = traced_state(base, prefix_path, target_path, env, work,
+                                   args.state_tracer, "batch", 3, state_count)
+        serial_trace = traced_state(base, prefix_path, target_path, env, work,
+                                    args.state_tracer, "serial", 9, state_count)
+        result["active_state_check"] = compare_state(
+            np, model, len(prefix), batch_trace, serial_trace)
+    deltas = []
+    for sample in result["pairs"]:
+        serial = sample["serial"]
+        batch = sample["batch"]
+        deltas.append((serial["target_compute_ns"] + serial["target_readback_ns"]
+                       - batch["switch_ns"] - batch["target_compute_ns"]
+                       - batch["target_readback_ns"]) / 1e6)
+    result["paired_serial_minus_batch_connected_target_median_ms"] = statistics.median(deltas)
+    result["batch_connected_target_wins"] = sum(delta > 0 for delta in deltas)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

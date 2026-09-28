@@ -34,8 +34,7 @@ Their limits and receipts are in `docs/qwen35-native-final-ffn-connected-screen.
 and `docs/qwen35-target-batch-feasibility.md`. Product generation remains on
 the earlier selectable mixed native state-copy route, with ggml matrix work.
 
-Current branch `agent/qwen35-target-all-row-trial` starts from `5b8669ee`.
-A developer-only Align graph now emits all four full-model target logits rows
+PR #318 merged the four-row graph as `4aa8cccb`. It emits all four full-model target logits rows
 for the same real 2B `[0,23066,0,0]` tokens. Five alternating M1 pairs gave
 115.456 ms serial versus 44.414 ms batched synchronized compute (5/5 wins),
 plus 1,987,456 bytes more reported graph workspace. Every complete logit row
@@ -44,14 +43,26 @@ numeric bounds. The independent state diagnostic ran outside timing. See
 `docs/qwen35-target-all-rows-screen.md` and its raw receipt. This is an
 empty-prefix graph feasibility result, not a speculative request speedup.
 
-Next in priority order: (1) finish owner verification, one comprehensive
-review, exact-head preflight and publication of the current capability;
-(2) test the all-row graph after an identical real prefix and design an
-Align-owned full/partial acceptance, rejection replay and cleanup transaction;
-(3) measure a cheap draft and complete target-plus-draft requests against
-ordinary Align and pinned llama.cpp before choosing a default-off product
-trial. Another Metal generation, CUDA, Q4_1 down and Gemma remain deferred
-with reasons in `docs/backend-parity.md`. No source patch to ggml is proposed.
+Current branch `agent/qwen35-target-continuation` starts from `4aa8cccb`.
+The developer-only exact-prefix continuation screen is implemented and
+passes pinned per-unit Align checking and the Python boundary guard. On the real 2B Q4_0 M1 fixture,
+five alternating pairs all favored four-row target verification after the
+200-token prompt; the connected target median paired gain was 63.126 ms,
+including 2.920 ms median graph switching. Every complete logit and the
+valid active KV/recurrent state met predeclared bounds; the independent state
+trace was untimed. Four invalid mode arities, malformed target length and a
+forced timed serial graph failure rejected without publishing result files.
+An additional non-greedy fixture passed after a review finding on overly
+restrictive oracle checks was repaired.
+See `docs/qwen35-target-continuation-screen.md` and its
+raw receipt. This remains a diagnostic, not a speculative request win.
+Next in priority order: (1) finish failure/CLI owner checks, review and merge
+this screen; (2) implement an Align-owned full/partial acceptance, rejection
+replay and cleanup transaction; (3) measure a cheap draft and complete
+target-plus-draft requests against ordinary Align and pinned llama.cpp before
+choosing a default-off product trial. Another Metal generation, CUDA, Q4_1
+down and Gemma remain deferred with reasons in `docs/backend-parity.md`. No
+source patch to ggml is proposed.
 
 ## Completed native Metal Q4_0 complete-FFN capture screen (2026-09-28)
 
