@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Check continuous lookup acceptance, rejection and session reuse on real Qwen3.5."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import subprocess
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parent.parent
+
+
+def digest(path: Path) -> str:
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def run(args: argparse.Namespace, work: Path, prompt: list[int],
+        expected: list[int], arm: str, repeats: int,
+        eog: list[int] | None = None, max_tokens: int | None = None) -> list[dict]:
+    prompt_path = work / "prompt.json"
+    eog_path = work / "eog.json"
+    prompt_path.write_text(json.dumps(prompt) + "\n")
+    eog_path.write_text(json.dumps(eog if eog is not None else [args.eog_token_id]) + "\n")
+    command = [str(args.binary), str(args.gguf), str(args.pack), str(args.geometry),
+               str(args.options), str(prompt_path), str(eog_path),
+               str(max_tokens if max_tokens is not None else len(expected)), arm, str(repeats)]
+    env = dict(os.environ, DYLD_LIBRARY_PATH=args.library_path)
+    completed = subprocess.run(command, cwd=ROOT, env=env, capture_output=True,
+                               text=True, timeout=180, check=False)
+    if completed.returncode:
+        raise RuntimeError(f"{arm} failed: {completed.stderr[-2500:]}")
+    receipts = json.loads(completed.stdout)
+    if not isinstance(receipts, list) or len(receipts) != repeats:
+        raise ValueError("wrong repeat count")
+    for receipt in receipts:
+        if receipt.get("token_ids") != expected:
+            raise ValueError(f"{arm} differs from pinned greedy stream")
+    return receipts
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("fixture", "screen", "binary", "gguf", "pack", "geometry",
+                 "options", "output"):
+        parser.add_argument(f"--{name}", required=True, type=Path)
+    parser.add_argument("--library-path", required=True)
+    args = parser.parse_args()
+    for name in ("fixture", "screen", "binary", "gguf", "pack", "geometry", "options"):
+        value = getattr(args, name).resolve()
+        if not value.is_file():
+            parser.error(f"--{name} must name a file")
+        setattr(args, name, value)
+    fixture = json.loads(args.fixture.read_text())
+    screen = json.loads(args.screen.read_text())
+    if (screen.get("fixture_sha256") != digest(args.fixture)
+            or fixture.get("gguf_sha256") != digest(args.gguf)):
+        raise ValueError("fixture, screen or GGUF identity differs")
+    args.eog_token_id = fixture["eog_token_id"]
+    receipt = {"schema_version": 1, "fixture_sha256": digest(args.fixture),
+               "screen_sha256": digest(args.screen), "binary_sha256": digest(args.binary),
+               "gguf_sha256": digest(args.gguf), "cases": []}
+    with tempfile.TemporaryDirectory(prefix="qwen35-lookup-verify-") as directory:
+        work = Path(directory)
+        for accepted in range(4):
+            selected = None
+            for case, measured in zip(fixture["cases"], screen["cases"]):
+                groups = next(row["groups"] for row in measured["screens"] if row["k"] == 3)
+                group = next((row for row in groups
+                              if row["accepted_drafts"] == accepted), None)
+                if group is not None:
+                    selected = case, group
+                    break
+            if selected is None:
+                raise ValueError(f"missing accepted={accepted} group")
+            case, group = selected
+            position = group["position"]
+            prompt = case["prompt_token_ids"] + case["greedy_token_ids"][:position]
+            expected = case["greedy_token_ids"][position:position + 8]
+            normal = run(args, work, prompt, expected, "normal", 3)
+            trial = run(args, work, prompt, expected, "trial", 3)
+            for sample in trial:
+                stats = sample["verify_groups"], sample["complete_groups"], sample["discarded_groups"]
+                if stats[0] < 1 or (accepted == 3 and stats[1] < 1) \
+                        or (accepted < 3 and (stats[1] != 0 or stats[2] != 1)):
+                    raise ValueError(f"unexpected first target outcome for accepted={accepted}: {stats}")
+            receipt["cases"].append({"name": case["name"], "position": position,
+                                     "accepted_drafts": accepted, "prompt_tokens": len(prompt),
+                                     "expected_token_ids": expected, "normal": normal,
+                                     "trial": trial})
+            print(f"accepted={accepted}: {case['name']} position={position}, "
+                  "3 repeated requests match pinned IDs", flush=True)
+        # A short output cannot admit a four-row target group.
+        case = fixture["cases"][1]
+        for count in (1, 2, 3, 4):
+            expected = case["greedy_token_ids"][:count]
+            trial = run(args, work, case["prompt_token_ids"], expected, "trial", 3)
+            if any(sample["verify_groups"] for sample in trial):
+                raise ValueError("short output constructed a target group")
+            receipt["cases"].append({"name": f"short-{count}", "trial": trial})
+        # A candidate draft marked as EOG must be decoded normally, even with
+        # enough requested output room for a four-row target.
+        case = fixture["cases"][0]
+        groups = next(row["groups"] for row in screen["cases"][0]["screens"]
+                      if row["k"] == 3)
+        full = next(row for row in groups if row["accepted_drafts"] == 3)
+        position = full["position"]
+        prompt = case["prompt_token_ids"] + case["greedy_token_ids"][:position]
+        expected = case["greedy_token_ids"][position:position + 2]
+        candidate_eog = [full["draft"][0]]
+        normal = run(args, work, prompt, expected, "normal", 3,
+                     eog=candidate_eog, max_tokens=8)
+        trial = run(args, work, prompt, expected, "trial", 3,
+                    eog=candidate_eog, max_tokens=8)
+        if any(sample["draft_hits"] < 1 or sample["verify_groups"] != 0
+               for sample in trial):
+            raise ValueError("EOG draft was submitted to target verification")
+        receipt["cases"].append({"name": "draft-eog", "eog": candidate_eog,
+                                 "normal": normal, "trial": trial})
+        prompt_path = work / "prompt.json"
+        prompt_path.write_text("[]\n")
+        invalid = subprocess.run(
+            [str(args.binary), str(args.gguf), str(args.pack), str(args.geometry),
+             str(args.options), str(prompt_path), str(work / "eog.json"),
+             "8", "trial", "1"], cwd=ROOT,
+            env=dict(os.environ, DYLD_LIBRARY_PATH=args.library_path),
+            capture_output=True, text=True, timeout=180, check=False)
+        if invalid.returncode == 0 or invalid.stdout.strip():
+            raise ValueError("invalid empty prompt published a trial result")
+        receipt["invalid_empty_prompt_exit"] = invalid.returncode
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(receipt, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

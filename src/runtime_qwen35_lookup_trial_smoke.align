@@ -1,0 +1,154 @@
+module runtime_qwen35_lookup_trial_smoke
+
+import alignpack
+import core.json
+import frontend_qwen35
+import ggml_ffi
+import gguf
+import runtime_device
+import runtime_options
+import runtime_pack_identity
+import runtime_qwen35_generation
+import runtime_qwen35_geometry
+import std.fs
+import std.io
+import std.time
+
+GeometryPath { path: string }
+
+Receipt {
+  token_ids: array<i64>,
+  elapsed_ns: i64,
+  lookup_attempts: i64,
+  draft_hits: i64,
+  verify_groups: i64,
+  complete_groups: i64,
+  discarded_groups: i64,
+  generated_drafts: i64,
+  prefill_ns: i64,
+  serial_decode_ns: i64,
+  lookup_ns: i64,
+  graph_build_ns: i64,
+  target_compute_ns: i64,
+  target_readback_ns: i64,
+}
+
+fn copy_ids(borrow ids: array<i64>) -> array<i64> {
+  mut result: array_builder<i64> := array_builder(ids.len())
+  mut at := 0
+  loop {
+    if at >= ids.len() { break }
+    result.push(ids[at])
+    at = at + 1
+  }
+  return result.build()
+}
+
+fn open_observed(options: runtime_options.RuntimeOptions) -> Result<ggml_ffi.GpuDevice, Error> {
+  return match runtime_device.open(options) {
+    Ok(owner) => Ok(owner),
+    Err(error) => {
+      fault := ggml_ffi.gpu_last_failure()
+      io.stderr.write("lookup trial: device fault ")?
+      io.stderr.write(fault.code)?
+      io.stderr.write(":")?
+      io.stderr.write(fault.detail)?
+      io.stderr.write("\n")?
+      Err(error)
+    },
+  }
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 10 || (args[8] != "normal" && args[8] != "trial") {
+    return Err(Error.Invalid)
+  }
+  max_tokens: i64 := json.decode(args[7])?
+  repeats: i64 := json.decode(args[9])?
+  if max_tokens < 1 || max_tokens > 256 || repeats < 1 || repeats > 10 {
+    return Err(Error.Invalid)
+  }
+  prompt: array<i64> := json.decode(fs.read_file(args[5])?)?
+  eog: array<i64> := json.decode(fs.read_file(args[6])?)?
+  snapshot := gguf.open_snapshot(args[1])?
+  if snapshot.table.architecture != "qwen35" { return Err(Error.Invalid) }
+  geometry := fs.read_file(args[3])?
+  recorded: GeometryPath := json.decode(geometry)?
+  ir := frontend_qwen35.build_model_ir(snapshot.table, recorded.path)
+  match ir.status { Ok => {}, Error => { return Err(Error.Invalid) } }
+  if ir.document != geometry { return Err(Error.Invalid) }
+  source := alignpack.verify_source_identity_snapshot(snapshot, args[2])?
+  identity := runtime_pack_identity.SourceIdentity {
+    file_size: source.file_size, data_offset: source.data_offset,
+    tensor_count: source.tensor_count, kv_count: source.kv_count,
+    version: source.version, alignment: source.alignment,
+    total_tensor_bytes: source.total_tensor_bytes,
+    header_region_sha256: source.header_region_sha256.clone(),
+  }
+  sections := gguf.snapshot_i32_array(snapshot, "qwen35.rope.dimension_sections")?
+  g := runtime_qwen35_geometry.parse(geometry, sections)?
+  options := runtime_options.load(args[4])?
+  retained := runtime_options.RuntimeOptions {
+    schema_version: options.schema_version,
+    backend: options.backend.clone(), device: options.device.clone(),
+    backend_bundle: options.backend_bundle.clone(), placement: options.placement.clone(),
+    host_budget_bytes: options.host_budget_bytes,
+    device_budget_bytes: options.device_budget_bytes,
+    prefetch: options.prefetch.clone(),
+  }
+  device := open_observed(options)?
+  mut session := runtime_qwen35_generation.create_session(device, retained,
+    args[2], identity, geometry, g)?
+  mut receipts: array_builder<Receipt> := array_builder(repeats)
+  mut count := 0
+  loop {
+    if count >= repeats { break }
+    started := time.instant()
+    if args[8] == "trial" {
+      result := match runtime_qwen35_generation.generate_session_lookup_trial(
+        session, prompt, eog, max_tokens) {
+        Ok(value) => value,
+        Err(error) => {
+          fault := ggml_ffi.gpu_last_failure()
+          io.stderr.write("lookup trial: generation fault ")?
+          io.stderr.write(fault.code)?
+          io.stderr.write(":")?
+          io.stderr.write(fault.detail)?
+          io.stderr.write("\n")?
+          return Err(error)
+        },
+      }
+      elapsed := time.instant() - started
+      receipts.push(Receipt {
+          token_ids: copy_ids(result.token_ids), elapsed_ns: elapsed,
+          lookup_attempts: result.stats.lookup_attempts,
+          draft_hits: result.stats.draft_hits,
+          verify_groups: result.stats.verify_groups,
+          complete_groups: result.stats.complete_groups,
+          discarded_groups: result.stats.discarded_groups,
+          generated_drafts: result.stats.generated_drafts,
+          prefill_ns: result.stats.prefill_ns,
+          serial_decode_ns: result.stats.serial_decode_ns,
+          lookup_ns: result.stats.lookup_ns,
+          graph_build_ns: result.stats.graph_build_ns,
+          target_compute_ns: result.stats.target_compute_ns,
+          target_readback_ns: result.stats.target_readback_ns,
+        })
+    } else {
+      ids := runtime_qwen35_generation.generate_session(session, prompt, eog, max_tokens)?
+      elapsed := time.instant() - started
+      receipts.push(Receipt {
+          token_ids: copy_ids(ids), elapsed_ns: elapsed,
+          lookup_attempts: 0, draft_hits: 0, verify_groups: 0,
+          complete_groups: 0, discarded_groups: 0, generated_drafts: 0,
+          prefill_ns: 0, serial_decode_ns: 0,
+          lookup_ns: 0, graph_build_ns: 0,
+          target_compute_ns: 0, target_readback_ns: 0,
+        })
+    }
+    count = count + 1
+  }
+  result := receipts.build()
+  print(json.encode(result)?)
+  return Ok(())
+}

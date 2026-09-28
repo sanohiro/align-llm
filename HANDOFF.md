@@ -59,8 +59,8 @@ tokens lost 55.630/55.299/53.667/56.229 ms. Selected/next logits, valid
 KV and active recurrent state met predeclared bounds, and a forced replay
 failure published no output. See `docs/qwen35-target-acceptance-screen.md`.
 
-Current branch `agent/qwen35-lookup-draft-screen` starts from merged `main`
-`b66c3f7b`. It adds Align-owned bounded n-gram lookup, a developer-only
+The merged `agent/qwen35-lookup-draft-screen` branch started from `b66c3f7b`
+and added Align-owned bounded n-gram lookup, a developer-only
 entrypoint and three coding-prompt fixture streams. The real 2B M1 campaign
 found complete three-draft groups in 3/18 function, 12/16 bug-fix and 1/16
 test-writing attempts. Six real-prefix cases, each five alternating pairs,
@@ -68,14 +68,48 @@ found complete-group gains of 62.0–63.5 ms and immediate-mismatch losses of
 52.0–52.3 ms, with all selected/next logits and committed-state checks
 passing. Lookup took 0.50–0.58 microseconds median over the visited short
 histories. See `docs/qwen35-lookup-draft-screen.md` and its raw receipt.
-Next in priority order: (1) finish this capability's owner checks, review,
-preflight and merge; (2) build a default-off continuous Align generation
-trial with bounded one-mismatch backoff, then measure complete requests
-against current mixed-native Align and pinned llama.cpp; (3) if the trial
-loses, test a smaller/adaptive group or withdraw lookup for that workload.
+PR #321 passed final owner/preflight, a clean comprehensive review and all
+three hosted checks. Final check evidence was recorded on the PR, then it
+merged into `main` as `70112200`.
+
+Current branch `agent/qwen35-lookup-continuous-trial` starts from that merge.
+It contains the default-off trial capability in:
+`src/runtime_qwen35_generation.align`,
+`src/runtime_qwen35_lookup_trial_smoke.align`,
+`scripts/measure-qwen35-lookup-continuous`,
+`scripts/verify-qwen35-lookup-continuous`,
+`scripts/bench-qwen35-lookup-reference.cpp`,
+`docs/specs/qwen35-lookup-continuous-trial.md`,
+`docs/qwen35-lookup-continuous-trial.md`, and directly affected policy,
+parity and Python-boundary documentation. The Metal device is accessible
+after restarting Codex. The default-off trial compiles with the pinned Align
+compiler, and the final M1 real-GGUF campaign passed exact IDs against the
+pinned stream for all three prompts, five alternating ordinary/trial and
+trial/llama.cpp pairs per prompt, plus three repeated requests at first-group
+acceptance positions 0/1/2/3. Bug-fix 99/75 generation gained 491.6 ms paired
+median against normal Align, 5/5; test-writing 72/96 lost 74.4 ms, 0/5.
+The trial beat pinned llama.cpp generation in all 15 paired samples but beat
+fresh-process wall time only on the bug-fix case. Phase and startup details,
+limits and raw receipts are in `docs/qwen35-lookup-continuous-trial.md`.
+The Python boundary guard and its mutation suite pass. The final binary
+also passed repeated-position, EOG-draft and empty-prompt qualification after
+phase counter addition. Align formatting and the real-shim Qwen3.5 product
+generation owner pass. One comprehensive high-effort `codex review
+--uncommitted` found no actionable defects; a subsequent narrow EOG-draft
+regression addition was checked directly. Publication preflight, PR and merge
+remain.
+Connected stepwise logits/state and forced target failure remain
+unverified, so this route is not enabled for product requests.
+
+Next in priority order: (1) commit the reviewed candidate and run exact-head
+publication preflight; (2) publish and merge the default-off trial capability
+with the measured negative case intact; (3)
+screen a lower-cost first group or confidence gate for the immediate
+rejection case, with connected state/fault checks before any default adoption.
 Other Metal generations, CUDA, Q4_1 down, five-row verification and Gemma
 remain unmeasured/deferred in `docs/backend-parity.md`. No ggml source patch
-is proposed. The local screens do not claim a speculative request win.
+is proposed. Earlier local screens alone did not establish the measured
+request effects of this continuous trial.
 
 ## Completed native Metal Q4_0 complete-FFN capture screen (2026-09-28)
 

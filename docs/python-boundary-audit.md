@@ -26,6 +26,16 @@ diagnostic, checks its candidates against an independent test oracle, and
 measures selected real-model acceptance groups through existing Align graph
 arms. The offline accepted-length calculation selects test cases only; it is
 not reached by product inference or used to commit model state.
+`scripts/measure-qwen35-lookup-continuous` is `BENCHMARK_OR_MEASUREMENT`:
+it alternates complete real-model requests through normal and explicit
+Align-owned trial entrypoints and a separately loaded pinned llama.cpp reference,
+checks generated IDs against the pinned continuations, and records request,
+generation and startup/load timings.
+Python supplies fixture files and validates receipts; it is not part of
+inference or state publication.
+`scripts/verify-qwen35-lookup-continuous` is `CI_OR_DEVELOPER_TOOL`: it selects
+recorded full and rejected draft positions, constructs continuation prompts,
+and checks three repeated real-model requests per path against pinned IDs.
 `scripts/measure-qwen35-target-rows` is `BENCHMARK_OR_MEASUREMENT`: it runs
 explicit Align diagnostic graph arms on identical real-model token IDs,
 compares complete logits rows with a predeclared local bound, and records

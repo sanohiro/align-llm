@@ -3786,6 +3786,32 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/measure-qwen35-lookup-continuous",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Alternates complete real-model Qwen3.5 requests through the normal and explicit Align-owned prompt-lookup trial paths and a pinned llama.cpp reference, checks generated IDs against pinned greedy continuations, and records generation and startup/load timing receipts.",
+      "reachability": "Focused developer measurement only; invokes an explicit Align diagnostic binary and never participates in normal product execution.",
+      "substitution": "Python prepares fixtures, alternates process order and validates emitted receipts; Align owns lookup, target execution, candidate acceptance, session state and generation.",
+      "python_reason": "Independent result comparison, timing analysis and provenance recording are measurement responsibilities.",
+      "target": "Retain only as a reproducible complete-request trial; product speculation remains default-off until separately qualified.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/measure-qwen35-lookup-continuous --help; real 2B Metal campaign; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
+      "path": "scripts/verify-qwen35-lookup-continuous",
+      "classification": "CI_OR_DEVELOPER_TOOL",
+      "behavior": "Builds real-model continuation prefixes for draft acceptance and rejection positions, checks normal and Align-owned trial generated IDs against the pinned stream, and repeats requests in one session.",
+      "reachability": "Focused developer correctness owner only; invokes the explicit Align diagnostic and never participates in product inference.",
+      "substitution": "Python selects recorded prefixes and validates emitted IDs and counters; Align owns target execution, commit/discard and generation.",
+      "python_reason": "Independent fixture selection and result comparison are test responsibilities.",
+      "target": "Retain as a repeatable real-model trial qualification; no product migration is needed.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/verify-qwen35-lookup-continuous --help; real 2B Metal qualification; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/measure-qwen35-target-acceptance",
       "classification": "BENCHMARK_OR_MEASUREMENT",
       "behavior": "Runs five explicit real-model first-mismatch cases through Align batched-target and serial-acceptance diagnostic arms, independently compares selected and next logits plus valid active state under predeclared bounds, and records alternating timing.",

@@ -19,11 +19,40 @@ import runtime_qwen_load
 import std.crypto
 import std.encoding
 import std.fs
+import std.time
 
 MAX_PROMPT := 2048
 MAX_GENERATED := 4096
+LOOKUP_DRAFTS := 3
 SLOT_BYTES := 1040
 MASKED := 4286578688
+
+pub LookupTrialStats {
+  lookup_attempts: i64,
+  draft_hits: i64,
+  verify_groups: i64,
+  complete_groups: i64,
+  discarded_groups: i64,
+  generated_drafts: i64,
+  prefill_ns: i64,
+  serial_decode_ns: i64,
+  lookup_ns: i64,
+  graph_build_ns: i64,
+  target_compute_ns: i64,
+  target_readback_ns: i64,
+}
+
+pub LookupTrialResult { token_ids: array<i64>, stats: LookupTrialStats }
+
+fn empty_lookup_stats() -> LookupTrialStats {
+  return LookupTrialStats {
+    lookup_attempts: 0, draft_hits: 0, verify_groups: 0,
+    complete_groups: 0, discarded_groups: 0, generated_drafts: 0,
+    prefill_ns: 0, serial_decode_ns: 0,
+    lookup_ns: 0, graph_build_ns: 0, target_compute_ns: 0,
+    target_readback_ns: 0,
+  }
+}
 
 fn key(borrow owner: ggml_ffi.GpuDevice, borrow options: runtime_options.RuntimeOptions,
   geometry: str, kind: i64, position: i64, count: i64, width: i64,
@@ -57,6 +86,17 @@ fn key(borrow owner: ggml_ffi.GpuDevice, borrow options: runtime_options.Runtime
   }
   if ggml_ffi.gpu_native_copy_greedy_enabled(owner) { b.write(":native-copy-greedy") }
   digest := crypto.sha256(b.to_string())
+  return encoding.hex_encode(digest[0..digest.len()]).clone()
+}
+
+fn lookup_target_key(borrow session: Session,
+  position: i64, width: i64, parity: i64) -> string {
+  base := key(session.owner, session.options, session.geometry_text,
+    ggml_ffi.GPU_GRAPH_PREFILL, position, 4, width, parity, true, false, false)
+  mut value := builder()
+  value.write(base)
+  value.write(":all-logits-rows")
+  digest := crypto.sha256(value.to_string())
   return encoding.hex_encode(digest[0..digest.len()]).clone()
 }
 
@@ -203,6 +243,40 @@ fn update_decode(borrow owner: ggml_ffi.GpuDevice, token: i64,
   runtime_inputs.update(owner, 5, 0, mask_view)?
   scalar.set_u32_le(0, position as u32)
   runtime_inputs.update(owner, 6, 0, scalar)?
+  return Ok(())
+}
+
+fn update_lookup_target(borrow owner: ggml_ffi.GpuDevice,
+  borrow candidates: array<i64>, borrow g: runtime_qwen35_geometry.Geometry,
+  position: i64, width: i64,
+  borrow mut tokens: slice<u8>, borrow mut positions: slice<u8>,
+  borrow mut mask: slice<u8>,
+) -> Result<(), Error> {
+  if candidates.len() != 4 || position < 0 || position + 4 > g.context_length
+    || tokens.len() < 16 || positions.len() < 64 || mask.len() < width * 16 {
+    return Err(Error.Invalid)
+  }
+  mut row := 0
+  loop {
+    if row >= 4 { break }
+    if candidates[row] < 0 || candidates[row] >= g.n_vocab { return Err(Error.Invalid) }
+    tokens.set_u32_le(row * 4, candidates[row] as u32)
+    mut column := 0
+    loop {
+      if column >= width { break }
+      mask.set_u32_le((row * width + column) * 4,
+        if column <= position + row { 0 as u32 } else { MASKED as u32 })
+      column = column + 1
+    }
+    row = row + 1
+  }
+  token_view := tokens[0..16]
+  runtime_inputs.update(owner, 0, 0, token_view)?
+  mut position_view := positions[0..64]
+  runtime_qwen35_geometry.write_text_positions(position, 4, position_view)?
+  runtime_inputs.update(owner, 1, 0, position_view)?
+  mask_view := mask[0..width * 16]
+  runtime_inputs.update(owner, 2, 0, mask_view)?
   return Ok(())
 }
 
@@ -421,14 +495,34 @@ pub fn generate_session(borrow mut session: Session,
     runtime_qwen35_load.zero_resident(session.owner, session.geometry, session.capacity)?
   }
   session.first_request = false
-  ids := execute(session, prompt, eog, max_tokens, empty)?
+  mut unused := empty_lookup_stats()
+  ids := execute(session, prompt, eog, max_tokens, empty, false, unused)?
   session.healthy = true
   return Ok(ids)
 }
 
+pub fn generate_session_lookup_trial(borrow mut session: Session,
+  borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
+) -> Result<LookupTrialResult, Error> {
+  if !session.healthy { return Err(Error.Invalid) }
+  mut forced: array_builder<i64> := array_builder()
+  empty := forced.build()
+  validate_request(session.geometry, prompt, eog, max_tokens, empty, session.capacity)?
+  session.healthy = false
+  if !session.first_request {
+    runtime_qwen35_load.zero_resident(session.owner, session.geometry, session.capacity)?
+  }
+  session.first_request = false
+  mut stats := empty_lookup_stats()
+  ids := execute(session, prompt, eog, max_tokens, empty, true, stats)?
+  session.healthy = true
+  return Ok(LookupTrialResult { token_ids: ids, stats: stats })
+}
+
 fn execute(borrow mut session: Session,
   borrow prompt: array<i64>, borrow eog: array<i64>,
-  max_tokens: i64, borrow forced: array<i64>,
+  max_tokens: i64, borrow forced: array<i64>, lookup_trial: bool,
+  borrow mut stats: LookupTrialStats,
 ) -> Result<array<i64>, Error> {
   mut prefill_storage := buffer.filled(SLOT_BYTES, 0 as u8)
   mut prefill_slots := prefill_storage.bytes()
@@ -447,6 +541,7 @@ fn execute(borrow mut session: Session,
   mut prefill_key := "".clone()
   mut offset := 0
   mut token := -1
+  prefill_started := time.instant()
   loop {
     if offset >= prompt.len() { break }
     count := if prompt.len() - offset < session.prefill_chunk { prompt.len() - offset } else { session.prefill_chunk }
@@ -492,6 +587,10 @@ fn execute(borrow mut session: Session,
     offset = offset + count
   }
   if token < 0 { return Err(Error.Invalid) }
+  if lookup_trial {
+    stats.prefill_ns = time.instant() - prefill_started
+    return execute_lookup_tail(session, prompt, eog, max_tokens, token, state, stats)
+  }
   mut generated: array_builder<i64> := array_builder()
   generated.push(token)
   mut scalar_storage := buffer.filled(4, 0 as u8)
@@ -565,6 +664,242 @@ fn execute(borrow mut session: Session,
     runtime_qwen35_state.finish(state, true)
     generated.push(token)
     step = step + 1
+  }
+  runtime_device.synchronize(session.owner)?
+  runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
+  return Ok(generated.build())
+}
+
+fn append_history(borrow history: array<i64>, borrow additions: array<i64>) -> array<i64> {
+  mut next: array_builder<i64> := array_builder(history.len() + additions.len())
+  mut at := 0
+  loop {
+    if at >= history.len() { break }
+    next.push(history[at])
+    at = at + 1
+  }
+  at = 0
+  loop {
+    if at >= additions.len() { break }
+    next.push(additions[at])
+    at = at + 1
+  }
+  return next.build()
+}
+
+fn execute_lookup_tail(borrow mut session: Session,
+  borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
+  token_start: i64, borrow mut state: runtime_qwen35_state.State,
+  borrow mut stats: LookupTrialStats,
+) -> Result<array<i64>, Error> {
+  mut token := token_start
+  mut generated: array_builder<i64> := array_builder()
+  generated.push(token)
+  mut first: array_builder<i64> := array_builder()
+  first.push(token)
+  first_ids := first.build()
+  mut history := append_history(prompt, first_ids)
+  mut scalar_storage := buffer.filled(4, 0 as u8)
+  mut decode_position_storage := buffer.filled(16, 0 as u8)
+  mut decode_mask_storage := buffer.filled(session.mask_capacity * 4, 0 as u8)
+  mut scalar := scalar_storage.bytes()
+  mut decode_positions := decode_position_storage.bytes()
+  mut decode_mask_bytes := decode_mask_storage.bytes()
+  mut decode_a_slots := session.decode_a_slots.bytes()
+  mut decode_b_slots := session.decode_b_slots.bytes()
+  mut logits_storage := buffer.filled(
+    if session.shared_logits || session.neon_greedy || session.graph_greedy {
+      4
+    } else { session.geometry.n_vocab * 4 }, 0 as u8)
+  mut logits := logits_storage.bytes()
+  mut target_slot_storage := buffer.filled(SLOT_BYTES, 0 as u8)
+  mut target_slots := target_slot_storage.bytes()
+  mut target_token_storage := buffer.filled(16, 0 as u8)
+  mut target_tokens := target_token_storage.bytes()
+  mut target_position_storage := buffer.filled(64, 0 as u8)
+  mut target_positions := target_position_storage.bytes()
+  mut target_mask_storage := buffer.filled(session.mask_capacity * 16, 0 as u8)
+  mut target_mask := target_mask_storage.bytes()
+  mut target_logits_storage := buffer.filled(4 * session.geometry.n_vocab * 4, 0 as u8)
+  mut target_logits := target_logits_storage.bytes()
+  mut step := 1
+  mut stopped := false
+  loop {
+    if step >= max_tokens || contains(eog, token) { break }
+    position := prompt.len() + step - 1
+    mut complete := false
+    if !stopped && max_tokens - step >= 4 && position + 4 <= session.capacity {
+      stats.lookup_attempts = stats.lookup_attempts + 1
+      lookup_started := time.instant()
+      mut draft_builder: array_builder<i64> := array_builder(LOOKUP_DRAFTS)
+      mut found := runtime_generation.prompt_lookup_draft(
+        history, 3, LOOKUP_DRAFTS, draft_builder)
+      if found == 0 {
+        found = runtime_generation.prompt_lookup_draft(
+          history, 2, LOOKUP_DRAFTS, draft_builder)
+      }
+      stats.lookup_ns = stats.lookup_ns + time.instant() - lookup_started
+      draft := draft_builder.build()
+      if found == LOOKUP_DRAFTS {
+        stats.draft_hits = stats.draft_hits + 1
+        mut has_eog := false
+        mut at := 0
+        loop {
+          if at >= LOOKUP_DRAFTS { break }
+          if contains(eog, draft[at]) { has_eog = true }
+          at = at + 1
+        }
+        if !has_eog {
+          stats.verify_groups = stats.verify_groups + 1
+          mut candidate_builder: array_builder<i64> := array_builder(4)
+          candidate_builder.push(token)
+          at = 0
+          loop {
+            if at >= LOOKUP_DRAFTS { break }
+            candidate_builder.push(draft[at])
+            at = at + 1
+          }
+          candidates := candidate_builder.build()
+          width := runtime_inputs.attention_width(position + 4,
+            session.geometry.context_length)?
+          update_lookup_target(session.owner, candidates, session.geometry,
+            position, width, target_tokens, target_positions, target_mask)?
+          build_started := time.instant()
+          runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
+          ctx := ggml_ffi.gpu_graph_context_lookup(session.owner,
+            ggml_ffi.GPU_GRAPH_PREFILL)
+          if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
+          target_graph := ggml_ffi.graph_new(ctx)
+          if ggml_ffi.handle_absent(target_graph) { return Err(Error.Invalid) }
+          bind_prefill(session.owner, ctx, 4, width, target_slots)?
+          runtime_qwen35_model.build_tokens_all_logits(session.owner,
+            session.geometry, state, position, 4, 6, ctx, target_graph, target_slots)?
+          target_key := lookup_target_key(session, position, width, state.active)
+          runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_PREFILL,
+            target_key, target_graph)?
+          stats.graph_build_ns = stats.graph_build_ns + time.instant() - build_started
+          before := state.active
+          compute_started := time.instant()
+          runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_PREFILL,
+            target_key, target_graph)?
+          stats.target_compute_ns = stats.target_compute_ns + time.instant() - compute_started
+          read_started := time.instant()
+          ggml_ffi.gpu_slot_get(session.owner, target_slots, runtime_qwen35_model.OUTPUT,
+            target_logits, 0, target_logits.len(), "q35_lookup_target_logits") else {
+            return Err(Error.Invalid)
+          }
+          if session.native_prefill_state_copy {
+            ggml_ffi.gpu_native_state_copy_finish(session.owner) else {
+              return Err(Error.Invalid)
+            }
+          }
+          stats.target_readback_ns = stats.target_readback_ns + time.instant() - read_started
+          runtime_qwen35_state.finish(state, true)
+          row_bytes := session.geometry.n_vocab * 4
+          mut accepted := 0
+          loop {
+            if accepted >= LOOKUP_DRAFTS { break }
+            row := target_logits[accepted * row_bytes..(accepted + 1) * row_bytes]
+            if runtime_generation.greedy(row, -1)? != draft[accepted] { break }
+            accepted = accepted + 1
+          }
+          if accepted == LOOKUP_DRAFTS {
+            bonus_row := target_logits[LOOKUP_DRAFTS * row_bytes..4 * row_bytes]
+            bonus := runtime_generation.greedy(bonus_row, -1)?
+            if bonus < 0 || bonus >= session.geometry.n_vocab { return Err(Error.Invalid) }
+            mut additions: array_builder<i64> := array_builder(4)
+            at = 0
+            loop {
+              if at >= LOOKUP_DRAFTS { break }
+              generated.push(draft[at])
+              additions.push(draft[at])
+              at = at + 1
+            }
+            generated.push(bonus)
+            additions.push(bonus)
+            added_ids := additions.build()
+            history = append_history(history, added_ids)
+            token = bonus
+            step = step + 4
+            stats.complete_groups = stats.complete_groups + 1
+            stats.generated_drafts = stats.generated_drafts + LOOKUP_DRAFTS
+            complete = true
+          } else {
+            state.active = before
+            stopped = true
+            stats.discarded_groups = stats.discarded_groups + 1
+          }
+        }
+      }
+    }
+    if !complete {
+      decode_started := time.instant()
+      width := runtime_inputs.attention_width(position + 1, session.geometry.context_length)?
+      kind := if state.active == 1 {
+        ggml_ffi.GPU_GRAPH_DECODE
+      } else { ggml_ffi.GPU_GRAPH_DECODE_ALT }
+      if kind == ggml_ffi.GPU_GRAPH_DECODE {
+        if session.decode_a_key.len() == 0 || session.decode_a_width != width {
+          current_key := key(session.owner, session.options, session.geometry_text,
+            kind, width - 1, 1, width, state.active, true, false, session.graph_greedy)
+          if session.decode_a_key.len() > 0 { runtime_execution.invalidate(session.owner, kind)? }
+          ctx := ggml_ffi.gpu_graph_context_lookup(session.owner, kind)
+          if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
+          created := ggml_ffi.graph_new(ctx)
+          if ggml_ffi.handle_absent(created) { return Err(Error.Invalid) }
+          bind_decode(session.owner, kind, width, decode_a_slots)?
+          runtime_qwen35_model.build_one_token_greedy(session.owner, session.geometry, state,
+            width - 1, kind, 6, ctx, created, decode_a_slots, session.graph_greedy)?
+          runtime_execution.prepare(session.owner, kind, current_key, created)?
+          session.decode_a_key = current_key.clone()
+          session.decode_a_width = width
+        }
+      } else {
+        if session.decode_b_key.len() == 0 || session.decode_b_width != width {
+          current_key := key(session.owner, session.options, session.geometry_text,
+            kind, width - 1, 1, width, state.active, true, false, session.graph_greedy)
+          if session.decode_b_key.len() > 0 { runtime_execution.invalidate(session.owner, kind)? }
+          ctx := ggml_ffi.gpu_graph_context_lookup(session.owner, kind)
+          if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
+          created := ggml_ffi.graph_new(ctx)
+          if ggml_ffi.handle_absent(created) { return Err(Error.Invalid) }
+          bind_decode(session.owner, kind, width, decode_b_slots)?
+          runtime_qwen35_model.build_one_token_greedy(session.owner, session.geometry, state,
+            width - 1, kind, 6, ctx, created, decode_b_slots, session.graph_greedy)?
+          runtime_execution.prepare(session.owner, kind, current_key, created)?
+          session.decode_b_key = current_key.clone()
+          session.decode_b_width = width
+        }
+      }
+      current_key: str := if kind == ggml_ffi.GPU_GRAPH_DECODE {
+        session.decode_a_key
+      } else { session.decode_b_key }
+      update_decode(session.owner, token, position, width,
+        scalar, decode_positions, decode_mask_bytes)?
+      active_graph := ggml_ffi.gpu_graph_lookup(session.owner, kind, current_key)
+      if ggml_ffi.handle_absent(active_graph) { return Err(Error.Invalid) }
+      runtime_execution.compute(session.owner, kind, current_key, active_graph)?
+      token = if kind == ggml_ffi.GPU_GRAPH_DECODE {
+        read_choice(session.owner, decode_a_slots, session.shared_logits,
+          session.neon_greedy, session.graph_greedy, session.native_copy_greedy,
+          session.geometry.n_vocab, logits, "q35_lookup_decode_logits")?
+      } else {
+        read_choice(session.owner, decode_b_slots, session.shared_logits,
+          session.neon_greedy, session.graph_greedy, session.native_copy_greedy,
+          session.geometry.n_vocab, logits, "q35_lookup_decode_logits")?
+      }
+      if session.native_state_copy && !session.native_copy_greedy {
+        ggml_ffi.gpu_native_state_copy_finish(session.owner) else { return Err(Error.Invalid) }
+      }
+      runtime_qwen35_state.finish(state, true)
+      generated.push(token)
+      mut one: array_builder<i64> := array_builder(1)
+      one.push(token)
+      added_id := one.build()
+      history = append_history(history, added_id)
+      step = step + 1
+      stats.serial_decode_ns = stats.serial_decode_ns + time.instant() - decode_started
+    }
   }
   runtime_device.synchronize(session.owner)?
   runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
