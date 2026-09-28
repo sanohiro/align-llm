@@ -547,6 +547,12 @@ continuous Align generation trial with a bounded rejection backoff remains
 the next admission step; this screen does not establish whole-request speed
 or general draft quality. The four-draft case has no connected five-row
 timing, so its acceptance counts must not be converted into a speed claim.
+The explicit default-off trial implementation and its predeclared cost ceiling
+are tracked in `docs/specs/qwen35-lookup-continuous-trial.md`. Its M1 complete
+request, repeated-session and pinned-reference results are recorded in
+`docs/qwen35-lookup-continuous-trial.md`. The normal product route is unchanged
+while the trial's workload-dependent losses and remaining qualification are
+assessed.
 
 ### Final-chunk logits trial (2026-09-26)
 

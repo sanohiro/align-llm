@@ -18,6 +18,14 @@ speed result. Historical measurements remain in their owning reports.
   shader interval or counter sample identifies an attribution candidate but is
   not the marginal time saved by deleting that shader. Measure the connected
   request after each intervention.
+- Speculative target batching depends on the observed draft stream. On M1,
+  the same Qwen3.5 four-row target path saved 491.6 ms paired median across a
+  99/75 bug-fix request with ten complete groups, but lost 74.4 ms on a 72/96
+  test-writing request whose first group rejected. Both matched the pinned
+  greedy IDs. Record full and rejected groups, the one-strike policy and
+  complete-request timing together. Loaded-generation wins against llama.cpp
+  also need a separate fresh-process wall comparison because model startup can
+  reverse the result. See the [continuous lookup trial](qwen35-lookup-continuous-trial.md).
 - When a worker repeats requests and times the last one, slice every phase
   clock, completion wait and operation count to that same request. Check that
   phase clocks fit inside its wall interval. The schema-2 Qwen3.5 native phase
