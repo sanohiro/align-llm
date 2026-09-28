@@ -40,6 +40,7 @@ pub LookupTrialStats {
   graph_build_ns: i64,
   target_compute_ns: i64,
   target_readback_ns: i64,
+  target_native_greedy_ns: i64,
 }
 
 pub LookupTrialResult { token_ids: array<i64>, stats: LookupTrialStats }
@@ -50,7 +51,7 @@ fn empty_lookup_stats() -> LookupTrialStats {
     complete_groups: 0, discarded_groups: 0, generated_drafts: 0,
     prefill_ns: 0, serial_decode_ns: 0,
     lookup_ns: 0, graph_build_ns: 0, target_compute_ns: 0,
-    target_readback_ns: 0,
+    target_readback_ns: 0, target_native_greedy_ns: 0,
   }
 }
 
@@ -498,7 +499,7 @@ pub fn generate_session(borrow mut session: Session,
   }
   session.first_request = false
   mut unused := empty_lookup_stats()
-  ids := execute(session, prompt, eog, max_tokens, empty, 0, unused)?
+  ids := execute(session, prompt, eog, max_tokens, empty, 0, false, unused)?
   session.healthy = true
   return Ok(ids)
 }
@@ -506,21 +507,29 @@ pub fn generate_session(borrow mut session: Session,
 pub fn generate_session_lookup_trial(borrow mut session: Session,
   borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
 ) -> Result<LookupTrialResult, Error> {
-  return generate_lookup_with_drafts(session, prompt, eog, max_tokens, MAX_LOOKUP_DRAFTS)
+  return generate_lookup_with_drafts(session, prompt, eog, max_tokens, MAX_LOOKUP_DRAFTS, false)
 }
 
 pub fn generate_session_lookup_trial_one(borrow mut session: Session,
   borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
 ) -> Result<LookupTrialResult, Error> {
-  return generate_lookup_with_drafts(session, prompt, eog, max_tokens, 1)
+  return generate_lookup_with_drafts(session, prompt, eog, max_tokens, 1, false)
+}
+
+pub fn generate_session_lookup_trial_native_greedy(borrow mut session: Session,
+  borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
+) -> Result<LookupTrialResult, Error> {
+  return generate_lookup_with_drafts(session, prompt, eog, max_tokens, MAX_LOOKUP_DRAFTS, true)
 }
 
 fn generate_lookup_with_drafts(borrow mut session: Session,
   borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
-  draft_count: i64,
+  draft_count: i64, native_target_greedy: bool,
 ) -> Result<LookupTrialResult, Error> {
   if !session.healthy { return Err(Error.Invalid) }
   if draft_count != 1 && draft_count != MAX_LOOKUP_DRAFTS { return Err(Error.Invalid) }
+  if native_target_greedy && (!session.native_state_copy
+      || draft_count != MAX_LOOKUP_DRAFTS) { return Err(Error.Invalid) }
   mut forced: array_builder<i64> := array_builder()
   empty := forced.build()
   validate_request(session.geometry, prompt, eog, max_tokens, empty, session.capacity)?
@@ -530,7 +539,8 @@ fn generate_lookup_with_drafts(borrow mut session: Session,
   }
   session.first_request = false
   mut stats := empty_lookup_stats()
-  ids := execute(session, prompt, eog, max_tokens, empty, draft_count, stats)?
+  ids := execute(session, prompt, eog, max_tokens, empty, draft_count,
+    native_target_greedy, stats)?
   session.healthy = true
   return Ok(LookupTrialResult { token_ids: ids, stats: stats })
 }
@@ -538,6 +548,7 @@ fn generate_lookup_with_drafts(borrow mut session: Session,
 fn execute(borrow mut session: Session,
   borrow prompt: array<i64>, borrow eog: array<i64>,
   max_tokens: i64, borrow forced: array<i64>, lookup_drafts: i64,
+  native_target_greedy: bool,
   borrow mut stats: LookupTrialStats,
 ) -> Result<array<i64>, Error> {
   mut prefill_storage := buffer.filled(SLOT_BYTES, 0 as u8)
@@ -606,7 +617,7 @@ fn execute(borrow mut session: Session,
   if lookup_drafts > 0 {
     stats.prefill_ns = time.instant() - prefill_started
     return execute_lookup_tail(session, prompt, eog, max_tokens,
-      token, state, stats, lookup_drafts)
+      token, state, stats, lookup_drafts, native_target_greedy)
   }
   mut generated: array_builder<i64> := array_builder()
   generated.push(token)
@@ -707,7 +718,7 @@ fn append_history(borrow history: array<i64>, borrow additions: array<i64>) -> a
 fn execute_lookup_tail(borrow mut session: Session,
   borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
   token_start: i64, borrow mut state: runtime_qwen35_state.State,
-  borrow mut stats: LookupTrialStats, draft_count: i64,
+  borrow mut stats: LookupTrialStats, draft_count: i64, native_target_greedy: bool,
 ) -> Result<array<i64>, Error> {
   target_count := draft_count + 1
   mut token := token_start
@@ -738,7 +749,10 @@ fn execute_lookup_tail(borrow mut session: Session,
   mut target_positions := target_position_storage.bytes()
   mut target_mask_storage := buffer.filled(session.mask_capacity * target_count * 4, 0 as u8)
   mut target_mask := target_mask_storage.bytes()
-  mut target_logits_storage := buffer.filled(target_count * session.geometry.n_vocab * 4, 0 as u8)
+  target_result_bytes := if native_target_greedy { target_count * 4 } else {
+    target_count * session.geometry.n_vocab * 4
+  }
+  mut target_logits_storage := buffer.filled(target_result_bytes, 0 as u8)
   mut target_logits := target_logits_storage.bytes()
   mut step := 1
   mut stopped := false
@@ -803,28 +817,52 @@ fn execute_lookup_tail(borrow mut session: Session,
             target_key, target_graph)?
           stats.target_compute_ns = stats.target_compute_ns + time.instant() - compute_started
           read_started := time.instant()
-          ggml_ffi.gpu_slot_get(session.owner, target_slots, runtime_qwen35_model.OUTPUT,
-            target_logits, 0, target_logits.len(), "q35_lookup_target_logits") else {
-            return Err(Error.Invalid)
-          }
-          if session.native_prefill_state_copy {
-            ggml_ffi.gpu_native_state_copy_finish(session.owner) else {
+          if native_target_greedy {
+            if session.native_prefill_state_copy {
+              ggml_ffi.gpu_native_state_copy_finish(session.owner) else {
+                return Err(Error.Invalid)
+              }
+            }
+            ggml_ffi.gpu_slot_native_target_greedy(session.owner, target_slots,
+              runtime_qwen35_model.OUTPUT, target_count, session.geometry.n_vocab,
+              target_logits, "q35_lookup_target_native_greedy") else {
               return Err(Error.Invalid)
             }
+            stats.target_native_greedy_ns = stats.target_native_greedy_ns
+              + time.instant() - read_started
+          } else {
+            ggml_ffi.gpu_slot_get(session.owner, target_slots, runtime_qwen35_model.OUTPUT,
+              target_logits, 0, target_logits.len(), "q35_lookup_target_logits") else {
+              return Err(Error.Invalid)
+            }
+            if session.native_prefill_state_copy {
+              ggml_ffi.gpu_native_state_copy_finish(session.owner) else {
+                return Err(Error.Invalid)
+              }
+            }
+            stats.target_readback_ns = stats.target_readback_ns + time.instant() - read_started
           }
-          stats.target_readback_ns = stats.target_readback_ns + time.instant() - read_started
           runtime_qwen35_state.finish(state, true)
           row_bytes := session.geometry.n_vocab * 4
           mut accepted := 0
           loop {
             if accepted >= draft_count { break }
-            row := target_logits[accepted * row_bytes..(accepted + 1) * row_bytes]
-            if runtime_generation.greedy(row, -1)? != draft[accepted] { break }
+            choice: i64 := if native_target_greedy {
+              target_logits.u32_le(accepted * 4) as i64
+            } else {
+              row := target_logits[accepted * row_bytes..(accepted + 1) * row_bytes]
+              runtime_generation.greedy(row, -1)?
+            }
+            if choice != draft[accepted] { break }
             accepted = accepted + 1
           }
           if accepted == draft_count {
-            bonus_row := target_logits[draft_count * row_bytes..target_count * row_bytes]
-            bonus := runtime_generation.greedy(bonus_row, -1)?
+            bonus: i64 := if native_target_greedy {
+              target_logits.u32_le(draft_count * 4) as i64
+            } else {
+              bonus_row := target_logits[draft_count * row_bytes..target_count * row_bytes]
+              runtime_generation.greedy(bonus_row, -1)?
+            }
             if bonus < 0 || bonus >= session.geometry.n_vocab { return Err(Error.Invalid) }
             mut additions: array_builder<i64> := array_builder(target_count)
             at = 0

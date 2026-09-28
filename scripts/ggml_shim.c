@@ -4632,6 +4632,34 @@ static int align_gpu_slot_ready(struct align_gpu_device_state *state, struct ggm
     return 0;
 }
 
+int32_t align_gpu_slot_native_target_greedy(void *owner, void *slots, int64_t index,
+        int64_t rows, int64_t vocabulary, void *result, int64_t result_bytes) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    struct ggml_tensor *tensor = align_ggml_slot_tensor(slots, index);
+    if (state == NULL || tensor == NULL || result == NULL || state->workspace_failed
+        || rows < 2 || rows > 16 || vocabulary < 1 || vocabulary > 1048576
+        || result_bytes != rows * (int64_t) sizeof(uint32_t)
+        || tensor->ne[0] != vocabulary || tensor->ne[1] != rows
+        || tensor->ne[2] != 1 || tensor->ne[3] != 1
+        || tensor->type != GGML_TYPE_F32 || !ggml_is_contiguous(tensor)
+        || ggml_nbytes(tensor) != (size_t) (rows * vocabulary * sizeof(float))
+        || !align_gpu_slot_ready(state, tensor)) return ALIGN_GPU_CONFIG;
+#if defined(__APPLE__)
+    void *base = NULL;
+    size_t capacity = 0;
+    uint64_t offset = 0;
+    if (state->native_state_copy_context == NULL
+        || !align_gpu_native_copy_extent(tensor, 1, &base, &capacity, &offset)) {
+        return ALIGN_GPU_UNSUPPORTED;
+    }
+    return align_native_metal_target_greedy_run(state->native_state_copy_context,
+        base, capacity, offset, (uint32_t) rows, (uint32_t) vocabulary,
+        (uint32_t *) result) ? ALIGN_GPU_OK : ALIGN_GPU_COMPUTE;
+#else
+    return ALIGN_GPU_UNSUPPORTED;
+#endif
+}
+
 int32_t align_gpu_slot_get(void *owner, void *slots, int64_t index,
                            void *bytes, int64_t off, int64_t n) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;

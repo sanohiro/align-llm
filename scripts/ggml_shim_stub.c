@@ -4389,6 +4389,13 @@ int32_t align_ggml_slot_get(void *slots, int64_t index, void *bytes, int64_t off
 #endif
 }
 
+int32_t align_gpu_slot_native_target_greedy(void *owner, void *slots, int64_t index,
+        int64_t rows, int64_t vocabulary, void *result, int64_t result_bytes) {
+    (void) owner; (void) slots; (void) index; (void) rows;
+    (void) vocabulary; (void) result; (void) result_bytes;
+    return ALIGN_GPU_UNSUPPORTED;
+}
+
 int32_t align_gpu_slot_get(void *owner, void *slots, int64_t index,
                            void *bytes, int64_t off, int64_t n) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;

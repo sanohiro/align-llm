@@ -440,6 +440,8 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_observation_state(owner: raw, field: i32) -> i64
   fn align_gpu_slot_get(owner: raw, slots: slice<u8>, index: i64,
     bytes: slice<u8>, offset: i64, size: i64) -> i32
+  fn align_gpu_slot_native_target_greedy(owner: raw, slots: slice<u8>, index: i64,
+    rows: i64, vocabulary: i64, result: slice<u8>, result_bytes: i64) -> i32
   fn align_gpu_slot_shared_view(owner: raw, slots: slice<u8>, index: i64,
     expected_bytes: i64) -> raw
   fn align_gpu_slot_neon_greedy(owner: raw, slots: slice<u8>, index: i64,
@@ -2060,6 +2062,25 @@ pub fn gpu_slot_get(borrow owner: GpuDevice, borrow slots: slice<u8>, index: i64
   unsafe {
     status := align_gpu_slot_get(resource.raw(resource.borrow(owner)), slots, index,
       bytes, offset, size) as i64
+    if status != STATUS_OK { gpu_note_failure(GPU_STATUS_COMPUTE, GPU_STAGE_READBACK) }
+    return r5_result(status, label)
+  }
+}
+
+pub fn gpu_slot_native_target_greedy(borrow owner: GpuDevice,
+  borrow slots: slice<u8>, index: i64, rows: i64, vocabulary: i64,
+  borrow result: slice<u8>, label: str,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_READBACK)
+  if rows < 2 || rows > 16 || vocabulary < 1 || vocabulary > 1048576
+    || result.len() != rows * 4 {
+    gpu_note_failure(GPU_STATUS_CONFIG, GPU_STAGE_READBACK)
+    return Err(fault("CONFIG", label))
+  }
+  unsafe {
+    status := align_gpu_slot_native_target_greedy(
+      resource.raw(resource.borrow(owner)), slots, index, rows, vocabulary,
+      result, result.len()) as i64
     if status != STATUS_OK { gpu_note_failure(GPU_STATUS_COMPUTE, GPU_STAGE_READBACK) }
     return r5_result(status, label)
   }

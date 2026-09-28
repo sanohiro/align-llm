@@ -66,13 +66,18 @@ def one_request(args: argparse.Namespace, env: dict[str, str], work: Path,
                   "target_compute_ns", "target_readback_ns"):
         if type(receipt.get(field)) is not int or receipt[field] < 0:
             raise ValueError(f"invalid Align trial counter {field}")
+    native_ns = receipt.get("target_native_greedy_ns", 0)
+    if type(native_ns) is not int or native_ns < 0:
+        raise ValueError("invalid native target reduction counter")
+    if arm == "trialnative" and receipt["verify_groups"] and native_ns <= 0:
+        raise ValueError("native target reduction was not measured")
     if arm == "normal" and any(receipt[field] for field in
                                ("lookup_attempts", "draft_hits", "verify_groups",
                                 "complete_groups", "discarded_groups", "generated_drafts",
                                 "prefill_ns", "serial_decode_ns")):
         raise ValueError("normal path emitted trial counters")
     draft_count = 1 if arm == "trial1" else 3
-    if arm in ("trial", "trial1") and (receipt["discarded_groups"] > 1
+    if arm in ("trial", "trial1", "trialnative") and (receipt["discarded_groups"] > 1
                            or receipt["verify_groups"] != receipt["complete_groups"]
                            + receipt["discarded_groups"]
                            or receipt["generated_drafts"] != draft_count * receipt["complete_groups"]
@@ -87,7 +92,8 @@ def one_request(args: argparse.Namespace, env: dict[str, str], work: Path,
                 "lookup_attempts", "draft_hits", "verify_groups", "complete_groups",
                 "discarded_groups", "generated_drafts", "prefill_ns",
                 "serial_decode_ns", "lookup_ns", "graph_build_ns",
-                "target_compute_ns", "target_readback_ns")}}
+                "target_compute_ns", "target_readback_ns")}
+            | {"target_native_greedy_ns": native_ns}}
 
 
 def one_reference(args: argparse.Namespace, env: dict[str, str], work: Path,

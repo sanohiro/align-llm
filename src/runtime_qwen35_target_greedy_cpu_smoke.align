@@ -1,0 +1,77 @@
+module runtime_qwen35_target_greedy_cpu_smoke
+
+import runtime_greedy
+import core.json
+import std.fs
+import std.time
+
+ResultRow {
+  rows: i64,
+  width: i64,
+  repeats: i64,
+  scan_ns: i64,
+  token_ids: array<i64>,
+}
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 4 { return Err(Error.Invalid) }
+  rows: i64 := json.decode(args[2])?
+  width: i64 := json.decode(args[3])?
+  if rows < 2 || rows > 16 || width < 2 || width > 1048576 {
+    return Err(Error.Invalid)
+  }
+  total_bytes := rows * width * 4
+  file := fs.open_rw(args[1])?
+  mut data := buffer(total_bytes)
+  count := file.pread(data, 0)?
+  if count != total_bytes { return Err(Error.Invalid) }
+  mut extra := buffer(1)
+  if file.pread(extra, total_bytes)? != 0 { return Err(Error.Invalid) }
+  mut bytes := data.bytes()
+  mut ids_storage := buffer.filled(rows * 4, 0 as u8)
+  mut ids := ids_storage.bytes()
+  mut warm := 0
+  loop {
+    if warm >= 12 { break }
+    mut row := 0
+    loop {
+      if row >= rows { break }
+      logits := bytes[row * width * 4..(row + 1) * width * 4]
+      id := runtime_greedy.greedy(logits, -1)?
+      ids.set_u32_le(row * 4, id as u32)
+      row = row + 1
+    }
+    warm = warm + 1
+  }
+  started := time.instant()
+  mut repeat := 0
+  loop {
+    if repeat >= 100 { break }
+    mut row := 0
+    loop {
+      if row >= rows { break }
+      // Keep the input live across repetitions without changing any winner.
+      bytes.set_u32_le(row * width * 4 + 4,
+        if repeat % 2 == 0 { 0 as u32 } else { 1065353216 as u32 })
+      logits := bytes[row * width * 4..(row + 1) * width * 4]
+      id := runtime_greedy.greedy(logits, -1)?
+      ids.set_u32_le(row * 4, id as u32)
+      row = row + 1
+    }
+    repeat = repeat + 1
+  }
+  scan_ns := time.instant() - started
+  mut out: array_builder<i64> := array_builder(rows)
+  mut row := 0
+  loop {
+    if row >= rows { break }
+    out.push(ids.u32_le(row * 4) as i64)
+    row = row + 1
+  }
+  result := ResultRow {
+    rows: rows, width: width, repeats: repeat,
+    scan_ns: scan_ns, token_ids: out.build(),
+  }
+  print(json.encode(result)?)
+  return Ok(())
+}

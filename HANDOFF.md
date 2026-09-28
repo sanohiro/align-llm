@@ -99,8 +99,8 @@ empty-prompt qualification passed on the final diagnostic binary.
 Connected stepwise logits/state and forced target failure remain
 unverified, so this route is not enabled for product requests.
 
-Current branch `agent/qwen35-lookup-one-draft-trial` starts from merged `main`
-`dfb39613`. Its authoritative plan and report are
+PR #323 merged the fixed one-draft diagnostic into `main` as `273f500e`.
+Its authoritative plan and report are
 `docs/specs/qwen35-lookup-one-draft-trial.md` and
 `docs/qwen35-lookup-one-draft-trial.md`. The explicit default-off two-row path,
 diagnostic and independent comparison are implemented. Actual-weight full F32
@@ -112,15 +112,44 @@ found one-draft 118.7 ms faster than normal Align on bug fix but 407.1 ms
 slower than three-draft; function and test-writing regressed against normal
 Align. All output IDs matched. Keep one-draft diagnostic only; do not replace
 three-draft or enable either for product. Raw receipts are in `eval/benchmarks/`.
-Next in priority order: (1) finish owner/format/Python-boundary verification,
-review, exact-head preflight and publication of this bounded negative result;
-(2) test a lookup-evidence/target-cost group-selection hypothesis against the
-same workload; (3) complete connected stepwise state and forced-failure checks
-before any product admission. Other Metal generations, CUDA, Q4_1 down,
-five-row verification and Gemma remain unmeasured/deferred in
-`docs/backend-parity.md`.
-No ggml source patch is proposed. A local target win alone did not establish
-the measured request effect.
+The Python boundary guard, formatting, real-model owner, exact-head preflight,
+one comprehensive review with an accepted fixture-hash repair and all three
+hosted checks passed. Review and check evidence are on PR #323. An offline
+three-token-only lookup replay still found early rejected groups on the
+function and test-writing inputs, so it did not support a new fixed admission
+rule; this was not a timed model run.
+
+Current branch `agent/qwen35-target-greedy-cost-screen` starts from merged
+`main` at `273f500e`. Its narrow plan is
+`docs/specs/qwen35-target-greedy-cost-screen.md`; the result is in
+`docs/qwen35-target-native-greedy-trial.md`. The independent two-dispatch
+Metal argmax passed actual four-row F32, tie/nonfinite/tail checks and saved
+0.289 ms paired median against C++ copy/scan locally, including its wait.
+Align's own scan was 0.311–0.321 ms without readback. The default-off
+`trialnative` route now borrows the real output through a checked shim ABI,
+returns only four IDs, and leaves ggml source unpatched. Three coding prompts
+each had five alternating fresh-process pairs against normal Align, old
+three-draft Align and pinned llama.cpp in two campaigns. Repeated first-group
+accept/reject, short, EOG and invalid requests matched pinned IDs. The later
+campaign and same-session ten-pair bug-fix run had substantial system noise;
+the user reported that other software may have been running. The connected
+boundary does not show a reliable win after the extra Metal command and wait. Keep this route
+developer-only; no product adoption or general llama.cpp victory is claimed.
+
+Next in priority order: (1) when the M1 is otherwise idle, rerun the pinned
+five-pair request campaign and same-session bug-fix pairs with the final
+binary, preserving all outcomes; (2) complete exact-head preflight and
+publication of this negative/uncertain trial; (3)
+test a larger fused device boundary or shared state-copy command only with a
+new measured cost hypothesis. Connected stepwise state and injected target
+failures remain required before any lookup product admission. Other Metal
+generations, CUDA, Q4_1 down, five-row verification and Gemma remain
+unmeasured/deferred in `docs/backend-parity.md`.
+The narrow real-model repeated-request owner, independent local benchmark,
+real/stub shim builds, `run-ggml-spike-smoke`, Python boundary guard and
+formatting passed. One `codex review --uncommitted` at session
+`01a0e7ec-fd86-7e51-ba60-ceadaeadb260` found no actionable bugs; only the
+later wording of possible host interference changed after review.
 
 ## Completed native Metal Q4_0 complete-FFN capture screen (2026-09-28)
 

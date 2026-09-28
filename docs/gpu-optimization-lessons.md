@@ -455,6 +455,20 @@ recent acceptance as possible selectors to test in a whole request; the
 three prompts cannot qualify a general rule, and four-draft/five-row timing
 is still unmeasured.
 
+The [independent four-row Metal argmax trial](qwen35-target-native-greedy-trial.md)
+exposes a different limit. A standalone two-dispatch reduction over actual
+2B F32 logits saved about 0.29 ms per four rows against a C++ copy plus
+scalar scan, including command completion. Align's own CPU scan was about
+0.31 ms without the 4 MB readback. In the connected graph, the old readback
+and the new native command each cost about 1 ms per group on the repeated
+bug-fix request; the native command also includes the greedy selection.
+Whole-request pairs were mixed, with later samples possibly affected by other host
+software, so the local C++ control did not establish a request gain. Keep
+the CPU implementation and its actual readback
+separate when estimating a Metal boundary. An extra command and wait can
+consume a byte-saving win even on unified memory; a larger fused device
+boundary is the next hypothesis if this path is revisited.
+
 ## Decision pattern
 
 1. State a mechanism in bytes, work, or synchronization and define a reversible

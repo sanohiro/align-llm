@@ -17,6 +17,7 @@ import std.time
 GeometryPath { path: string }
 
 Receipt {
+  arm: string,
   token_ids: array<i64>,
   elapsed_ns: i64,
   lookup_attempts: i64,
@@ -31,6 +32,7 @@ Receipt {
   graph_build_ns: i64,
   target_compute_ns: i64,
   target_readback_ns: i64,
+  target_native_greedy_ns: i64,
 }
 
 fn copy_ids(borrow ids: array<i64>) -> array<i64> {
@@ -67,18 +69,25 @@ fn run_trial(borrow mut session: runtime_qwen35_generation.Session,
     return runtime_qwen35_generation.generate_session_lookup_trial_one(
       session, prompt, eog, max_tokens)
   }
+  if mode == "trialnative" {
+    return runtime_qwen35_generation.generate_session_lookup_trial_native_greedy(
+      session, prompt, eog, max_tokens)
+  }
   return runtime_qwen35_generation.generate_session_lookup_trial(
     session, prompt, eog, max_tokens)
 }
 
 pub fn main(args: array<str>) -> Result<(), Error> {
   if args.len() != 10 || (args[8] != "normal" && args[8] != "trial"
-      && args[8] != "trial1") {
+      && args[8] != "trial1" && args[8] != "trialnative"
+      && args[8] != "pairnative") {
     return Err(Error.Invalid)
   }
   max_tokens: i64 := json.decode(args[7])?
   repeats: i64 := json.decode(args[9])?
-  if max_tokens < 1 || max_tokens > 256 || repeats < 1 || repeats > 10 {
+  if max_tokens < 1 || max_tokens > 256 || repeats < 1
+    || (args[8] == "pairnative" && repeats != 22)
+    || (args[8] != "pairnative" && repeats > 10) {
     return Err(Error.Invalid)
   }
   prompt: array<i64> := json.decode(fs.read_file(args[5])?)?
@@ -116,9 +125,18 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   mut count := 0
   loop {
     if count >= repeats { break }
+    mut arm := args[8]
+    if args[8] == "pairnative" {
+      if count < 2 {
+        arm = if count == 0 { "trial" } else { "trialnative" }
+      } else {
+        pair := (count - 2) / 2
+        arm = if (count - 2) % 2 == pair % 2 { "trial" } else { "trialnative" }
+      }
+    }
     started := time.instant()
-    if args[8] != "normal" {
-      result := match run_trial(session, prompt, eog, max_tokens, args[8]) {
+    if arm != "normal" {
+      result := match run_trial(session, prompt, eog, max_tokens, arm) {
         Ok(value) => value,
         Err(error) => {
           fault := ggml_ffi.gpu_last_failure()
@@ -132,6 +150,7 @@ pub fn main(args: array<str>) -> Result<(), Error> {
       }
       elapsed := time.instant() - started
       receipts.push(Receipt {
+          arm: arm.clone(),
           token_ids: copy_ids(result.token_ids), elapsed_ns: elapsed,
           lookup_attempts: result.stats.lookup_attempts,
           draft_hits: result.stats.draft_hits,
@@ -145,17 +164,19 @@ pub fn main(args: array<str>) -> Result<(), Error> {
           graph_build_ns: result.stats.graph_build_ns,
           target_compute_ns: result.stats.target_compute_ns,
           target_readback_ns: result.stats.target_readback_ns,
+          target_native_greedy_ns: result.stats.target_native_greedy_ns,
         })
     } else {
       ids := runtime_qwen35_generation.generate_session(session, prompt, eog, max_tokens)?
       elapsed := time.instant() - started
       receipts.push(Receipt {
+          arm: arm.clone(),
           token_ids: copy_ids(ids), elapsed_ns: elapsed,
           lookup_attempts: 0, draft_hits: 0, verify_groups: 0,
           complete_groups: 0, discarded_groups: 0, generated_drafts: 0,
           prefill_ns: 0, serial_decode_ns: 0,
           lookup_ns: 0, graph_build_ns: 0,
-          target_compute_ns: 0, target_readback_ns: 0,
+          target_compute_ns: 0, target_readback_ns: 0, target_native_greedy_ns: 0,
         })
     }
     count = count + 1
