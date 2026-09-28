@@ -2,11 +2,11 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active current Metal speed and bottleneck qualification (2026-09-28)
+## Completed current Metal speed and bottleneck qualification (2026-09-28)
 
-Branch `agent/qwen35-current-bottleneck` starts from merged `main` at
-`d67e224a` (PR #315). The production source closure is unchanged since PR
-#312. A fresh same-binary Qwen3.5-2B M1 campaign completed five uninstrumented
+Branch `agent/qwen35-current-bottleneck` merged as PR #316 at `29398bda`.
+The production source closure is unchanged since PR #312. A fresh same-binary
+Qwen3.5-2B M1 campaign completed five uninstrumented
 alternating pairs at 64/16, 200/32 and 330/64: the already qualified mixed
 native state-copy mode beat ordinary Align and pinned llama.cpp in all 15
 pairs against each. Its isolated complete-FFN candidate remains outside the
@@ -18,30 +18,57 @@ The old schema-2 phase caller summed native waits from three requests; the
 corrected caller now validates each request-local diagnostic log span, and
 historical-receipt caveats are in this branch. A final five-pair real-model
 phase rerun passed with matching outputs and phase containment. One
-comprehensive review found the cross-request wait-count loophole; the focused
-repair and synthetic regression passed, along with the strict Python boundary
-guard and its mutation suite. Next: commit the repair, run exact-head preflight,
-publish/merge the measurement correction, then refresh main and start the
-Align-owned resident Metal execution-plan consumer below. Other Metal hosts,
-CUDA and Gemma remain deferred as registered in `docs/backend-parity.md`.
+comprehensive review found the cross-request wait-count loophole; repair
+`56278136`, synthetic regression, strict Python boundary guard and mutation
+suite passed. Exact-head preflight and all three CI checks passed. The review
+envelope and check evidence are on PR #316. Other Metal hosts, CUDA and Gemma
+remain deferred as registered in `docs/backend-parity.md`.
 
-## Next Align-owned native Metal execution-plan consumer (2026-09-28)
+## Active GPU weight-reuse investigation (2026-09-28)
 
-Start from merged `main` after this measurement. GPU optimization remains the
-priority. The complete
-Q4_0 FFN kernel is locally faster, but Qwen3.5 currently builds all 24 layers
-as one ggml graph and `align_gpu_graph_compute` calls synchronous
-`ggml_backend_graph_compute`. Per-FFN graph partition with a host wait loses
-more than the kernel saves. Next: settle the smallest Align-owned resident
-Metal plan that can keep dependent operations queued, with model semantics and
-selection in Align and only device kernels/minimal ABI in native code. Before
-writing Align source, inspect the relevant checked-in Align language examples
-and compiler tests. Then implement a real captured 2B FFN consumer with
-explicit buffer ownership and checked completion; expand the ownership unit
-toward real decode rather than adding a permanent ggml patch. The existing
-ggml graph remains the rollback. Do not claim a request gain until full
-logits/state and prefill/decode/request comparisons pass. Other Metal hosts,
-CUDA, Q4_1 down and Gemma remain deferred.
+Branch `agent/native-metal-resident-execution` starts from merged `main` at
+`29398bda`. The independent final-layer Q4_0 FFN was actually connected to
+the 2B decode graph in a developer interposer with three boundary modes;
+`docs/qwen35-native-final-ffn-connected-screen.md`, the checked-in probe and
+three raw paired receipts record the result. Five real decode shadow steps
+passed the existing local numeric bound; three retained requests per arm
+matched generated output/counts at 64/16, 200/32 and 330/64. Fresh secondary
+Metal views won 0/15 pairs, direct pinned-buffer borrowing won 1/15, and
+GPU-event ordering won 1/15, with adverse long-condition results. A shared
+counter verified every FFN substitution in each request, including the timed
+third request; the original unchecked-count receipts were superseded. The FFN-only
+substitution is withdrawn. No product runtime or ggml source was changed;
+complete logits/state and fault injection were not qualified for this
+discarded diagnostic. The probe found actual FFN input/gated allocation
+aliasing and stale reads from a cached secondary workspace Metal view; direct
+borrowing restored correctness on M1 but relies on pinned ggml internals.
+
+Next in priority order: (1) finish the focused developer probe/docs checkpoint
+and verify its boundary and publication checks; (2) measure an actual
+multi-token target pass and Qwen3.5 DeltaNet/KV acceptance-prefix transaction
+before proposing speculative verification in normal Align generation;
+(3) only if target-plus-draft time and state rollback support it, implement a
+default-off Align-owned consumer with exact output/state qualification against
+ordinary generation. The existing mixed native copy graph is the comparison
+and rollback. A one-layer graph split is not a further optimization candidate
+without a new scheduling/byte mechanism. Q4_0/Q6_K weight traffic remains the
+decode target, not a claimed hardware ceiling. Other Metal hosts, CUDA,
+Q4_1 down and Gemma remain deferred as registered in backend parity.
+
+The first target-batch feasibility screen is also complete in this branch:
+`docs/qwen35-target-batch-feasibility.md`, a real-model 200-token three-arm
+caller and an actual 417 MB Q6_K head probe record five pairs each at
+4/8/16 longer prompt lengths. The longer prompts share only the first 191
+token IDs with the base because the chat-template suffix moves, so this is
+a shape-cost comparison rather than an exact target continuation.
+Final-logit-only long-prefill deltas were
+2.562/2.400/6.684 ms versus 121.676/230.490/438.319 ms serial decode;
+batched Q6_K head projections beat serial in 5/5 pairs for every K while
+all complete rows passed the declared local numerical bound and greedy
+choice. This is feasibility evidence only: it omits the other
+complete-model target logit rows, a draft, acceptance and rollback. The next
+implementation step is an Align-owned multi-row target graph and exact
+state-transaction owner, with the cost ceiling in the performance plan.
 
 ## Completed native Metal Q4_0 complete-FFN capture screen (2026-09-28)
 

@@ -354,6 +354,40 @@ cost attribution. Its 3.7–8.0 ms graph differences cannot be adopted as an
 inference optimization. See
 [`qwen35-decode-attribution.md`](qwen35-decode-attribution.md).
 
+The [connected final-layer FFN screen](qwen35-native-final-ffn-connected-screen.md)
+put the locally faster independent Q4_0 FFN into real 2B decode requests.
+The graph allocator reused the F32 FFN input allocation for the ggml gated
+output; an in-place native fusion corrupted it, so the connected kernel needed
+24 KiB of separate gated scratch. A second cached Metal view of the ggml
+workspace also produced stale values on later decodes in this setup; fresh
+views or direct borrowing of the original pinned Metal buffer restored local
+numeric agreement. This is a concrete alias/visibility trap when crossing
+independently managed Metal resources, not evidence that shared physical
+memory removes ownership and ordering work. Direct borrowing cut the
+fresh-view campaign's request loss, and GPU events removed intermediate CPU
+waits, but the final-layer-only candidate lost at all three conditions in a
+campaign that verified each request's native substitution count. The isolated
+0.057–0.068 ms FFN win was too
+small for this boundary. A larger native unit needs owned buffer lifetimes
+and explicit GPU dependencies; a pinned ggml internal buffer/event ABI is
+useful for a reversible diagnostic bridge, not a portable engine contract.
+
+The [target-batch feasibility screen](qwen35-target-batch-feasibility.md)
+shows a different mechanism from a faster single-token kernel. On the M1
+2B worker, lengthening related prompts by 4/8/16 tokens cost
+only 2.562/2.400/6.684 ms at paired medians when the graph emitted only its
+last logit row; generating those tokens serially cost
+121.676/230.490/438.319 ms. The longer prompts share only 191 initial token
+IDs with the base, so these figures compare processing shapes and do not bound
+an exact target continuation. The existing Q6_K output head also computed
+4/8/16 captured activation rows together in 10.722/20.974/18.980 ms,
+versus 29.098/58.376/117.108 ms serially, with complete numerical and
+greedy checks. Thus weight reuse across token columns is real for the head
+and plausibly valuable for the full graph. The prefill screen omits the
+other target logit rows, and neither screen includes draft cost or safe
+DeltaNet/KV state acceptance. Keep these as feasibility evidence until a
+multi-row target graph and transactional state prove an actual request win.
+
 ## Decision pattern
 
 1. State a mechanism in bytes, work, or synchronization and define a reversible

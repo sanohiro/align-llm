@@ -1,5 +1,16 @@
 # Python execution-boundary audit
 
+`scripts/measure-metal-q4-final-ffn-request` is `BENCHMARK_OR_MEASUREMENT`:
+it starts explicit real-model Align workers with a developer-only Metal
+interposer, verifies token IDs, generated text and actual work, and records
+alternating request timings. It neither builds a product graph nor computes
+model values; normal inference never invokes it.
+`scripts/measure-qwen35-target-batch-bound` is also
+`BENCHMARK_OR_MEASUREMENT`: it compares explicit real-model prefill and decode
+workloads as a target-batch shape-cost screen; the longer prompts are not exact
+token-ID continuations of the base. It does not perform draft
+selection, token acceptance or product inference.
+
 `scripts/run-qwen35-native-conv-copy-smoke` is `INDEPENDENT_ORACLE`: it drives
 explicit real-model Align workers, compares diagnostic hashes of complete
 logits and resident state between selectable native modes, and checks invalid
