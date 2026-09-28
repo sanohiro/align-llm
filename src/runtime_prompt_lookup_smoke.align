@@ -1,0 +1,35 @@
+module runtime_prompt_lookup_smoke
+
+import runtime_generation
+import core.json
+import std.fs
+import std.time
+
+LookupResult { match_length: i64, draft: array<i64>, lookup_ns: i64 }
+
+pub fn main(args: array<str>) -> Result<(), Error> {
+  if args.len() != 3 || (args[2] != "3" && args[2] != "4") {
+    return Err(Error.Invalid)
+  }
+  history: array<i64> := json.decode(fs.read_file(args[1])?)?
+  if history.len() < 1 || history.len() > 2175 { return Err(Error.Invalid) }
+  mut at := 0
+  loop {
+    if at >= history.len() { break }
+    if history[at] < 0 { return Err(Error.Invalid) }
+    at = at + 1
+  }
+  k := if args[2] == "3" { 3 } else { 4 }
+  started := time.instant()
+  mut draft: array_builder<i64> := array_builder()
+  mut match_length := 0
+  if runtime_generation.prompt_lookup_draft(history, 3, k, draft) == k {
+    match_length = 3
+  } else if runtime_generation.prompt_lookup_draft(history, 2, k, draft) == k {
+    match_length = 2
+  }
+  elapsed := time.instant() - started
+  result := LookupResult { match_length: match_length, draft: draft.build(), lookup_ns: elapsed }
+  print(json.encode(result)?)
+  return Ok(())
+}

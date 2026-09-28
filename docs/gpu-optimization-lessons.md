@@ -424,6 +424,19 @@ a real cheap draft and consider shorter/adaptive groups before product
 integration; no local four-row speed result can stand in for accepted-token
 throughput.
 
+The [coding prompt lookup screen](qwen35-lookup-draft-screen.md) makes the
+draft source concrete. Three completed n-gram drafts after one already
+selected token took about 0.5–0.6 microseconds to look up in the tested
+histories, but their quality varied sharply across real continuations:
+complete matches were 12/16 for one bug fix, 3/18 for a function and 1/16
+for tests. Six real-prefix GPU cases confirmed a complete-group gain of
+roughly 62–64 ms and a first-draft mismatch loss of roughly 52 ms, each with
+five paired measurements and committed-state checks. A cheap draft can still
+lose when it creates expensive rejected target work. Treat match-length and
+recent acceptance as possible selectors to test in a whole request; the
+three prompts cannot qualify a general rule, and four-draft/five-row timing
+is still unmeasured.
+
 ## Decision pattern
 
 1. State a mechanism in bytes, work, or synchronization and define a reversible

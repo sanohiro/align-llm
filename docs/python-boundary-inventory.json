@@ -3773,6 +3773,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/measure-qwen35-lookup-draft",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Checks Align-owned prompt n-gram draft outputs against an independent recorded-token oracle, counts available and accepted groups, and measures selected actual GGUF acceptance groups with alternating Align graph arms.",
+      "reachability": "Focused developer measurement only; runs explicit Align smoke binaries and never participates in normal product execution.",
+      "substitution": "The Python acceptance calculation chooses and validates test cases; Align owns draft generation and real-model acceptance, graph execution, rollback and state publication.",
+      "python_reason": "Independent fixture validation, numerical comparison and paired measurement are test-side responsibilities.",
+      "target": "Retain as a reproducible draft-source and connected-cost screen; product speculation remains a separate Align-owned capability.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/measure-qwen35-lookup-draft --help; real 2B Metal campaign; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/measure-qwen35-target-acceptance",
       "classification": "BENCHMARK_OR_MEASUREMENT",
       "behavior": "Runs five explicit real-model first-mismatch cases through Align batched-target and serial-acceptance diagnostic arms, independently compares selected and next logits plus valid active state under predeclared bounds, and records alternating timing.",

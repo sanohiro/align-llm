@@ -52,24 +52,30 @@ The review found overly restrictive oracle checks, repaired and verified with
 a non-greedy fixture. Exact-head preflight and all three CI checks passed.
 See `docs/qwen35-target-continuation-screen.md` and its raw receipt.
 
-Current branch `agent/qwen35-target-acceptance` starts from `7c13f7be`.
-The developer-only Align acceptance/replay diagnostic and matching serial
-control now compile with pinned Align. Real 2B M1 five-case, five-pair
-measurement is complete: all-four acceptance gained 62.325 ms paired median
-and won 5/5; mismatch after 0/1/2/3 accepted tokens lost
-55.630/55.299/53.667/56.229 ms, each 0/5. Complete selected/next logits,
-valid KV and active recurrent state met the predeclared bounds; rejection
-cases had exact value-level active state and next logits. A forced timed replay
-failure published no output. See `docs/qwen35-target-acceptance-screen.md`
-and `eval/benchmarks/qwen35-target-acceptance-2026-09-28.json`.
-Next in priority order: (1) finish owner checks, review and merge the
-acceptance-state screen; (2) measure a genuinely cheap draft and acceptance
-distribution on representative coding requests, including group length;
-(3) compare a default-off product trial only if the draft economics justify
-it, against current mixed-native Align and pinned llama.cpp with correctness,
-request time and memory. Another Metal generation, CUDA, Q4_1 down and Gemma
-remain deferred with reasons in `docs/backend-parity.md`. No ggml source
-patch is proposed. Neither local screen is a speculative request win.
+PR #320 merged the developer-only Align acceptance/replay diagnostic at
+`b66c3f7b`. The real 2B M1 five-case, five-pair screen found all-four
+acceptance gained 62.325 ms paired median; rejection after 0/1/2/3 accepted
+tokens lost 55.630/55.299/53.667/56.229 ms. Selected/next logits, valid
+KV and active recurrent state met predeclared bounds, and a forced replay
+failure published no output. See `docs/qwen35-target-acceptance-screen.md`.
+
+Current branch `agent/qwen35-lookup-draft-screen` starts from merged `main`
+`b66c3f7b`. It adds Align-owned bounded n-gram lookup, a developer-only
+entrypoint and three coding-prompt fixture streams. The real 2B M1 campaign
+found complete three-draft groups in 3/18 function, 12/16 bug-fix and 1/16
+test-writing attempts. Six real-prefix cases, each five alternating pairs,
+found complete-group gains of 62.0–63.5 ms and immediate-mismatch losses of
+52.0–52.3 ms, with all selected/next logits and committed-state checks
+passing. Lookup took 0.50–0.58 microseconds median over the visited short
+histories. See `docs/qwen35-lookup-draft-screen.md` and its raw receipt.
+Next in priority order: (1) finish this capability's owner checks, review,
+preflight and merge; (2) build a default-off continuous Align generation
+trial with bounded one-mismatch backoff, then measure complete requests
+against current mixed-native Align and pinned llama.cpp; (3) if the trial
+loses, test a smaller/adaptive group or withdraw lookup for that workload.
+Other Metal generations, CUDA, Q4_1 down, five-row verification and Gemma
+remain unmeasured/deferred in `docs/backend-parity.md`. No ggml source patch
+is proposed. The local screens do not claim a speculative request win.
 
 ## Completed native Metal Q4_0 complete-FFN capture screen (2026-09-28)
 
