@@ -468,6 +468,11 @@ the CPU implementation and its actual readback
 separate when estimating a Metal boundary. An extra command and wait can
 consume a byte-saving win even on unified memory; a larger fused device
 boundary is the next hypothesis if this path is revisited.
+In the lower-load final-binary rerun, fresh-process old-trial minus native
+medians were only +0.3/+1.5/-3.1 ms for function/bug-fix/tests, and a
+reused-session bug-fix comparison was -7.8 ms over ten pairs. The connected
+boundary cost varied between process reuse patterns. Do not select a kernel
+from a local copy/scan control without a connected same-session comparison.
 
 ## Decision pattern
 

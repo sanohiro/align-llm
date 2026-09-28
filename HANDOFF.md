@@ -136,10 +136,15 @@ the user reported that other software may have been running. The connected
 boundary does not show a reliable win after the extra Metal command and wait. Keep this route
 developer-only; no product adoption or general llama.cpp victory is claimed.
 
-Next in priority order: (1) when the M1 is otherwise idle, rerun the pinned
-five-pair request campaign and same-session bug-fix pairs with the final
-binary, preserving all outcomes; (2) complete exact-head preflight and
-publication of this negative/uncertain trial; (3)
+After the user stopped the heaviest other software, a final-binary
+lower-load campaign repeated all three prompts with five alternating pairs
+per control. Old trial minus native medians were +0.3/+1.5/-3.1 ms for
+function/bug-fix/tests; a ten-pair reused-session bug-fix run gave -7.8 ms,
+native 3/10 wins. All IDs matched. The full receipts are in
+`eval/benchmarks/`; the connected effect is too small and inconsistent for
+product adoption. Next in priority order: (1) rerun exact-head preflight
+after this receipt/documentation amendment and publish the negative/uncertain
+trial; (2)
 test a larger fused device boundary or shared state-copy command only with a
 new measured cost hypothesis. Connected stepwise state and injected target
 failures remain required before any lookup product admission. Other Metal

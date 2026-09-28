@@ -7,8 +7,10 @@ Do not adopt it for product generation. The independent Metal reduction is
 correct on the measured Qwen3.5-2B Q4_0 requests, but its connected command
 and wait are not repeatably faster than the old readback and Align CPU scan.
 Fresh-process whole-request comparisons varied substantially across two
-campaigns, and the final same-session bug-fix comparison lost 6/10 pairs
-while other software may have been active on the host.
+campaigns while other software may have been active. After the user stopped
+the heaviest other application, the final-binary rerun found only a small
+mixed effect against the old trial, and the same-session bug-fix comparison
+lost 7/10 pairs.
 The existing three-draft trial and ordinary generation remain available.
 
 Align owns the target graph, lookup, acceptance, rollback, session and token
@@ -103,7 +105,7 @@ greedy selection; the former excludes Align's CPU scan. On the second, the
 respective costs were 6.34 and 8.68 ms. Prefill and target compute were
 similar within each campaign; serial decode varied with host conditions.
 
-The [final same-session bug-fix receipt](../eval/benchmarks/qwen35-target-native-greedy-session-bugfix-2026-09-28.json)
+The [interference-affected same-session bug-fix receipt](../eval/benchmarks/qwen35-target-native-greedy-session-bugfix-2026-09-28.json)
 contains one warmup request per arm followed by ten pairs in alternating
 order on a reused session, with all 22 outputs matching the pinned stream.
 Its old-trial minus native generation median was **-151.7 ms**, with native
@@ -130,9 +132,46 @@ failures have not been run on this connected path; they remain required
 before product adoption. Other Metal generations, CUDA, other Qwen sizes
 and Gemma are unmeasured.
 
-Before another adoption decision, rerun the same-binary five-pair request
-campaign and the reused-session pairs while the host is otherwise idle,
-keeping all pair samples and confirming the target boundary attribution.
+## Lower-load final-binary rerun
+
+After the heaviest other software stopped, the
+[fresh-process receipt](../eval/benchmarks/qwen35-target-native-greedy-connected-quieter-2026-09-28.json)
+used the final diagnostic SHA-256
+`394b3a9fd0339754574beba5f1303c55db088985eaca05d6379b9d6d9256a555`
+and the same GGUF, options, prompt IDs, generated IDs and five-pair alternating
+protocol. The [reused-session receipt](../eval/benchmarks/qwen35-target-native-greedy-session-bugfix-quieter-2026-09-28.json)
+used that exact binary and shim with one warmup per arm and ten alternating
+pairs. All outputs matched the pinned stream. This is a lower-load rerun;
+the host was not reserved exclusively, and iTerm/WindowServer still had
+background CPU activity.
+
+| Prompt/output | Normal Align − native generation | Old trial − native generation | llama.cpp − native generation | llama.cpp − native fresh-process wall |
+| --- | ---: | ---: | ---: | ---: |
+| Function 61/96 | -7.8 ms; 1/5 | +0.3 ms; 3/5 | +226.9 ms; 5/5 | -249.8 ms; 0/5 |
+| Bug fix 99/75 | +466.1 ms; 5/5 | +1.5 ms; 4/5 | +643.2 ms; 5/5 | +172.8 ms; 5/5 |
+| Tests 72/96 | -46.8 ms; 1/5 | -3.1 ms; 1/5 | +137.3 ms; 5/5 | -450.4 ms; 0/5 |
+
+These are loaded-generation paired medians except the last wall column.
+The native route's large bug-fix gain against normal Align belongs to the
+preexisting target lookup path; the new argmax changes that trial by only
+about 1.5 ms in these fresh processes. At 11 bug-fix groups, old F32
+readback cost 4.69 ms median and native reduction with command completion
+cost 6.38 ms; old CPU greedy scans are additional. Target compute medians
+were 501.17 and 500.49 ms, prefill 236.70 and 235.83 ms, and serial decode
+855.64 and 857.22 ms for old and native respectively. Startup/load medians
+were 982.13 and 949.45 ms in that comparison; the separate process wall
+timer includes loading and is not a cached-session result.
+
+The lower-load same-session bug-fix run gave old-trial minus native generation
+**-7.8 ms** paired median, with native winning 3/10 pairs. Old readback
+was 4.69 ms median across 11 groups; native command and wait was 9.67 ms.
+The five fresh-process pairs and ten reused-session pairs therefore disagree
+on the sign of a few-millisecond whole-request effect, while neither shows
+a robust native improvement. This closes the current adoption question:
+retain only the explicit experiment. A future combined state-copy/greedy
+command or larger fused target execution unit needs its own local and
+connected trial.
+
 The reusable part is the shape/width-driven finite first-index reduction,
 checked shared-buffer borrowing and Align-owned selection/rollback boundary.
 Qwen/Gemma model semantics and graph construction remain architecture
