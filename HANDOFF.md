@@ -119,8 +119,8 @@ three-token-only lookup replay still found early rejected groups on the
 function and test-writing inputs, so it did not support a new fixed admission
 rule; this was not a timed model run.
 
-Current branch `agent/qwen35-target-greedy-cost-screen` starts from merged
-`main` at `273f500e`. Its narrow plan is
+PR #324 merged the independent target-greedy cost screen into `main` at
+`5edb39a7`. Its narrow plan is
 `docs/specs/qwen35-target-greedy-cost-screen.md`; the result is in
 `docs/qwen35-target-native-greedy-trial.md`. The independent two-dispatch
 Metal argmax passed actual four-row F32, tie/nonfinite/tail checks and saved
@@ -142,11 +142,8 @@ per control. Old trial minus native medians were +0.3/+1.5/-3.1 ms for
 function/bug-fix/tests; a ten-pair reused-session bug-fix run gave -7.8 ms,
 native 3/10 wins. All IDs matched. The full receipts are in
 `eval/benchmarks/`; the connected effect is too small and inconsistent for
-product adoption. Next in priority order: (1) rerun exact-head preflight
-after this receipt/documentation amendment and publish the negative/uncertain
-trial; (2)
-test a larger fused device boundary or shared state-copy command only with a
-new measured cost hypothesis. Connected stepwise state and injected target
+product adoption. Exact-head preflight, the clean review, all three hosted
+checks and merge completed on PR #324. Connected stepwise state and injected target
 failures remain required before any lookup product admission. Other Metal
 generations, CUDA, Q4_1 down, five-row verification and Gemma remain
 unmeasured/deferred in `docs/backend-parity.md`.
@@ -155,6 +152,30 @@ real/stub shim builds, `run-ggml-spike-smoke`, Python boundary guard and
 formatting passed. One `codex review --uncommitted` at session
 `01a0e7ec-fd86-7e51-ba60-ceadaeadb260` found no actionable bugs; only the
 later wording of possible host interference changed after review.
+
+Current branch `agent/qwen35-q6-small-batch-head-screen` starts from merged
+`main` at `5edb39a7`. After the user stopped the heaviest other application,
+one more 10-pair reused-session bug-fix run of the final #324 binary matched
+all 22 output streams but split 5/10 wins; old trial minus native generation
+was +5.6 ms paired median. During this run iTerm still used about one CPU core,
+and Spotlight/loginwindow were intermittently active. The retained receipt is
+`eval/benchmarks/qwen35-target-native-greedy-session-post-app-stop-2026-09-28.json`;
+it is additional noisy evidence, not a new native-greedy speed claim. The
+independent Q6_K four-activation local screen defined in
+`docs/specs/gpu-runtime-performance.md` is implemented and measured. On the
+actual 417 MB Q6_K output head, every complete and 257-row tail output met
+the predeclared bound and greedy choices matched, but the independent Metal
+kernel lost four of five local pairs to pinned ggml after warmup; median
+ggml-minus-native completed wall was -0.708 ms. A command trace also found a
+-0.746 ms GPU-interval median. The fourth activation repeats the first of
+three real-model captures. Receipts and verdict are in
+`docs/qwen35-q6-batch4-screen.md`. Do not connect this mapping to a real
+request; it has no local advantage to cover an extra graph boundary. The
+next actions are one stable-candidate review and exact publication preflight,
+then a GPU hypothesis that reduces a larger connected execution boundary or
+improves the small-batch dequant/lane mapping by a measured margin. Preserve
+the existing ggml route as control. Other Metal hosts, CUDA and Gemma remain
+unmeasured or deferred in `docs/backend-parity.md`.
 
 ## Completed native Metal Q4_0 complete-FFN capture screen (2026-09-28)
 

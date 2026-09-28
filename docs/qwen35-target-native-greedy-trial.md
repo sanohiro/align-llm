@@ -172,6 +172,17 @@ retain only the explicit experiment. A future combined state-copy/greedy
 command or larger fused target execution unit needs its own local and
 connected trial.
 
+A later [reused-session follow-up](../eval/benchmarks/qwen35-target-native-greedy-session-post-app-stop-2026-09-28.json)
+after the user stopped the heaviest other application retained ten more
+alternating bug-fix pairs from the same final binary and shim. All 22 warmup
+and measured requests matched the pinned token stream. Old trial minus native
+generation had a +5.6 ms paired median, but native won only 5/10 pairs. Across
+the eleven target groups, the old F32 readback had a 9.68 ms median and the
+native command plus wait 18.38 ms; these are per-request sums and exclude the
+old Align CPU scan. iTerm still used about one CPU core and Spotlight or login
+services were intermittently active. This follow-up changes neither the
+uncertainty nor the default-off decision.
+
 The reusable part is the shape/width-driven finite first-index reduction,
 checked shared-buffer borrowing and Align-owned selection/rollback boundary.
 Qwen/Gemma model semantics and graph construction remain architecture
