@@ -59,8 +59,21 @@ fn open_observed(options: runtime_options.RuntimeOptions) -> Result<ggml_ffi.Gpu
   }
 }
 
+fn run_trial(borrow mut session: runtime_qwen35_generation.Session,
+  borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
+  mode: str,
+) -> Result<runtime_qwen35_generation.LookupTrialResult, Error> {
+  if mode == "trial1" {
+    return runtime_qwen35_generation.generate_session_lookup_trial_one(
+      session, prompt, eog, max_tokens)
+  }
+  return runtime_qwen35_generation.generate_session_lookup_trial(
+    session, prompt, eog, max_tokens)
+}
+
 pub fn main(args: array<str>) -> Result<(), Error> {
-  if args.len() != 10 || (args[8] != "normal" && args[8] != "trial") {
+  if args.len() != 10 || (args[8] != "normal" && args[8] != "trial"
+      && args[8] != "trial1") {
     return Err(Error.Invalid)
   }
   max_tokens: i64 := json.decode(args[7])?
@@ -104,9 +117,8 @@ pub fn main(args: array<str>) -> Result<(), Error> {
   loop {
     if count >= repeats { break }
     started := time.instant()
-    if args[8] == "trial" {
-      result := match runtime_qwen35_generation.generate_session_lookup_trial(
-        session, prompt, eog, max_tokens) {
+    if args[8] != "normal" {
+      result := match run_trial(session, prompt, eog, max_tokens, args[8]) {
         Ok(value) => value,
         Err(error) => {
           fault := ggml_ffi.gpu_last_failure()

@@ -26,6 +26,16 @@ speed result. Historical measurements remain in their owning reports.
   complete-request timing together. Loaded-generation wins against llama.cpp
   also need a separate fresh-process wall comparison because model startup can
   reverse the result. See the [continuous lookup trial](qwen35-lookup-continuous-trial.md).
+- Reducing target rows can improve one local graph yet worsen a repeated
+  request by increasing group count. On the same M1 and Qwen3.5-2B fixture,
+  a two-row actual-weight target saved 11.3 ms against two serial steps and
+  passed complete logits/active-state checks. The fixed one-draft request
+  needed 20 successful groups on the bug-fix passage, versus ten for the
+  three-draft route, and was 407.1 ms slower in paired generation. A rejected
+  short-hit group still paid target compute plus serial replay. Treat draft
+  acceptance, per-group cost and group count as one scheduling problem, and
+  compare loaded generation with fresh-process wall separately. See the
+  [one-draft trial](qwen35-lookup-one-draft-trial.md).
 - When a worker repeats requests and times the last one, slice every phase
   clock, completion wait and operation count to that same request. Check that
   phase clocks fit inside its wall interval. The schema-2 Qwen3.5 native phase

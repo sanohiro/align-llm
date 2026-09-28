@@ -3812,6 +3812,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/measure-qwen35-lookup-one-draft",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Alternates complete real-model Qwen3.5 requests through the explicit Align-owned one-draft trial, normal and three-draft controls, and pinned llama.cpp, validating every generated ID and recording phase and process timing receipts.",
+      "reachability": "Focused developer measurement only; invokes diagnostic and reference binaries and never participates in product inference.",
+      "substitution": "Python prepares fixtures, alternates process order and reduces checked receipts; Align owns lookup, target execution, state and generation.",
+      "python_reason": "Independent result comparison and paired timing analysis are measurement responsibilities.",
+      "target": "Retain as a reproducible one-draft trial; no product Python execution path is added.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/measure-qwen35-lookup-one-draft --help; real 2B Metal campaign; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/measure-qwen35-target-acceptance",
       "classification": "BENCHMARK_OR_MEASUREMENT",
       "behavior": "Runs five explicit real-model first-mismatch cases through Align batched-target and serial-acceptance diagnostic arms, independently compares selected and next logits plus valid active state under predeclared bounds, and records alternating timing.",
