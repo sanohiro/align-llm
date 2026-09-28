@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Compare real-model target-batch shapes, not speculative speed."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+
+from gpu_session_client import Session
+
+
+SYSTEM = "You are a coding assistant. Return a concise patch-oriented answer."
+PREFIX = ("List the integers from 1 to 1000 in ascending order, separated "
+          "by single spaces. Output only the integers. ")
+
+
+def sha256(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def prepare(cfg: dict, env: dict, system_path: Path, user_path: Path,
+            count: int) -> tuple[str, list[int]]:
+    repeat = count - 57
+    for _ in range(4):
+        user = PREFIX + "hello " * repeat
+        user_path.write_text(user)
+        ids = json.loads(subprocess.check_output([
+            cfg["candidate"]["binary"], "--prepare-prompt", cfg["model"],
+            str(system_path), str(user_path)], env=env))
+        if len(ids) == count:
+            return user, ids
+        repeat += count - len(ids)
+    raise ValueError(f"failed to prepare {count} prompt IDs")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--pairs", type=int, default=5)
+    args = parser.parse_args()
+    if not 1 <= args.pairs <= 20:
+        parser.error("--pairs must be 1..20")
+    cfg = json.loads(args.config.read_text())
+    worker = cfg["candidate"]
+    for path in (cfg["model"], cfg["pack"], cfg["geometry"],
+                 worker["binary"], worker["options"]):
+        if not Path(path).is_file():
+            raise ValueError(f"missing explicit input: {path}")
+    if not Path(worker["lib"]).is_dir():
+        raise ValueError("missing pinned library directory")
+    env = dict(os.environ, DYLD_LIBRARY_PATH=worker["lib"],
+               ALIGN_LLM_NATIVE_STATE_COPY="1", ALIGN_LLM_NATIVE_CONV_COPY="1",
+               ALIGN_LLM_NATIVE_SWIGLU="0", ALIGN_LLM_PREFILL_CHUNK="128",
+               ALIGN_LLM_PREFILL_FINAL_LOGITS="1")
+    result = {
+        "schema_version": 1,
+        "interpretation": "shape-cost screen only: a longer user message moves the chat-template suffix, so token IDs need not extend the base; one final logit row only; no draft, acceptance, rollback or per-token target logits",
+        "model_sha256": sha256(Path(cfg["model"])),
+        "binary_sha256": sha256(Path(worker["binary"])),
+        "cases": [],
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        system_path = Path(directory) / "system"
+        user_path = Path(directory) / "user"
+        system_path.write_text(SYSTEM)
+        prompts = {n: prepare(cfg, env, system_path, user_path, n)
+                   for n in (200, 204, 208, 216)}
+        for k in (4, 8, 16):
+            common = 0
+            while common < 200 and prompts[200][1][common] == prompts[200+k][1][common]:
+                common += 1
+            case = {"length_difference_tokens": k,
+                    "base_prompt_ids": prompts[200][1],
+                    "long_prompt_ids": prompts[200+k][1],
+                    "common_prefix_tokens": common,
+                    "exact_token_continuation": common == 200,
+                    "pairs": []}
+            arms = ("base", "prefill", "decode")
+            for pair in range(args.pairs):
+                sample = {}
+                order = arms[pair % 3:] + arms[:pair % 3]
+                for arm in order:
+                    prompt_count = 200+k if arm == "prefill" else 200
+                    completion_count = k+1 if arm == "decode" else 1
+                    request = dict(schema_version=1, system=SYSTEM,
+                                   user=prompts[prompt_count][0],
+                                   max_tokens=completion_count,
+                                   temperature=0.0, seed=None)
+                    with Session([worker["binary"], "--runtime-session", cfg["model"],
+                                  cfg["pack"], cfg["geometry"], worker["options"], "0"],
+                                 timeout=180, env=env) as session:
+                        for _ in range(3):
+                            start = time.monotonic_ns()
+                            generated = session.generate(request)
+                            wall_ns = time.monotonic_ns() - start
+                            if (generated["prompt_tokens"], generated["completion_tokens"]) != (prompt_count, completion_count):
+                                raise ValueError("actual token work differs")
+                    sample[arm] = {"wall_ns": wall_ns,
+                                   "prompt_tokens": prompt_count,
+                                   "completion_tokens": completion_count}
+                case["pairs"].append(sample)
+                print(k, pair,
+                      {arm: round(sample[arm]["wall_ns"] / 1e6, 3) for arm in order},
+                      flush=True)
+            for label, left, right in (("extra_prefill_ms", "prefill", "base"),
+                                       ("extra_decode_ms", "decode", "base"),
+                                       ("decode_minus_prefill_ms", "decode", "prefill")):
+                case[label] = statistics.median(
+                    (p[left]["wall_ns"] - p[right]["wall_ns"]) / 1e6
+                    for p in case["pairs"])
+            result["cases"].append(case)
+    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -322,6 +322,77 @@ enable the candidate. Continue with an Align-owned asynchronous schedule or larg
 execution unit that avoids per-FFN host waits. Full conditions and samples
 are in `docs/qwen35-q4-full-ffn-capture-screen.md`.
 
+### Connected final-layer FFN diagnostic and next decode unit (2026-09-28)
+
+The developer-only real-model connection replaced the final decode layer's
+Q4_0 gate/up/SiLU/down sequence with the independent kernel while keeping
+the ggml graph for its producer and consumer. It screened three necessary
+boundary mechanisms: a fresh no-copy shared-buffer view, direct borrowing of
+the pinned ggml Metal buffer, and GPU shared-event ordering with one final
+host synchronization. All used the same model, prompt IDs and mixed native
+state-copy production binary; the original graph was the control. The local
+FFN tolerance remained `0.005 + 0.0005 * abs(reference)`. No product option,
+model schema or ggml source patch was added. For any repeat of this diagnostic,
+admit at most one 24 KiB gated scratch, no second model-weight payload, <=900 s
+per three-condition campaign and <=180 s per request. These are resource and
+time bounds, not improvement thresholds.
+
+The final layer's input and ggml gated output alias in its allocated workspace.
+The native fusion needs separate scratch. A second cached `MTLBuffer` wrapper
+over that workspace returned stale values on subsequent decodes in this
+setup; recreating the wrapper or borrowing ggml's original Metal buffer
+restored local numerical correctness. Five real decode steps passed the
+declared local FFN bound with the direct-buffer variant. Three-request
+generation outputs matched across all 15 paired conditions per mode, but full
+logits/state and fault propagation were not qualified for a product path.
+
+With five alternating pairs at 64/16, 200/32 and 330/64, rewrapping won
+0/5, 0/5 and 0/5; direct borrowing won 0/5, 2/5 and 0/5; GPU events won
+1/5, 3/5 and 0/5, respectively. The event arm's +0.598 ms median at 200/32
+was inside substantial order/host variance and accompanied by losses at the
+other lengths. Withdraw final-layer-only substitution. The pinned private
+Metal buffer/event ABI is diagnostic and cannot be made an implicit permanent
+ggml dependency of a native scheduler. Full receipts, phase limits and
+reproduction commands are in `docs/qwen35-native-final-ffn-connected-screen.md`.
+
+The next decode capability should first screen weight reuse across target
+tokens or an Align-owned unit large enough to amortize graph/queue crossings.
+For speculative verification, before normal generation changes, the owner
+must identify a real draft source and measure accepted tokens per target
+batch, batched target logits, DeltaNet/KV state transaction, rejection replay,
+extra memory and target-plus-draft wall time. Retain exact-output/state
+comparison and ordinary single-token generation as rollback. A cheap local
+batch timing alone is an experiment trigger, not production adoption. Qwen
+and Gemma model semantics remain explicit in Model IR; reusable kernels and
+schedulers select on shape, quantization, activation, layout and device.
+
+The first feasibility screen completed without changing the product graph.
+On the real 2B M1 worker, prompts lengthened by 4/8/16 tokens while emitting
+only the final logit row cost paired medians of +2.562/+2.400/+6.684 ms
+versus a 200/1 base request; generating 4/8/16 tokens by serial decode cost
++121.676/+230.490/+438.319 ms. The longer prompts are not exact token-ID
+continuations of the base: the chat-template suffix moves, leaving only 191
+common initial tokens. These are shape-cost observations, not a formal lower
+bound for verifying the base request's next tokens. On captured actual Q6_K
+output weights and three hidden activations, batched 4/8/16-row head projection beat serial
+one-row projections in all five pairs per shape, with numerical and greedy
+checks passing. These independent screens establish a reason to test an
+actual multi-row target graph; they do not establish speculative inference
+speed or correct state acceptance. Conditions and receipts are in
+`docs/qwen35-target-batch-feasibility.md`.
+
+For that next consumer, cap an initial target group at 16 tokens, add no
+second model-weight payload, and budget at most one additional 16-row F32
+vocabulary result (15,892,480 bytes for this 2B vocabulary) plus explicitly measured
+state transaction storage. Build <=900 s, one paired campaign <=900 s and
+each worker request <=180 s. Select any group size by actual token count,
+quantization/layout and device admission rather than model name. Before
+timing, compare every target logit row under a predeclared bound, exact greedy
+acceptance, complete committed recurrent/KV state after full and partial
+acceptance, repeated requests and rejection fault cleanup. Production
+adoption requires combined target-plus-draft request evidence, not a fixed
+percentage improvement.
+
 ### Final-chunk logits trial (2026-09-26)
 
 Remove unused intermediate-prefill output work on the current 2B consumer. The

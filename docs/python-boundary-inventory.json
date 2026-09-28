@@ -3747,6 +3747,32 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/measure-metal-q4-final-ffn-request",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Independent paired real-model request measurement of an explicit developer-only native Metal final-layer FFN interposer; verifies prompt IDs, output and actual token counts.",
+      "reachability": "Focused developer measurement only; launches an explicit Align binary and never participates in normal product execution.",
+      "substitution": "Selects diagnostic interposer arms and reduces wall clocks; does not implement product inference or choose model tokens.",
+      "python_reason": "Independent alternating process timing and evidence recording remain test-side responsibilities.",
+      "target": "Retain as a reproducible boundary screen; Align owns any future native execution plan.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/measure-metal-q4-final-ffn-request --help; real 2B Metal campaign; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
+      "path": "scripts/measure-qwen35-target-batch-bound",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Independent real-model three-arm paired shape-cost measurement of longer prompts versus serial decode tokens; longer prompts are not exact token-ID continuations, and the screen omits per-token logits and state rollback.",
+      "reachability": "Focused developer measurement only; launches an explicit Align binary and never participates in normal product execution.",
+      "substitution": "Selects fixed benchmark requests and reduces wall clocks; it does not implement a draft model, token acceptance or shipping inference.",
+      "python_reason": "Independent workload timing and evidence recording remain test-side responsibilities.",
+      "target": "Retain as a bounded target-batch feasibility screen; any speculative generation behavior belongs in Align.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/measure-qwen35-target-batch-bound --help; real 2B Metal campaign; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/measure-native-swiglu",
       "classification": "BENCHMARK_OR_MEASUREMENT",
       "behavior": "Independent alternating native SwiGLU and mapped-weight control/candidate/pinned-reference measurement; records all samples and exact text/count parity.",

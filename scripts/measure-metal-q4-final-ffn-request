@@ -1,0 +1,131 @@
+#!/usr/bin/env python3
+"""Developer-only paired request screen for the pinned native FFN interposer."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import statistics
+import subprocess
+import sys
+import tempfile
+import time
+
+from gpu_session_client import Session
+
+
+SYSTEM = "You are a coding assistant. Return a concise patch-oriented answer."
+PREFIX = ("List the integers from 1 to 1000 in ascending order, separated "
+          "by single spaces. Output only the integers. ")
+CASES = ((64, 16), (200, 32), (330, 64))
+
+
+def sha256(path: Path) -> str:
+    with path.open("rb") as stream:
+        return hashlib.file_digest(stream, "sha256").hexdigest()
+
+
+def prompt(cfg: dict, n_prompt: int, system: Path, user: Path, env: dict) -> tuple[str, list[int]]:
+    repetitions = max(1, n_prompt - 57)
+    for _ in range(4):
+        text = PREFIX + "hello " * repetitions
+        user.write_text(text)
+        ids = json.loads(subprocess.check_output(
+            [cfg["candidate"]["binary"], "--prepare-prompt", cfg["model"], str(system), str(user)],
+            env=env))
+        if len(ids) == n_prompt:
+            return text, ids
+        repetitions += n_prompt - len(ids)
+    raise ValueError(f"could not prepare {n_prompt} actual prompt tokens")
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True, type=Path,
+                        help="JSON with model, pack, geometry and candidate binary/options/lib")
+    parser.add_argument("--interposer", required=True, type=Path)
+    parser.add_argument("--mode", required=True, choices=("rewrap", "borrow", "events"))
+    parser.add_argument("--output", required=True, type=Path)
+    parser.add_argument("--pairs", type=int, default=5)
+    args = parser.parse_args()
+    if not 1 <= args.pairs <= 20:
+        parser.error("--pairs must be 1..20")
+    cfg = json.loads(args.config.read_text())
+    worker = cfg["candidate"]
+    for path in (cfg["model"], cfg["pack"], cfg["geometry"], worker["binary"],
+                 worker["options"], args.interposer):
+        if not Path(path).is_file():
+            raise ValueError(f"missing explicit input: {path}")
+    if not Path(worker["lib"]).is_dir():
+        raise ValueError("missing pinned library directory")
+    base = dict(os.environ, DYLD_LIBRARY_PATH=worker["lib"],
+                DYLD_INSERT_LIBRARIES=str(args.interposer.resolve()),
+                ALIGN_LLM_NATIVE_STATE_COPY="1", ALIGN_LLM_NATIVE_CONV_COPY="1",
+                ALIGN_LLM_NATIVE_SWIGLU="0")
+    base["ALIGN_LLM_NATIVE_TAIL_DIRECT"] = "0" if args.mode == "rewrap" else "1"
+    base["ALIGN_LLM_NATIVE_TAIL_ASYNC"] = "1" if args.mode == "events" else "0"
+    result = {
+        "schema_version": 1,
+        "mode": args.mode,
+        "model_sha256": sha256(Path(cfg["model"])),
+        "binary_sha256": sha256(Path(worker["binary"])),
+        "interposer_sha256": sha256(args.interposer),
+        "cases": [],
+    }
+    with tempfile.TemporaryDirectory() as directory:
+        system_path = Path(directory) / "system"
+        user_path = Path(directory) / "user"
+        system_path.write_text(SYSTEM)
+        for n_prompt, n_out in CASES:
+            user, ids = prompt(cfg, n_prompt, system_path, user_path,
+                               dict(os.environ, DYLD_LIBRARY_PATH=worker["lib"]))
+            request = dict(schema_version=1, system=SYSTEM, user=user,
+                           max_tokens=n_out, temperature=0.0, seed=None)
+            case = {"prompt_tokens": n_prompt, "completion_tokens": n_out,
+                    "prompt_ids": ids, "pairs": []}
+            for pair in range(args.pairs):
+                sample = {}
+                order = ("control", "native") if pair % 2 == 0 else ("native", "control")
+                for arm in order:
+                    env = dict(base, ALIGN_LLM_NATIVE_TAIL_DIAGNOSTIC="1" if arm == "native" else "0")
+                    start = time.monotonic_ns()
+                    with Session([worker["binary"], "--runtime-session", cfg["model"],
+                                  cfg["pack"], cfg["geometry"], worker["options"], "0"],
+                                 timeout=180, env=env) as session:
+                        startup = time.monotonic_ns() - start
+                        outputs = []
+                        for _ in range(3):
+                            begin = time.monotonic_ns()
+                            generated = session.generate(request)
+                            wall = time.monotonic_ns() - begin
+                            outputs.append(generated["output"])
+                            if (generated["prompt_tokens"], generated["completion_tokens"]) != (n_prompt, n_out):
+                                raise ValueError("actual work differs from declared work")
+                        if len(set(outputs)) != 1:
+                            raise ValueError(f"{arm} changed output across retained requests")
+                        if arm == "native":
+                            session.log.seek(0)
+                            if b"NATIVE_TAIL calls=" not in session.log.read():
+                                raise ValueError("native FFN interposer did not execute")
+                        sample[arm] = {"startup_ns": startup, "wall_ns": wall,
+                                       "output": outputs[-1]}
+                if sample["control"]["output"] != sample["native"]["output"]:
+                    raise ValueError("native FFN changed generated output")
+                case["pairs"].append(sample)
+                print(n_prompt, n_out, pair,
+                      {arm: round(sample[arm]["wall_ns"] / 1e6, 3) for arm in order},
+                      flush=True)
+            diffs = [(p["control"]["wall_ns"] - p["native"]["wall_ns"]) / 1e6
+                     for p in case["pairs"]]
+            case["median_control_minus_native_ms"] = statistics.median(diffs)
+            case["native_wins"] = sum(d > 0 for d in diffs)
+            result["cases"].append(case)
+    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

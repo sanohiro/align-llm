@@ -1,0 +1,211 @@
+{
+  "status": "PASS",
+  "mode": "diagnostic final-layer native Q4_0 FFN, sync graph partition",
+  "model_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+  "cases": [
+    {
+      "prompt_tokens": 64,
+      "completion_tokens": 16,
+      "pairs": [
+        {
+          "control": {
+            "wall_ns": 522001625,
+            "startup_ns": 1296843250,
+            "output": "1 2 3 4 5 6 7 8 "
+          },
+          "native": {
+            "wall_ns": 539334291,
+            "startup_ns": 965124292,
+            "output": "1 2 3 4 5 6 7 8 "
+          }
+        },
+        {
+          "native": {
+            "wall_ns": 545447750,
+            "startup_ns": 1081150292,
+            "output": "1 2 3 4 5 6 7 8 "
+          },
+          "control": {
+            "wall_ns": 536993792,
+            "startup_ns": 1054080291,
+            "output": "1 2 3 4 5 6 7 8 "
+          }
+        },
+        {
+          "control": {
+            "wall_ns": 544576541,
+            "startup_ns": 1131831083,
+            "output": "1 2 3 4 5 6 7 8 "
+          },
+          "native": {
+            "wall_ns": 573321292,
+            "startup_ns": 1169277000,
+            "output": "1 2 3 4 5 6 7 8 "
+          }
+        },
+        {
+          "native": {
+            "wall_ns": 571577875,
+            "startup_ns": 1214740250,
+            "output": "1 2 3 4 5 6 7 8 "
+          },
+          "control": {
+            "wall_ns": 525255833,
+            "startup_ns": 1153973958,
+            "output": "1 2 3 4 5 6 7 8 "
+          }
+        },
+        {
+          "control": {
+            "wall_ns": 545273000,
+            "startup_ns": 914533000,
+            "output": "1 2 3 4 5 6 7 8 "
+          },
+          "native": {
+            "wall_ns": 573152084,
+            "startup_ns": 1163047583,
+            "output": "1 2 3 4 5 6 7 8 "
+          }
+        }
+      ],
+      "median_control_minus_native_ms": -27.879084,
+      "native_wins": 0
+    },
+    {
+      "prompt_tokens": 200,
+      "completion_tokens": 32,
+      "pairs": [
+        {
+          "control": {
+            "wall_ns": 1227054250,
+            "startup_ns": 1078309792,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          },
+          "native": {
+            "wall_ns": 1302420958,
+            "startup_ns": 1211840750,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          }
+        },
+        {
+          "native": {
+            "wall_ns": 1241231041,
+            "startup_ns": 1168355208,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          },
+          "control": {
+            "wall_ns": 1240459000,
+            "startup_ns": 1084715041,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          }
+        },
+        {
+          "control": {
+            "wall_ns": 1237167416,
+            "startup_ns": 1169868458,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          },
+          "native": {
+            "wall_ns": 1304074583,
+            "startup_ns": 1098999959,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          }
+        },
+        {
+          "native": {
+            "wall_ns": 1296838750,
+            "startup_ns": 1163119333,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          },
+          "control": {
+            "wall_ns": 1243146042,
+            "startup_ns": 1177257709,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          }
+        },
+        {
+          "control": {
+            "wall_ns": 1231856041,
+            "startup_ns": 1213499208,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          },
+          "native": {
+            "wall_ns": 1298860666,
+            "startup_ns": 1208165625,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14"
+          }
+        }
+      ],
+      "median_control_minus_native_ms": -66.907167,
+      "native_wins": 0
+    },
+    {
+      "prompt_tokens": 330,
+      "completion_tokens": 64,
+      "pairs": [
+        {
+          "control": {
+            "wall_ns": 2306845375,
+            "startup_ns": 1219144292,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          },
+          "native": {
+            "wall_ns": 2458085375,
+            "startup_ns": 1243137458,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          }
+        },
+        {
+          "native": {
+            "wall_ns": 2327116000,
+            "startup_ns": 1184683209,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          },
+          "control": {
+            "wall_ns": 2292449875,
+            "startup_ns": 1095146959,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          }
+        },
+        {
+          "control": {
+            "wall_ns": 2316467833,
+            "startup_ns": 1137323083,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          },
+          "native": {
+            "wall_ns": 2467322959,
+            "startup_ns": 1192496458,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          }
+        },
+        {
+          "native": {
+            "wall_ns": 2456149417,
+            "startup_ns": 1232140042,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          },
+          "control": {
+            "wall_ns": 2291095542,
+            "startup_ns": 1070157709,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          }
+        },
+        {
+          "control": {
+            "wall_ns": 2260107125,
+            "startup_ns": 1353560083,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          },
+          "native": {
+            "wall_ns": 2391083667,
+            "startup_ns": 1090250625,
+            "output": "1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 2"
+          }
+        }
+      ],
+      "median_control_minus_native_ms": -150.855126,
+      "native_wins": 0
+    }
+  ]
+}
