@@ -3039,7 +3039,10 @@ small coding modelをdraftとして利用する。
 
 ### Prompt-lookup speculation for the coding workload (design, 2026-09-20)
 
-Design only; nothing here is implemented or measured. This replaces "small coding model を draft
+Product speculation remains design-only. As of 2026-09-28, the Align-owned
+n-gram lookup and a three-prompt Qwen3.5-2B source/connected-cost screen are
+implemented and measured in `docs/qwen35-lookup-draft-screen.md`; no
+continuous speculative request has been qualified. This replaces "small coding model を draft
 として利用する" as the *first* R9 step: the coding repair loop copies long spans verbatim from the
 prompt, so an n-gram lookup over the prompt and the generated tokens drafts them at zero model
 cost and needs no second model, no second weight set and no second KV arena. A draft model remains
