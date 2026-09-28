@@ -43,26 +43,33 @@ numeric bounds. The independent state diagnostic ran outside timing. See
 `docs/qwen35-target-all-rows-screen.md` and its raw receipt. This is an
 empty-prefix graph feasibility result, not a speculative request speedup.
 
-Current branch `agent/qwen35-target-continuation` starts from `4aa8cccb`.
-The developer-only exact-prefix continuation screen is implemented and
-passes pinned per-unit Align checking and the Python boundary guard. On the real 2B Q4_0 M1 fixture,
-five alternating pairs all favored four-row target verification after the
-200-token prompt; the connected target median paired gain was 63.126 ms,
-including 2.920 ms median graph switching. Every complete logit and the
-valid active KV/recurrent state met predeclared bounds; the independent state
-trace was untimed. Four invalid mode arities, malformed target length and a
-forced timed serial graph failure rejected without publishing result files.
-An additional non-greedy fixture passed after a review finding on overly
-restrictive oracle checks was repaired.
-See `docs/qwen35-target-continuation-screen.md` and its
-raw receipt. This remains a diagnostic, not a speculative request win.
-Next in priority order: (1) finish failure/CLI owner checks, review and merge
-this screen; (2) implement an Align-owned full/partial acceptance, rejection
-replay and cleanup transaction; (3) measure a cheap draft and complete
-target-plus-draft requests against ordinary Align and pinned llama.cpp before
-choosing a default-off product trial. Another Metal generation, CUDA, Q4_1
-down and Gemma remain deferred with reasons in `docs/backend-parity.md`. No
-source patch to ggml is proposed.
+PR #319 merged the exact-prefix continuation screen into `main` at `7c13f7be`.
+On the real 2B Q4_0 M1 fixture, five alternating pairs all favored four-row
+target verification after the identical 200-token prefix; the connected
+target median paired gain was 63.126 ms, including 2.920 ms median graph
+switching. Complete logits and valid active state met predeclared bounds.
+The review found overly restrictive oracle checks, repaired and verified with
+a non-greedy fixture. Exact-head preflight and all three CI checks passed.
+See `docs/qwen35-target-continuation-screen.md` and its raw receipt.
+
+Current branch `agent/qwen35-target-acceptance` starts from `7c13f7be`.
+The developer-only Align acceptance/replay diagnostic and matching serial
+control now compile with pinned Align. Real 2B M1 five-case, five-pair
+measurement is complete: all-four acceptance gained 62.325 ms paired median
+and won 5/5; mismatch after 0/1/2/3 accepted tokens lost
+55.630/55.299/53.667/56.229 ms, each 0/5. Complete selected/next logits,
+valid KV and active recurrent state met the predeclared bounds; rejection
+cases had exact value-level active state and next logits. A forced timed replay
+failure published no output. See `docs/qwen35-target-acceptance-screen.md`
+and `eval/benchmarks/qwen35-target-acceptance-2026-09-28.json`.
+Next in priority order: (1) finish owner checks, review and merge the
+acceptance-state screen; (2) measure a genuinely cheap draft and acceptance
+distribution on representative coding requests, including group length;
+(3) compare a default-off product trial only if the draft economics justify
+it, against current mixed-native Align and pinned llama.cpp with correctness,
+request time and memory. Another Metal generation, CUDA, Q4_1 down and Gemma
+remain deferred with reasons in `docs/backend-parity.md`. No ggml source
+patch is proposed. Neither local screen is a speculative request win.
 
 ## Completed native Metal Q4_0 complete-FFN capture screen (2026-09-28)
 

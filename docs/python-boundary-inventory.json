@@ -3773,6 +3773,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/measure-qwen35-target-acceptance",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Runs five explicit real-model first-mismatch cases through Align batched-target and serial-acceptance diagnostic arms, independently compares selected and next logits plus valid active state under predeclared bounds, and records alternating timing.",
+      "reachability": "Focused developer measurement only; invokes an explicit Align smoke binary and never participates in normal product execution.",
+      "substitution": "Constructs test fixtures and reduces evidence; Align owns candidate comparison, state rollback and execution. Python is not a draft or inference path.",
+      "python_reason": "Independent whole-row/state numerical comparison and paired measurement are test-side responsibilities.",
+      "target": "Retain as a reproducible acceptance-state and rejection-cost screen; product speculation remains a separate Align-owned capability.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/measure-qwen35-target-acceptance --help; real 2B Metal campaign; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/measure-qwen35-target-continuation",
       "classification": "BENCHMARK_OR_MEASUREMENT",
       "behavior": "Runs explicit real-model Align four-row and four-serial continuation arms from identical recorded prefix and target token IDs, checks complete logits and valid active state under predeclared bounds, and records alternating compute and graph-switch timing.",

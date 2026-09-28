@@ -15,6 +15,11 @@ selection, token acceptance or product inference.
 the same recorded token prefix, compares complete target logits and active
 state under predeclared bounds, and records alternating timings. It neither
 chooses tokens nor participates in normal inference.
+`scripts/measure-qwen35-target-acceptance` is also
+`BENCHMARK_OR_MEASUREMENT`: it constructs five recorded real-model mismatch
+fixtures, runs the two Align-owned acceptance diagnostic arms, compares their
+selected and next logits plus valid state, and records alternating timings.
+Python makes no inference, token acceptance or session-state decision.
 `scripts/measure-qwen35-target-rows` is `BENCHMARK_OR_MEASUREMENT`: it runs
 explicit Align diagnostic graph arms on identical real-model token IDs,
 compares complete logits rows with a predeclared local bound, and records

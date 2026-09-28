@@ -459,6 +459,69 @@ The recorded fixture may declare its source prefix and expected oracle greedy
 IDs; other valid token sequences need only the bounded arrays and are compared
 between batch and serial without requiring a greedy continuation.
 
+### Qwen3.5 target acceptance-state screen (2026-09-28)
+
+The exact-prefix four-row screen established bounded full-acceptance state but
+did not test rejection. Add one developer-only `--verify-acceptance PREFIX_JSON
+TARGET_JSON OUTPUT` arm to the existing Align smoke. It admits 1..507 prefix
+tokens and four candidate IDs; the one-token continuation diagnostic must fit
+the existing 512-position resident capacity. Model pack and Metal graph
+selection remain the same.
+After computing the prefix and all four target rows, Align compares candidate
+0 with the prefix greedy ID and candidates 1..3 with rows 0..2, stopping at
+the first mismatch. The selected next-token distribution is the prefix row
+when zero candidates match or target row `accepted - 1` otherwise; full
+acceptance uses target row 3 as a bonus prediction. The arm writes only that
+complete F32 row after state resolution and reports accepted count, selected
+greedy ID and separate prefix/target/graph-switch/replay intervals. It then
+runs one synchronized decode of that selected token from the committed state
+and appends its complete F32 logits as a second row in the same output file;
+this next step has separate timing and is included in the equal-progress
+connected interval. No public generation or model schema changes.
+
+For four accepted candidates, the all-row graph's active recurrent plane and
+valid KV positions become the committed state. For zero accepted candidates,
+Align restores the prefix parity without a replay; extra candidate KV rows
+remain outside the valid length. For one to three accepted candidates, Align
+restores the prefix parity and replays only the accepted token IDs through
+ordinary synchronized one-token graphs. Replay overwrites the inactive
+recurrent plane and the accepted KV positions. The next attention graph must
+mask out candidate KV positions beyond the committed length. A failed graph,
+readback, replay or state finish publishes neither row nor a usable state.
+One warm path followed by a zeroed timed replay keeps every accepted case
+comparable. Report initial decode-graph preparation separately; the connected
+interval includes candidate updates, prefill-to-target graph switching,
+compute, replay and readback. No omitted synchronization or speculative speed
+claim is allowed.
+
+The first owner constructs five real 2B Q4_0 fixtures from the 200-token
+oracle sequence: one each with first mismatch after 0, 1, 2, 3 accepted
+tokens and the all-accepted case. Compare the chosen complete F32 row, greedy
+ID, first `prefix + accepted` valid KV positions and active recurrent plane
+against serial execution of the same accepted prefix. Use the predeclared
+continuation bounds above; compare the next-token row with serial execution
+for all five cases to detect hidden stale-state consumption.
+Fault injection must show zero published output on a replay failure. Charge
+graph setup and replay cost for every case. No second weight payload; the
+diagnostic may stage three F32 rows in addition to the four-row target result
+and original prefix row, with no persistent extra model state. Build/campaign
+<=900 s and each worker <=180 s. Another Metal device, CUDA and other model semantics remain
+unmeasured. This screen is a prerequisite for a later default-off product
+trial with a measured draft and complete-request comparison, not its adoption.
+
+A matching developer-only `--serial-acceptance PREFIX_JSON TARGET_JSON OUTPUT`
+control uses the same greedy comparison but evaluates only each accepted token
+and then the selected token through ordinary one-token graphs. It publishes
+the same selected and next complete rows. Pair the two arms at each of the
+five first-mismatch cases with alternating order, warm each exact path, and
+record graph preparation, accepted-step work, next-step work and total
+connected intervals separately. This establishes the cost of rejected target
+work against equal actual token/state progress; it excludes draft generation.
+The completed M1 screen found five of five paired connected wins only when
+all four candidates matched; every first-mismatch case lost all five pairs.
+The local correctness and timing limits are in
+`docs/qwen35-target-acceptance-screen.md`. This is not product adoption.
+
 ### Final-chunk logits trial (2026-09-26)
 
 Remove unused intermediate-prefill output work on the current 2B consumer. The
