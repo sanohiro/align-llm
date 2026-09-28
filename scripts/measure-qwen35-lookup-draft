@@ -1,0 +1,210 @@
+#!/usr/bin/env python3
+"""Screen Align prompt lookup against recorded Qwen3.5 coding continuations."""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+from pathlib import Path
+import runpy
+import statistics
+import subprocess
+import tempfile
+
+
+ROOT = Path(__file__).resolve().parent.parent
+ACCEPTANCE = runpy.run_path(str(ROOT / "scripts/measure-qwen35-target-acceptance"))
+
+
+def digest(path: Path) -> str:
+    with path.open("rb") as source:
+        return hashlib.file_digest(source, "sha256").hexdigest()
+
+
+def independent_lookup(history: list[int], k: int) -> tuple[int, list[int]]:
+    for n in (3, 2):
+        for start in range(len(history) - n - k, -1, -1):
+            if history[start:start + n] == history[-n:]:
+                return n, history[start + n:start + n + k]
+    return 0, []
+
+
+def lookup(binary: Path, env: dict[str, str], work: Path,
+           history: list[int], k: int) -> tuple[int, list[int], int]:
+    path = work / "history.json"
+    path.write_text(json.dumps(history) + "\n")
+    completed = subprocess.run([str(binary), str(path), str(k)], env=env,
+                               capture_output=True, text=True, timeout=20, check=False)
+    if completed.returncode:
+        raise RuntimeError(f"Align lookup failed: {completed.stderr[-1500:]}")
+    value = json.loads(completed.stdout)
+    if set(value) != {"match_length", "draft", "lookup_ns"} \
+            or value["match_length"] not in (0, 2, 3) \
+            or len(value["draft"]) not in (0, k) \
+            or type(value["lookup_ns"]) is not int or value["lookup_ns"] < 0:
+        raise ValueError("invalid Align lookup result")
+    expected = independent_lookup(history, k)
+    if (value["match_length"], value["draft"]) != expected:
+        raise ValueError(f"Align lookup differs from independent oracle: {value} != {expected}")
+    return expected[0], expected[1], value["lookup_ns"]
+
+
+def corpus_case(binary: Path, env: dict[str, str], work: Path,
+                case: dict, k: int, vocab: int) -> dict:
+    prompt, generated = case["prompt_token_ids"], case["greedy_token_ids"]
+    if not prompt or not generated or any(type(token) is not int or token < 0 or token >= vocab
+                                           for token in prompt + generated):
+        raise ValueError("invalid corpus tokens")
+    pos, no_draft, groups = 0, 0, []
+    lookup_times = []
+    while pos + k < len(generated):
+        n, draft, lookup_ns = lookup(binary, env, work, prompt + generated[:pos + 1], k)
+        lookup_times.append(lookup_ns)
+        if n == 0:
+            no_draft += 1
+            pos += 1
+            continue
+        accepted = 0
+        while accepted < k and draft[accepted] == generated[pos + accepted + 1]:
+            accepted += 1
+        groups.append({"position": pos, "match_length": n, "draft": draft,
+                       "accepted_drafts": accepted, "lookup_ns": lookup_ns})
+        pos += accepted + 1
+    return {"name": case["name"], "prompt_tokens": len(prompt),
+            "generated_tokens": len(generated), "k": k, "groups": groups,
+            "no_draft_steps": no_draft, "tail_steps": len(generated) - pos,
+            "lookup_ns_median": statistics.median(lookup_times),
+            "lookup_ns_max": max(lookup_times),
+            "accepted_drafts": sum(group["accepted_drafts"] for group in groups),
+            "available_drafts": k * len(groups),
+            "acceptance_histogram": {str(a): sum(group["accepted_drafts"] == a
+                                             for group in groups) for a in range(k + 1)}}
+
+
+def check_real_group(base: list[str], env: dict[str, str], work: Path,
+                     model: dict, prompt: list[int], generated: list[int],
+                     group: dict, pairs: int, tracer: Path) -> dict:
+    import numpy as np
+
+    a = group["accepted_drafts"]
+    pos = group["position"]
+    prefix, targets = prompt + generated[:pos], [generated[pos], *group["draft"]]
+    prefix_path, target_path = work / "prefix.json", work / "target.json"
+    prefix_path.write_text(json.dumps(prefix) + "\n")
+    target_path.write_text(json.dumps(targets) + "\n")
+    if len(prefix) > 507:
+        raise ValueError("prefix exceeds the acceptance diagnostic capacity")
+    result = {"position": pos, "prefix_tokens": len(prefix), "target_ids": targets,
+              "accepted_drafts": a, "pairs": []}
+    for pair in range(pairs):
+        order = ("batch", "serial") if pair % 2 else ("serial", "batch")
+        sample = {"order": list(order)}
+        for arm in order:
+            sample[arm], _ = ACCEPTANCE["run_arm"](
+                base, env, work, prefix_path, target_path, arm, model["n_vocab"])
+            metrics = sample[arm]
+            if metrics["accepted"] != a + 1 or metrics["prefix_greedy"] != generated[pos] \
+                    or metrics["selected_greedy"] != generated[pos + a + 1]:
+                raise ValueError(f"real model differs from recorded greedy stream: {metrics}")
+        batch = np.fromfile(work / "batch.bin", dtype="<f4").reshape(2, model["n_vocab"])
+        serial = np.fromfile(work / "serial.bin", dtype="<f4").reshape(2, model["n_vocab"])
+        if not np.isfinite(batch).all() or not np.isfinite(serial).all():
+            raise ValueError("nonfinite real-model logits")
+        difference = np.abs(batch.astype(np.float64) - serial.astype(np.float64))
+        if np.any(difference > 0.05 + 0.001 * np.abs(serial.astype(np.float64))):
+            raise ValueError("real-model selected or next row exceeds predeclared bound")
+        choices = batch.argmax(axis=1).tolist()
+        if choices != serial.argmax(axis=1).tolist() or choices[0] != generated[pos + a + 1]:
+            raise ValueError("real-model greedy mismatch")
+        sample["max_logit_abs"] = float(difference.max())
+        sample["batch_greedy"] = choices
+        result["pairs"].append(sample)
+    accepted = a + 1
+    attention = model["n_layer"] // model["full_attention_interval"]
+    state_count = 2 * attention + 4 * (model["n_layer"] - attention)
+    batch_ordinal = 4 + 2 * accepted if accepted < 4 else 4
+    serial_ordinal = 2 + 2 * accepted
+    batch_trace = ACCEPTANCE["trace_state"](
+        base, env, work, tracer, prefix_path, target_path, "batch", batch_ordinal,
+        state_count, model["n_vocab"])
+    serial_trace = ACCEPTANCE["trace_state"](
+        base, env, work, tracer, prefix_path, target_path, "serial", serial_ordinal,
+        state_count, model["n_vocab"])
+    batch_active = 0 if accepted == 4 or accepted % 2 == 1 else 1
+    serial_active = 1 - accepted % 2
+    result["committed_state"] = ACCEPTANCE["compare_state"](
+        np, model, len(prefix) + accepted, batch_active, serial_active,
+        batch_trace, serial_trace)
+    deltas = [(sample["serial"]["connected_ns"] - sample["batch"]["connected_ns"]) / 1e6
+              for sample in result["pairs"]]
+    result["paired_serial_minus_batch_median_ms"] = statistics.median(deltas)
+    result["batch_wins"] = sum(delta > 0 for delta in deltas)
+    return result
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    for name in ("fixture", "lookup-binary", "acceptance-binary", "geometry", "gguf",
+                 "pack", "backend-path", "state-tracer", "output"):
+        parser.add_argument(f"--{name}", type=Path, required=True)
+    parser.add_argument("--bundle-id", required=True)
+    parser.add_argument("--library-path", required=True)
+    parser.add_argument("--pairs", type=int, default=5)
+    args = parser.parse_args()
+    if not 1 <= args.pairs <= 20:
+        parser.error("--pairs must be 1..20")
+    for name in ("fixture", "lookup_binary", "acceptance_binary", "geometry", "gguf",
+                 "pack", "backend_path", "state_tracer"):
+        if not getattr(args, name).is_file():
+            parser.error(f"--{name.replace('_', '-')} must name a file")
+    fixture = json.loads(args.fixture.read_text())
+    model = json.loads(args.geometry.read_text())["model"]
+    if fixture.get("schema_version") != 1 or fixture.get("gguf_sha256") != digest(args.gguf) \
+            or fixture.get("eog_token_id") != 248046 or len(fixture.get("cases", [])) != 3:
+        parser.error("fixture/model identity or case count differs")
+    env = dict(os.environ, DYLD_LIBRARY_PATH=args.library_path)
+    base = [str(args.acceptance_binary.resolve()), str(args.geometry.resolve()),
+            str(args.gguf.resolve()), str(args.pack.resolve()),
+            str(args.backend_path.resolve()), args.bundle_id]
+    result = {"schema_version": 1, "fixture_sha256": digest(args.fixture),
+              "lookup_binary_sha256": digest(args.lookup_binary),
+              "acceptance_binary_sha256": digest(args.acceptance_binary),
+              "gguf_sha256": digest(args.gguf), "pack_sha256": digest(args.pack),
+              "backend_sha256": digest(args.backend_path), "bundle_id": args.bundle_id,
+              "logit_bound": "abs(batch-serial) <= 0.05 + 0.001*abs(serial)",
+              "state_bound": "abs(batch-serial) <= 0.005 + 0.0005*abs(serial)",
+              "cases": []}
+    with tempfile.TemporaryDirectory(prefix="qwen35-lookup-draft-") as temporary:
+        work = Path(temporary)
+        for case in fixture["cases"]:
+            row = {"name": case["name"], "screens": []}
+            for k in (3, 4):
+                screen = corpus_case(args.lookup_binary.resolve(), env, work,
+                                     case, k, model["n_vocab"])
+                if k == 3:
+                    screen["real_groups"] = []
+                    for accepted in (0, 3):
+                        group = next((g for g in screen["groups"]
+                                      if g["accepted_drafts"] == accepted), None)
+                        if group is None:
+                            raise ValueError(f"missing real group {case['name']}:{accepted}")
+                        measured = check_real_group(base, env, work, model,
+                                                    case["prompt_token_ids"],
+                                                    case["greedy_token_ids"], group,
+                                                    args.pairs, args.state_tracer)
+                        screen["real_groups"].append(measured)
+                        print(f"{case['name']} a={accepted} batch wins "
+                              f"{measured['batch_wins']}/{args.pairs}; paired delta "
+                              f"{measured['paired_serial_minus_batch_median_ms']:.3f} ms",
+                              flush=True)
+                row["screens"].append(screen)
+            result["cases"].append(row)
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    args.output.write_text(json.dumps(result, indent=2) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

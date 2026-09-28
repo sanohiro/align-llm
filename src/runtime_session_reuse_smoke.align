@@ -154,6 +154,37 @@ fn test_candidate_selection() -> Result<(), Error> {
     return Err(Error.Invalid)
   }
 
+  mut history_builder: array_builder<i64> := array_builder()
+  history_builder.push(1)
+  history_builder.push(2)
+  history_builder.push(3)
+  history_builder.push(1)
+  history_builder.push(2)
+  history_builder.push(3)
+  history_builder.push(4)
+  history_builder.push(1)
+  history_builder.push(2)
+  history := history_builder.build()
+  mut draft: array_builder<i64> := array_builder()
+  if runtime_generation.prompt_lookup_draft(history, 2, 2, draft) != 2 {
+    return Err(Error.Invalid)
+  }
+  found := draft.build()
+  if found.len() != 2 || found[0] != 3 || found[1] != 4 {
+    return Err(Error.Invalid)
+  }
+  mut absent: array_builder<i64> := array_builder()
+  if runtime_generation.prompt_lookup_draft(history, 3, 2, absent) != 0 {
+    return Err(Error.Invalid)
+  }
+  if runtime_generation.prompt_lookup_draft(history, 0, 2, absent) != 0 {
+    return Err(Error.Invalid)
+  }
+  if runtime_generation.prompt_lookup_draft(history, 2, 10, absent) != 0 {
+    return Err(Error.Invalid)
+  }
+  if absent.build().len() != 0 { return Err(Error.Invalid) }
+
   // Test greedy candidate seeding:
   // Case 1: token 0 (10.0) exceeds candidate 2 (8.0) -> token 0 must win
   mut buf1 := buffer(16)

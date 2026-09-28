@@ -679,6 +679,39 @@ pub fn prompt_lookup_candidate(borrow prompt_ids: array<i64>, current_token: i64
   return -1
 }
 
+pub fn prompt_lookup_draft(
+  borrow history: array<i64>, n_match: i64, k: i64,
+  borrow mut out: array_builder<i64>,
+) -> i64 {
+  if n_match < 1 || k < 1 || k > history.len() { return 0 }
+  if n_match > history.len() - k { return 0 }
+  mut start := history.len() - n_match - k
+  loop {
+    if start < 0 { break }
+    mut matched := true
+    mut offset := 0
+    loop {
+      if offset >= n_match { break }
+      if history[start + offset] != history[history.len() - n_match + offset] {
+        matched = false
+        break
+      }
+      offset = offset + 1
+    }
+    if matched {
+      offset = 0
+      loop {
+        if offset >= k { break }
+        out.push(history[start + n_match + offset])
+        offset = offset + 1
+      }
+      return k
+    }
+    start = start - 1
+  }
+  return 0
+}
+
 pub fn greedy(borrow logits: slice<u8>, candidate: i64) -> Result<i64, Error> =
 runtime_greedy.greedy(logits, candidate)
 

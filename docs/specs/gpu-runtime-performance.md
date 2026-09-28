@@ -522,6 +522,32 @@ all four candidates matched; every first-mismatch case lost all five pairs.
 The local correctness and timing limits are in
 `docs/qwen35-target-acceptance-screen.md`. This is not product adoption.
 
+### Qwen3.5 prompt lookup draft-source screen (2026-09-28)
+
+Use the existing roadmap n-gram lookup contract as a draft-source hypothesis
+before changing the Qwen3.5 product session. The Align diagnostic exposes
+`runtime_generation.prompt_lookup_draft` on a bounded recorded history,
+trying match lengths 3 then 2 and requiring all requested draft IDs. It
+screens three drafts with the existing four-row target graph and separately
+counts four-draft candidates for the planned five-row shape. The independent
+developer measurement validates every draft against a backward-scan oracle
+over pinned real-model greedy IDs, then selects one first mismatch and one
+complete group per coding task for five alternating real-GGUF connected
+pairs. The owner compares selected and next complete F32 rows, greedy ID,
+valid KV and active recurrent state under the already declared acceptance
+bounds. The cost ceiling is the roadmap's at-most-2,175-ID host scan; any
+session integration must still charge its actual draft time and graph work.
+
+The completed M1 screen found complete three-draft group counts of 3/18,
+12/16 and 1/16 for function, bug-fix and test-writing continuations. One
+early rejection per task lost 52.0–52.3 ms paired median; a complete group
+gained 62.0–63.5 ms. Every measured pair and committed-state trace passed.
+See `docs/qwen35-lookup-draft-screen.md` and the raw receipt. A default-off
+continuous Align generation trial with a bounded rejection backoff remains
+the next admission step; this screen does not establish whole-request speed
+or general draft quality. The four-draft case has no connected five-row
+timing, so its acceptance counts must not be converted into a speed claim.
+
 ### Final-chunk logits trial (2026-09-26)
 
 Remove unused intermediate-prefill output work on the current 2B consumer. The

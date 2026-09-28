@@ -20,6 +20,12 @@ chooses tokens nor participates in normal inference.
 fixtures, runs the two Align-owned acceptance diagnostic arms, compares their
 selected and next logits plus valid state, and records alternating timings.
 Python makes no inference, token acceptance or session-state decision.
+`scripts/measure-qwen35-lookup-draft` is also `BENCHMARK_OR_MEASUREMENT`:
+it supplies recorded greedy token streams to an Align-owned n-gram lookup
+diagnostic, checks its candidates against an independent test oracle, and
+measures selected real-model acceptance groups through existing Align graph
+arms. The offline accepted-length calculation selects test cases only; it is
+not reached by product inference or used to commit model state.
 `scripts/measure-qwen35-target-rows` is `BENCHMARK_OR_MEASUREMENT`: it runs
 explicit Align diagnostic graph arms on identical real-model token IDs,
 compares complete logits rows with a predeclared local bound, and records
