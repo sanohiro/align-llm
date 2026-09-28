@@ -1,0 +1,1153 @@
+{
+  "schema_version": 1,
+  "fixture_sha256": "e02ba0f94bf51749722b361aa387b5fa5d2005731462634f525363f3d516c313",
+  "screen_sha256": "709f7b0199181b83b55b936e94c79b4c9557ec652f1c0b712cd66c8af35d5aa0",
+  "binary_sha256": "394b3a9fd0339754574beba5f1303c55db088985eaca05d6379b9d6d9256a555",
+  "gguf_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+  "trial_arm": "trialnative",
+  "cases": [
+    {
+      "name": "function",
+      "position": 11,
+      "accepted_drafts": 0,
+      "prompt_tokens": 72,
+      "expected_token_ids": [
+        262,
+        5019,
+        264,
+        1103,
+        8222,
+        279,
+        1118,
+        30520
+      ],
+      "normal": [
+        {
+          "arm": "normal",
+          "token_ids": [
+            262,
+            5019,
+            264,
+            1103,
+            8222,
+            279,
+            1118,
+            30520
+          ],
+          "elapsed_ns": 404574125,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "normal",
+          "token_ids": [
+            262,
+            5019,
+            264,
+            1103,
+            8222,
+            279,
+            1118,
+            30520
+          ],
+          "elapsed_ns": 394664667,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "normal",
+          "token_ids": [
+            262,
+            5019,
+            264,
+            1103,
+            8222,
+            279,
+            1118,
+            30520
+          ],
+          "elapsed_ns": 410385959,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        }
+      ],
+      "trial": [
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            262,
+            5019,
+            264,
+            1103,
+            8222,
+            279,
+            1118,
+            30520
+          ],
+          "elapsed_ns": 551493584,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 0,
+          "discarded_groups": 1,
+          "generated_drafts": 0,
+          "prefill_ns": 203946459,
+          "serial_decode_ns": 290357252,
+          "lookup_ns": 708,
+          "graph_build_ns": 1694708,
+          "target_compute_ns": 51953625,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 1182708
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            262,
+            5019,
+            264,
+            1103,
+            8222,
+            279,
+            1118,
+            30520
+          ],
+          "elapsed_ns": 1361407667,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 0,
+          "discarded_groups": 1,
+          "generated_drafts": 0,
+          "prefill_ns": 361808041,
+          "serial_decode_ns": 824990667,
+          "lookup_ns": 375,
+          "graph_build_ns": 4435166,
+          "target_compute_ns": 164533500,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 2232167
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            262,
+            5019,
+            264,
+            1103,
+            8222,
+            279,
+            1118,
+            30520
+          ],
+          "elapsed_ns": 640572125,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 0,
+          "discarded_groups": 1,
+          "generated_drafts": 0,
+          "prefill_ns": 376651208,
+          "serial_decode_ns": 202883040,
+          "lookup_ns": 458,
+          "graph_build_ns": 4423167,
+          "target_compute_ns": 52583084,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 812042
+        }
+      ]
+    },
+    {
+      "name": "function",
+      "position": 22,
+      "accepted_drafts": 1,
+      "prompt_tokens": 83,
+      "expected_token_ids": [
+        470,
+        1455,
+        303,
+        279,
+        1879,
+        1103,
+        13,
+        198
+      ],
+      "normal": [
+        {
+          "arm": "normal",
+          "token_ids": [
+            470,
+            1455,
+            303,
+            279,
+            1879,
+            1103,
+            13,
+            198
+          ],
+          "elapsed_ns": 1796719292,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "normal",
+          "token_ids": [
+            470,
+            1455,
+            303,
+            279,
+            1879,
+            1103,
+            13,
+            198
+          ],
+          "elapsed_ns": 1592059958,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "normal",
+          "token_ids": [
+            470,
+            1455,
+            303,
+            279,
+            1879,
+            1103,
+            13,
+            198
+          ],
+          "elapsed_ns": 541092167,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        }
+      ],
+      "trial": [
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            470,
+            1455,
+            303,
+            279,
+            1879,
+            1103,
+            13,
+            198
+          ],
+          "elapsed_ns": 2058689625,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 0,
+          "discarded_groups": 1,
+          "generated_drafts": 0,
+          "prefill_ns": 913679333,
+          "serial_decode_ns": 986655542,
+          "lookup_ns": 750,
+          "graph_build_ns": 1813291,
+          "target_compute_ns": 150004250,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 3853625
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            470,
+            1455,
+            303,
+            279,
+            1879,
+            1103,
+            13,
+            198
+          ],
+          "elapsed_ns": 1615543167,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 0,
+          "discarded_groups": 1,
+          "generated_drafts": 0,
+          "prefill_ns": 405777417,
+          "serial_decode_ns": 967907917,
+          "lookup_ns": 666,
+          "graph_build_ns": 4523000,
+          "target_compute_ns": 229537542,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 1824375
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            470,
+            1455,
+            303,
+            279,
+            1879,
+            1103,
+            13,
+            198
+          ],
+          "elapsed_ns": 844072292,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 0,
+          "discarded_groups": 1,
+          "generated_drafts": 0,
+          "prefill_ns": 593673875,
+          "serial_decode_ns": 184013584,
+          "lookup_ns": 708,
+          "graph_build_ns": 5261833,
+          "target_compute_ns": 56477167,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 902958
+        }
+      ]
+    },
+    {
+      "name": "function",
+      "position": 50,
+      "accepted_drafts": 2,
+      "prompt_tokens": 111,
+      "expected_token_ids": [
+        4071,
+        198,
+        262,
+        3753,
+        283,
+        716,
+        363,
+        198
+      ],
+      "normal": [
+        {
+          "arm": "normal",
+          "token_ids": [
+            4071,
+            198,
+            262,
+            3753,
+            283,
+            716,
+            363,
+            198
+          ],
+          "elapsed_ns": 3329623500,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "normal",
+          "token_ids": [
+            4071,
+            198,
+            262,
+            3753,
+            283,
+            716,
+            363,
+            198
+          ],
+          "elapsed_ns": 3113826917,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "normal",
+          "token_ids": [
+            4071,
+            198,
+            262,
+            3753,
+            283,
+            716,
+            363,
+            198
+          ],
+          "elapsed_ns": 1763109291,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        }
+      ],
+      "trial": [
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            4071,
+            198,
+            262,
+            3753,
+            283,
+            716,
+            363,
+            198
+          ],
+          "elapsed_ns": 2550189458,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 0,
+          "discarded_groups": 1,
+          "generated_drafts": 0,
+          "prefill_ns": 1308647958,
+          "serial_decode_ns": 998808043,
+          "lookup_ns": 1167,
+          "graph_build_ns": 3909542,
+          "target_compute_ns": 233382042,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 3293292
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            4071,
+            198,
+            262,
+            3753,
+            283,
+            716,
+            363,
+            198
+          ],
+          "elapsed_ns": 2581576250,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 0,
+          "discarded_groups": 1,
+          "generated_drafts": 0,
+          "prefill_ns": 1300903375,
+          "serial_decode_ns": 1049421583,
+          "lookup_ns": 750,
+          "graph_build_ns": 4911250,
+          "target_compute_ns": 217366375,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 2702042
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            4071,
+            198,
+            262,
+            3753,
+            283,
+            716,
+            363,
+            198
+          ],
+          "elapsed_ns": 1980578375,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 0,
+          "discarded_groups": 1,
+          "generated_drafts": 0,
+          "prefill_ns": 1321489208,
+          "serial_decode_ns": 464122709,
+          "lookup_ns": 1250,
+          "graph_build_ns": 12798125,
+          "target_compute_ns": 171351834,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 4036208
+        }
+      ]
+    },
+    {
+      "name": "function",
+      "position": 2,
+      "accepted_drafts": 3,
+      "prompt_tokens": 63,
+      "expected_token_ids": [
+        31057,
+        18913,
+        7621,
+        23573,
+        1590,
+        198,
+        262,
+        4071
+      ],
+      "normal": [
+        {
+          "arm": "normal",
+          "token_ids": [
+            31057,
+            18913,
+            7621,
+            23573,
+            1590,
+            198,
+            262,
+            4071
+          ],
+          "elapsed_ns": 1701442375,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "normal",
+          "token_ids": [
+            31057,
+            18913,
+            7621,
+            23573,
+            1590,
+            198,
+            262,
+            4071
+          ],
+          "elapsed_ns": 565297125,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "normal",
+          "token_ids": [
+            31057,
+            18913,
+            7621,
+            23573,
+            1590,
+            198,
+            262,
+            4071
+          ],
+          "elapsed_ns": 1298273541,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        }
+      ],
+      "trial": [
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            31057,
+            18913,
+            7621,
+            23573,
+            1590,
+            198,
+            262,
+            4071
+          ],
+          "elapsed_ns": 296387333,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 1,
+          "discarded_groups": 0,
+          "generated_drafts": 3,
+          "prefill_ns": 146445167,
+          "serial_decode_ns": 97448584,
+          "lookup_ns": 500,
+          "graph_build_ns": 1672000,
+          "target_compute_ns": 47442375,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 1064708
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            31057,
+            18913,
+            7621,
+            23573,
+            1590,
+            198,
+            262,
+            4071
+          ],
+          "elapsed_ns": 276250916,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 1,
+          "discarded_groups": 0,
+          "generated_drafts": 3,
+          "prefill_ns": 133188750,
+          "serial_decode_ns": 87057792,
+          "lookup_ns": 459,
+          "graph_build_ns": 4091958,
+          "target_compute_ns": 47775250,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 775709
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            31057,
+            18913,
+            7621,
+            23573,
+            1590,
+            198,
+            262,
+            4071
+          ],
+          "elapsed_ns": 274112791,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 1,
+          "complete_groups": 1,
+          "discarded_groups": 0,
+          "generated_drafts": 3,
+          "prefill_ns": 132026834,
+          "serial_decode_ns": 86512709,
+          "lookup_ns": 458,
+          "graph_build_ns": 4219291,
+          "target_compute_ns": 46828916,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 926667
+        }
+      ]
+    },
+    {
+      "name": "short-1",
+      "trial": [
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093
+          ],
+          "elapsed_ns": 240619833,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 240224708,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093
+          ],
+          "elapsed_ns": 227225916,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 225888792,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093
+          ],
+          "elapsed_ns": 228215000,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 226945042,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        }
+      ]
+    },
+    {
+      "name": "short-2",
+      "trial": [
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093,
+            12305
+          ],
+          "elapsed_ns": 268652958,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 235770541,
+          "serial_decode_ns": 31363333,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093,
+            12305
+          ],
+          "elapsed_ns": 257092083,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 228099917,
+          "serial_decode_ns": 26449292,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093,
+            12305
+          ],
+          "elapsed_ns": 257204709,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 227303208,
+          "serial_decode_ns": 27247542,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        }
+      ]
+    },
+    {
+      "name": "short-3",
+      "trial": [
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093,
+            12305,
+            198
+          ],
+          "elapsed_ns": 302531792,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 240647708,
+          "serial_decode_ns": 59933125,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093,
+            12305,
+            198
+          ],
+          "elapsed_ns": 287312500,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 228426708,
+          "serial_decode_ns": 56067583,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093,
+            12305,
+            198
+          ],
+          "elapsed_ns": 282518042,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 226884000,
+          "serial_decode_ns": 52678584,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        }
+      ]
+    },
+    {
+      "name": "short-4",
+      "trial": [
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093,
+            12305,
+            198,
+            12237
+          ],
+          "elapsed_ns": 327063542,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 240011875,
+          "serial_decode_ns": 84994584,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093,
+            12305,
+            198,
+            12237
+          ],
+          "elapsed_ns": 307795042,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 227056791,
+          "serial_decode_ns": 77732874,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            71093,
+            12305,
+            198,
+            12237
+          ],
+          "elapsed_ns": 307844333,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 227036625,
+          "serial_decode_ns": 77829291,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        }
+      ]
+    },
+    {
+      "name": "draft-eog",
+      "eog": [
+        18913
+      ],
+      "normal": [
+        {
+          "arm": "normal",
+          "token_ids": [
+            31057,
+            18913
+          ],
+          "elapsed_ns": 172521625,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "normal",
+          "token_ids": [
+            31057,
+            18913
+          ],
+          "elapsed_ns": 159377917,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "normal",
+          "token_ids": [
+            31057,
+            18913
+          ],
+          "elapsed_ns": 159511208,
+          "lookup_attempts": 0,
+          "draft_hits": 0,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 0,
+          "serial_decode_ns": 0,
+          "lookup_ns": 0,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        }
+      ],
+      "trial": [
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            31057,
+            18913
+          ],
+          "elapsed_ns": 173895875,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 140965375,
+          "serial_decode_ns": 31394292,
+          "lookup_ns": 709,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            31057,
+            18913
+          ],
+          "elapsed_ns": 159385334,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 129825333,
+          "serial_decode_ns": 26912125,
+          "lookup_ns": 834,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        },
+        {
+          "arm": "trialnative",
+          "token_ids": [
+            31057,
+            18913
+          ],
+          "elapsed_ns": 159307834,
+          "lookup_attempts": 1,
+          "draft_hits": 1,
+          "verify_groups": 0,
+          "complete_groups": 0,
+          "discarded_groups": 0,
+          "generated_drafts": 0,
+          "prefill_ns": 129994500,
+          "serial_decode_ns": 26683417,
+          "lookup_ns": 792,
+          "graph_build_ns": 0,
+          "target_compute_ns": 0,
+          "target_readback_ns": 0,
+          "target_native_greedy_ns": 0
+        }
+      ]
+    }
+  ],
+  "invalid_empty_prompt_exit": 2
+}

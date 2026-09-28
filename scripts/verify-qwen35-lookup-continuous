@@ -50,7 +50,8 @@ def main() -> int:
                  "options", "output"):
         parser.add_argument(f"--{name}", required=True, type=Path)
     parser.add_argument("--library-path", required=True)
-    parser.add_argument("--trial-arm", choices=("trial", "trial1"), default="trial")
+    parser.add_argument("--trial-arm", choices=("trial", "trial1", "trialnative"),
+                        default="trial")
     args = parser.parse_args()
     for name in ("fixture", "screen", "binary", "gguf", "pack", "geometry", "options"):
         value = getattr(args, name).resolve()
@@ -75,7 +76,7 @@ def main() -> int:
                 groups = next(row["groups"] for row in measured["screens"] if row["k"] == 3)
                 group = next((row for row in groups
                               if (row["accepted_drafts"] == accepted
-                                  if args.trial_arm == "trial"
+                                  if args.trial_arm != "trial1"
                                   else (row["accepted_drafts"] >= 1) == (accepted == 1))), None)
                 if group is not None:
                     selected = case, group

@@ -35,10 +35,12 @@ Python supplies fixture files and validates receipts; it is not part of
 inference or state publication.
 `scripts/verify-qwen35-lookup-continuous` is `CI_OR_DEVELOPER_TOOL`: it selects
 recorded full and rejected draft positions, constructs continuation prompts,
-and checks three repeated real-model requests per path against pinned IDs.
+and checks three repeated real-model requests per path against pinned IDs,
+including the explicit native target-row diagnostic arm.
 `scripts/measure-qwen35-lookup-one-draft` is `BENCHMARK_OR_MEASUREMENT`:
-it reuses the independent receipt validator and alternates explicit one-draft
-Align requests against normal Align, three-draft Align and pinned llama.cpp.
+it reuses the independent receipt validator and alternates the selected
+one-draft or native target-row diagnostic arm against normal Align,
+three-draft Align and pinned llama.cpp.
 It selects no production inference route and owns no token/state logic.
 `scripts/measure-qwen35-target-rows` is `BENCHMARK_OR_MEASUREMENT`: it runs
 explicit Align diagnostic graph arms on identical real-model token IDs,

@@ -4,6 +4,7 @@
 #import <Metal/Metal.h>
 
 #include "native_metal_state_copy.h"
+#include "native_metal_target_greedy_kernel.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -24,6 +25,11 @@ struct align_native_metal_copy_context {
     id<MTLBuffer> greedy_result;
     id<MTLComputePipelineState> greedy_partial_pipeline;
     id<MTLComputePipelineState> greedy_final_pipeline;
+    id<MTLBuffer> target_greedy_view;
+    id<MTLBuffer> target_greedy_parts;
+    id<MTLBuffer> target_greedy_result;
+    id<MTLComputePipelineState> target_greedy_partial_pipeline;
+    id<MTLComputePipelineState> target_greedy_final_pipeline;
     id<MTLCommandBuffer> pending;
     void *source_base;
     void *destination_base;
@@ -31,6 +37,8 @@ struct align_native_metal_copy_context {
     size_t destination_length;
     void *greedy_base;
     size_t greedy_length;
+    void *target_greedy_base;
+    size_t target_greedy_length;
     size_t pending_count;
     bool pending_greedy;
     bool greedy_ready;
@@ -280,6 +288,103 @@ extern "C" int64_t align_native_metal_copy_greedy_result(void *opaque) {
     return token == UINT32_MAX ? -2 : int64_t(token);
 }
 
+extern "C" int align_native_metal_target_greedy_run(void *opaque, void *base, size_t size,
+        uint64_t offset, uint32_t rows, uint32_t width, uint32_t *result) {
+    auto *context = static_cast<align_native_metal_copy_context *>(opaque);
+    size_t page = size_t(getpagesize());
+    if (context == nullptr || context->pending != nil || base == nullptr || result == nullptr
+        || page == 0 || uintptr_t(base) % page != 0 || size == 0
+        || rows < 2 || rows > 16 || width == 0 || width > 1048576
+        || offset % sizeof(float) != 0) return 0;
+    uint32_t groups = (width + 1023) / 1024;
+    size_t parts_bytes = size_t(rows) * groups * 12;
+    size_t result_bytes = size_t(rows) * sizeof(uint32_t);
+    if (parts_bytes + result_bytes > 16384 || size > SIZE_MAX - (page - 1)) return 0;
+    size_t padded = (size + page - 1) / page * page;
+    uint64_t input_bytes = uint64_t(rows) * width * sizeof(float);
+    if (padded > context->device.maxBufferLength || offset > padded
+        || input_bytes > padded - offset) return 0;
+    @autoreleasepool {
+        if (context->target_greedy_partial_pipeline == nil
+            || context->target_greedy_final_pipeline == nil) {
+            NSError *error = nil;
+            id<MTLLibrary> library = [context->device newLibraryWithSource:
+                [NSString stringWithUTF8String:kTargetGreedyShader] options:nil error:&error];
+            if (library == nil) return 0;
+            id<MTLFunction> partial = [library newFunctionWithName:@"partial"];
+            id<MTLFunction> final = [library newFunctionWithName:@"finish"];
+            if (partial == nil || final == nil) return 0;
+            id<MTLComputePipelineState> first =
+                [context->device newComputePipelineStateWithFunction:partial error:&error];
+            id<MTLComputePipelineState> second =
+                [context->device newComputePipelineStateWithFunction:final error:&error];
+            if (first == nil || second == nil || first.maxTotalThreadsPerThreadgroup < 256
+                || second.maxTotalThreadsPerThreadgroup < 256) return 0;
+            context->target_greedy_partial_pipeline = first;
+            context->target_greedy_final_pipeline = second;
+        }
+        if (context->target_greedy_parts == nil
+            || context->target_greedy_parts.length < parts_bytes) {
+            context->target_greedy_parts = [context->device newBufferWithLength:parts_bytes
+                options:MTLResourceStorageModeShared];
+        }
+        if (context->target_greedy_result == nil
+            || context->target_greedy_result.length < result_bytes) {
+            context->target_greedy_result = [context->device newBufferWithLength:result_bytes
+                options:MTLResourceStorageModeShared];
+        }
+        if (context->target_greedy_view == nil || context->target_greedy_base != base
+            || context->target_greedy_length != padded) {
+            context->target_greedy_view = [context->device newBufferWithBytesNoCopy:base
+                length:padded options:MTLResourceStorageModeShared
+                deallocator:^(void *, NSUInteger) {}];
+            context->target_greedy_base = base;
+            context->target_greedy_length = padded;
+        }
+        if (context->target_greedy_parts == nil || context->target_greedy_result == nil
+            || context->target_greedy_result.contents == nullptr
+            || context->target_greedy_view == nil
+            || context->target_greedy_view.contents != base) return 0;
+#if defined(ALIGN_NATIVE_METAL_FORCE_SUBMIT_FAILURE)
+        fprintf(stderr, "native_target_greedy forced submit failure\n");
+        return 0;
+#endif
+        id<MTLCommandBuffer> command = [context->queue commandBuffer];
+        if (command == nil) return 0;
+        id<MTLComputeCommandEncoder> encoder = [command computeCommandEncoder];
+        if (encoder == nil) return 0;
+        [encoder setComputePipelineState:context->target_greedy_partial_pipeline];
+        [encoder setBuffer:context->target_greedy_view offset:size_t(offset) atIndex:0];
+        [encoder setBuffer:context->target_greedy_parts offset:0 atIndex:1];
+        [encoder setBytes:&width length:sizeof(width) atIndex:2];
+        [encoder setBytes:&groups length:sizeof(groups) atIndex:3];
+        [encoder dispatchThreadgroups:MTLSizeMake(groups, rows, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder memoryBarrierWithScope:MTLBarrierScopeBuffers];
+        [encoder setComputePipelineState:context->target_greedy_final_pipeline];
+        [encoder setBuffer:context->target_greedy_parts offset:0 atIndex:0];
+        [encoder setBuffer:context->target_greedy_result offset:0 atIndex:1];
+        [encoder setBytes:&groups length:sizeof(groups) atIndex:2];
+        [encoder dispatchThreadgroups:MTLSizeMake(rows, 1, 1)
+            threadsPerThreadgroup:MTLSizeMake(256, 1, 1)];
+        [encoder endEncoding];
+        [command commit];
+        [command waitUntilCompleted];
+        if (command.status != MTLCommandBufferStatusCompleted) return 0;
+#if defined(ALIGN_NATIVE_METAL_FORCE_COMPLETION_FAILURE)
+        fprintf(stderr, "native_target_greedy forced completion failure\n");
+        return 0;
+#endif
+        const uint32_t *values = static_cast<const uint32_t *>(
+            context->target_greedy_result.contents);
+        for (uint32_t row = 0; row < rows; ++row) {
+            if (values[row] == UINT32_MAX || values[row] >= width) return 0;
+        }
+        memcpy(result, values, result_bytes);
+        return 1;
+    }
+}
+
 extern "C" int align_native_metal_copy_reset_views(void *opaque) {
     auto *context = static_cast<align_native_metal_copy_context *>(opaque);
     if (context == nullptr) return 0;
@@ -287,12 +392,15 @@ extern "C" int align_native_metal_copy_reset_views(void *opaque) {
     context->source_view = nil;
     context->destination_view = nil;
     context->greedy_view = nil;
+    context->target_greedy_view = nil;
     context->source_base = nullptr;
     context->destination_base = nullptr;
     context->source_length = 0;
     context->destination_length = 0;
     context->greedy_base = nullptr;
     context->greedy_length = 0;
+    context->target_greedy_base = nullptr;
+    context->target_greedy_length = 0;
     context->greedy_ready = false;
     return completed;
 }

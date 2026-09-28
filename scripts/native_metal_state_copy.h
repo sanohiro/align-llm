@@ -42,6 +42,8 @@ int align_native_metal_copy_submit(void *context,
         const struct align_native_metal_greedy_input *greedy);
 int align_native_metal_copy_wait(void *context);
 int64_t align_native_metal_copy_greedy_result(void *context);
+int align_native_metal_target_greedy_run(void *context, void *base, size_t size,
+        uint64_t offset, uint32_t rows, uint32_t width, uint32_t *result);
 int align_native_metal_copy_reset_views(void *context);
 void align_native_metal_copy_close(void *context);
 
