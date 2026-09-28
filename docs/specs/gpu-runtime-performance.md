@@ -42,6 +42,23 @@ after observing failures.
 This section supersedes historical percentage-based admission/shipping prose
 elsewhere in this repository. Historical receipts must not be rewritten.
 
+### Independent Q6_K small-batch output-head screen (2026-09-28)
+
+The current four-row target verifier amortizes model weights across candidate
+tokens, but its output head still accounts for a large quantized read. Test
+whether a shape-selected independent Metal Q6_K projection can reuse each
+compressed weight block across four actual F32 activations more effectively
+than the pinned ggml four-column path. This is a local developer screen, not a
+product switch or a ggml source patch. The existing Q6_K scalar and ggml
+paths remain comparison controls.
+
+| Contract | Definition |
+| --- | --- |
+| Inputs and owner | `bench-metal-q6-projection` accepts an explicit `--batch4` screen. It reads the existing checked actual-weight Q6_K capture and uses its three real activations plus a repeated first activation as four F32 columns. The Metal shader selects by Q6_K block layout, width divisible by 256, and four columns, not model name. The probe owns its temporary buffers and no session state. |
+| Result and correctness | Before timing, compare all four complete F32 output columns with the pinned ggml four-column result and their independently captured single-column references using the preexisting `0.01` absolute bound. Also check a nonmultiple output-row tail. Report exact greedy choices for all columns as diagnostic information; this first screen does not replace target acceptance or alter production logits. |
+| Cost and measurement | Keep weights quantized in one resident 417 MB Metal buffer, one input buffer and one output buffer per arm; no F16 expansion or model-sized scratch. Measure one completed command per arm with 12 warmups and five alternating pairs of 20 operations, including full command completion, and retain every result. Local trial integration is worthwhile only if the actual-weight timing and correctness show a plausible margin after the previously observed split/interop cost; no fixed percentage floor applies. The connected request remains unmeasured until such integration. |
+| Failure and rollback | Reject malformed geometry, missing capture, Metal compile/command failure and any output mismatch before timing. `--batch4` is developer-only; default CLI behavior and product graph remain unchanged. Cache or persisted schema: N/A. |
+
 ### Native worker phase-reduction correction (2026-09-28)
 
 The independent `measure-native-swiglu` worker runs three retained requests

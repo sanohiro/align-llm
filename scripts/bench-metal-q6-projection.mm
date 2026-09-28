@@ -103,6 +103,68 @@ kernel void q6_pair_load(
     }
 }
 
+// Four related target activations reuse each compressed block before the next
+// block is fetched. Columns remain contiguous in both input and output.
+kernel void q6_batch4(
+    device const Q6Block *weights [[buffer(0)]],
+    device const float *input [[buffer(1)]],
+    device float *output [[buffer(2)]],
+    constant uint &width [[buffer(3)]],
+    constant uint &rows [[buffer(4)]],
+    uint group [[threadgroup_position_in_grid]],
+    ushort lane [[thread_index_in_simdgroup]],
+    ushort simd [[simdgroup_index_in_threadgroup]]) {
+    const uint first_row = (group * 2 + simd) * 2;
+    if (first_row >= rows) return;
+    const uint blocks = width / 256;
+    const ushort tid = lane / 2, ix = lane % 2;
+    const ushort ip = tid / 8, l0 = 4 * (tid % 8), is = 8 * ip + l0 / 16;
+    float sum[2][4] = {};
+    for (uint block = ix; block < blocks; block += 2) {
+        const uint input_offset = block * 256 + 128 * ip + l0;
+        for (ushort row = 0; row < 2; ++row) {
+            if (first_row + row >= rows) continue;
+            device const Q6Block &q = weights[(first_row + row) * blocks + block];
+            device const ushort *lo1 = (device const ushort *)(q.ql + 64 * ip + l0);
+            device const ushort *lo2 = (device const ushort *)(q.ql + 64 * ip + l0 + 32);
+            device const ushort *high = (device const ushort *)(q.qh + 32 * ip + l0);
+            const ushort a[2] = {lo1[0], lo1[1]};
+            const ushort b[2] = {lo2[0], lo2[1]};
+            const ushort h[2] = {high[0], high[1]};
+            float4 sums[4] = {};
+            #pragma unroll
+            for (ushort l = 0; l < 4; ++l) {
+                const uchar q1 = uchar(a[l / 2] >> (8 * (l % 2)));
+                const uchar q2 = uchar(b[l / 2] >> (8 * (l % 2)));
+                const uchar qh = uchar(h[l / 2] >> (8 * (l % 2)));
+                const float v0 = char((q1 & 0x0f) | ((qh & 0x03) << 4)) - 32;
+                const float v1 = char((q2 & 0x0f) | ((qh & 0x0c) << 2)) - 32;
+                const float v2 = char((q1 >> 4) | (qh & 0x30)) - 32;
+                const float v3 = char((q2 >> 4) | ((qh & 0xc0) >> 2)) - 32;
+                for (ushort col = 0; col < 4; ++col) {
+                    device const float *y = input + col * width + input_offset;
+                    sums[col][0] += y[l] * v0;
+                    sums[col][1] += y[l + 32] * v1;
+                    sums[col][2] += y[l + 64] * v2;
+                    sums[col][3] += y[l + 96] * v3;
+                }
+            }
+            for (ushort col = 0; col < 4; ++col) {
+                sum[row][col] += q.d *
+                    (sums[col][0] * q.scales[is] + sums[col][1] * q.scales[is+2] +
+                     sums[col][2] * q.scales[is+4] + sums[col][3] * q.scales[is+6]);
+            }
+        }
+    }
+    for (ushort row = 0; row < 2; ++row) {
+        for (ushort col = 0; col < 4; ++col) {
+            float value = simd_sum(sum[row][col]);
+            if (lane == 0 && first_row + row < rows)
+                output[col * rows + first_row + row] = value;
+        }
+    }
+}
+
 // Experimental producer-side greedy path. It keeps the paired Q6_K arithmetic
 // above and replaces four full logits per threadgroup with one candidate.
 struct TopPart { float value; uint index; uint invalid; };
@@ -292,14 +354,16 @@ static std::string optional_ms(double value) {
 }
 
 int main(int argc, char **argv) {
-    require(argc >= 3 && argc <= 6, "usage: bench-metal-q6-projection PLUGIN CAPTURE_DIR [--check-only] [--gpu-trace] [--fused-top]");
-    bool check_only = false, trace = false, fused_top = false;
+    require(argc >= 3 && argc <= 7, "usage: bench-metal-q6-projection PLUGIN CAPTURE_DIR [--check-only] [--gpu-trace] [--fused-top] [--batch4]");
+    bool check_only = false, trace = false, fused_top = false, batch4 = false;
     for (int i = 3; i < argc; ++i) {
         if (!std::strcmp(argv[i], "--check-only") && !check_only) check_only = true;
         else if (!std::strcmp(argv[i], "--gpu-trace") && !trace) trace = true;
         else if (!std::strcmp(argv[i], "--fused-top") && !fused_top) fused_top = true;
+        else if (!std::strcmp(argv[i], "--batch4") && !batch4) batch4 = true;
         else require(false, "unknown or duplicate option");
     }
+    require(!(batch4 && fused_top), "batch4 and fused-top are separate screens");
     std::ifstream geometry(path(argv[2], "geometry.txt"));
     std::string version, trailing; uint64_t width64 = 0, rows64 = 0; int type = -1;
     geometry >> version >> width64 >> rows64 >> type;
@@ -330,7 +394,8 @@ int main(int argc, char **argv) {
         auto ctx = ggml_init({ggml_tensor_overhead() * 40 + 2 * ggml_graph_overhead_custom(16, false), nullptr, true});
         require(ctx, "ggml context initialization failed");
         auto w = ggml_new_tensor_2d(ctx, GGML_TYPE_Q6_K, width, rows);
-        auto x = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, width);
+        auto x = batch4 ? ggml_new_tensor_2d(ctx, GGML_TYPE_F32, width, 4)
+                        : ggml_new_tensor_1d(ctx, GGML_TYPE_F32, width);
         auto tail_w = ggml_view_2d(ctx, w, width, tail_rows, w->nb[1], 0);
         ggml_tensor *outputs[2] = {ggml_mul_mat(ctx, w, x), ggml_mul_mat(ctx, tail_w, x)};
         ggml_tensor *choices[2] = {nullptr, nullptr};
@@ -350,7 +415,7 @@ int main(int argc, char **argv) {
         if (!library) std::fprintf(stderr, "Metal compile: %s\n", error.localizedDescription.UTF8String);
         require(library != nil, "native kernel compilation failed");
         id<MTLComputePipelineState> pipeline = [metal newComputePipelineStateWithFunction:
-            [library newFunctionWithName:@"q6_pair_load"] error:&error];
+            [library newFunctionWithName:batch4 ? @"q6_batch4" : @"q6_pair_load"] error:&error];
         require(pipeline != nil && pipeline.threadExecutionWidth == 32 && pipeline.maxTotalThreadsPerThreadgroup >= 64,
                 "native pipeline geometry unavailable");
         id<MTLComputePipelineState> top_pipeline = nil, finish_pipeline = nil;
@@ -366,8 +431,10 @@ int main(int argc, char **argv) {
         }
         id<MTLCommandQueue> queue = [metal newCommandQueue];
         id<MTLBuffer> mw = [metal newBufferWithLength:weight_bytes options:MTLResourceStorageModeShared];
-        id<MTLBuffer> mx = [metal newBufferWithLength:size_t(width) * 4 options:MTLResourceStorageModeShared];
-        id<MTLBuffer> my = fused_top ? nil : [metal newBufferWithLength:size_t(rows) * 4 options:MTLResourceStorageModeShared];
+        id<MTLBuffer> mx = [metal newBufferWithLength:size_t(width) * 4 * (batch4 ? 4 : 1)
+            options:MTLResourceStorageModeShared];
+        id<MTLBuffer> my = fused_top ? nil : [metal newBufferWithLength:size_t(rows) * 4 * (batch4 ? 4 : 1)
+            options:MTLResourceStorageModeShared];
         id<MTLBuffer> parts = fused_top ? [metal newBufferWithLength:size_t((rows + 3) / 4) * 12
             options:MTLResourceStorageModeShared] : nil;
         id<MTLBuffer> token = fused_top ? [metal newBufferWithLength:4 options:MTLResourceStorageModeShared] : nil;
@@ -384,12 +451,15 @@ int main(int argc, char **argv) {
         if (trace) install_trace();
         std::printf("{\"event\":\"setup\",\"width\":%u,\"rows\":%u,\"tail_rows\":%u,\"weight_bytes\":%zu,"
                     "\"ggml_buffer_bytes\":%zu,\"native_buffer_bytes\":%zu,\"simd_width\":%lu,"
-                    "\"threads\":64,\"pipeline_max_threads\":%lu,\"fused_top\":%s,\"wall_instrumented\":%s,"
+                    "\"threads\":64,\"pipeline_max_threads\":%lu,\"fused_top\":%s,\"batch4\":%s,\"wall_instrumented\":%s,"
                     "\"warmups\":%d,\"pairs\":%d,\"iterations_per_pair\":%d}\n", width, rows, tail_rows,
-                    weight_bytes, ggml_backend_buffer_get_size(buffer), weight_bytes + size_t(width) * 4 +
-                    (fused_top ? size_t((rows + 3) / 4) * 12 + 4 : size_t(rows) * 4),
+                    weight_bytes, ggml_backend_buffer_get_size(buffer), weight_bytes +
+                    size_t(width) * 4 * (batch4 ? 4 : 1) +
+                    (fused_top ? size_t((rows + 3) / 4) * 12 + 4
+                               : size_t(rows) * 4 * (batch4 ? 4 : 1)),
                     (unsigned long)pipeline.threadExecutionWidth, (unsigned long)pipeline.maxTotalThreadsPerThreadgroup,
-                    fused_top ? "true" : "false", trace ? "true" : "false", WARMUPS, PAIRS, ITERATIONS);
+                    fused_top ? "true" : "false", batch4 ? "true" : "false",
+                    trace ? "true" : "false", WARMUPS, PAIRS, ITERATIONS);
         auto run = [&](int arm, int shape) -> Timing {
             begin_trace(trace);
             auto start = std::chrono::steady_clock::now();
@@ -440,19 +510,29 @@ int main(int argc, char **argv) {
             return {wall, gpu, command_count};
         };
         auto input = [&](int activation) {
-            ggml_backend_tensor_set(x, inputs[activation].data(), 0, size_t(width) * 4);
-            std::memcpy(mx.contents, inputs[activation].data(), size_t(width) * 4);
+            for (int col = 0; col < (batch4 ? 4 : 1); ++col) {
+                const float *values = inputs[batch4 ? col % 3 : activation].data();
+                const size_t offset = size_t(col) * width * sizeof(float);
+                ggml_backend_tensor_set(x, values, offset, size_t(width) * sizeof(float));
+                std::memcpy(static_cast<char *>(mx.contents) + offset, values,
+                            size_t(width) * sizeof(float));
+            }
         };
         // Every full-vector and tail qualification completes before any timing.
-        for (int activation = 0; activation < 3; ++activation) {
+        for (int activation = 0; activation < (batch4 ? 1 : 3); ++activation) {
             input(activation);
             for (int shape = 0; shape < 2; ++shape) {
                 run(0, shape); run(1, shape);
                 size_t n = shape == 0 ? rows : tail_rows;
-                std::vector<float> reference(n);
-                ggml_backend_tensor_get(outputs[shape], reference.data(), 0, n * sizeof(float));
+                std::vector<float> reference(n * (batch4 ? 4 : 1));
+                ggml_backend_tensor_get(outputs[shape], reference.data(), 0,
+                                        reference.size() * sizeof(float));
                 const char *label = shape == 0 ? "full" : "tail";
-                compare(expected[activation].data(), reference.data(), n, activation, label, "captured_vs_ggml");
+                for (int col = 0; col < (batch4 ? 4 : 1); ++col) {
+                    const int source = batch4 ? col % 3 : activation;
+                    compare(expected[source].data(), reference.data() + col * n, n,
+                            source, label, "captured_vs_ggml");
+                }
                 if (fused_top) {
                     int32_t reference_top = -1;
                     ggml_backend_tensor_get(choices[shape], &reference_top, 0, sizeof(reference_top));
@@ -466,8 +546,23 @@ int main(int argc, char **argv) {
                     std::printf("{\"event\":\"top_check\",\"activation\":%d,\"shape\":\"%s\",\"token\":%zu}\n",
                                 activation, label, expected_top);
                 } else {
-                    compare(reference.data(), static_cast<const float *>(my.contents), n,
-                            activation, label, "ggml_vs_native");
+                    for (int col = 0; col < (batch4 ? 4 : 1); ++col) {
+                        compare(reference.data() + col * n,
+                                static_cast<const float *>(my.contents) + col * n, n,
+                                batch4 ? col % 3 : activation, label, "ggml_vs_native");
+                    }
+                    if (batch4) {
+                        std::printf("{\"event\":\"batch4_check\",\"shape\":\"%s\","
+                                    "\"tokens\":[", label);
+                        for (int col = 0; col < 4; ++col) {
+                            const float *column = reference.data() + col * n;
+                            size_t top = 0;
+                            for (size_t row = 1; row < n; ++row)
+                                if (column[row] > column[top]) top = row;
+                            std::printf("%s%zu", col ? "," : "", top);
+                        }
+                        std::printf("]}\n");
+                    }
                 }
             }
         }
@@ -500,7 +595,7 @@ int main(int argc, char **argv) {
             require(check_finish() == 0xffffffffu, "final-reduction nonfinite refusal failed");
             std::printf("{\"event\":\"top_edge_check\",\"tie\":3,\"nonfinite_refused\":true}\n");
         }
-        if (!check_only) for (int activation = 0; activation < 3; ++activation) {
+        if (!check_only) for (int activation = 0; activation < (batch4 ? 1 : 3); ++activation) {
             input(activation);
             for (int i = 0; i < WARMUPS; ++i) { run(0, 0); run(1, 0); }
             for (int pair = 0; pair < PAIRS; ++pair) {

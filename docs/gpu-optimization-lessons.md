@@ -419,6 +419,21 @@ This empty-prefix graph result still excludes a draft, partial acceptance,
 rejection replay and whole-request time; those decide whether weight reuse
 can become a generation speedup.
 
+An independent four-column Q6_K output-head probe later tested weight reuse
+inside one Metal dispatch using the actual 417 MB head weight and three real
+activations plus one repeated column. Every complete and 257-row tail F32
+value met the predeclared bound and greedy choices agreed, but steady local
+completed time was about 0.7 ms slower than pinned ggml; traced GPU intervals
+also lost. The first measured pair favored native and remains in the raw data,
+while the other four pairs and the repeated instrumented run favored ggml.
+The pinned ggml path already processes four input columns with a compact
+eight-lane-per-row vectorized dequant/dot mapping. Reusing a weight block
+across columns is therefore not sufficient by itself: lane allocation,
+dequant instruction shape and register use determine whether that reuse pays.
+Do not connect this particular kernel to a request and then credit the four-row
+target verifier's existing gain to it. See
+[`qwen35-q6-batch4-screen.md`](qwen35-q6-batch4-screen.md).
+
 The [exact-prefix continuation screen](qwen35-target-continuation-screen.md)
 then ran the same four oracle tokens after an identical 200-token prompt
 state. Five alternating M1 pairs gave a 63.126 ms median connected target
