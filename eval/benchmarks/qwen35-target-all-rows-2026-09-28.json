@@ -1,0 +1,240 @@
+{
+  "schema_version": 1,
+  "token_ids": [
+    0,
+    23066,
+    0,
+    0
+  ],
+  "numeric_bound": "abs(batch-serial) <= 0.05 + 0.001*abs(serial)",
+  "binary_sha256": "dffe73550ae2917345385ba96b397d3d8fa8a01dadcf98653be622a2b52e40a0",
+  "geometry_sha256": "39baceca01ea59dba7f989f3b6c15214f8927880926e2e87d18ffc56fd813c98",
+  "gguf_sha256": "cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1",
+  "pack_sha256": "b4b418ebef9f83f911e4d604bdcce03e589fb7d2afa35f7e3bbdff3111b810b1",
+  "backend_sha256": "a901a131109e42de39919c74562947ad8783b32d63c2ce88be13e9812b07fdf5",
+  "bundle_id": "0a472538ef35e2722fb9488d677196081ab8f726eff825a4e7837ddade57814b",
+  "pairs": [
+    {
+      "order": [
+        "serial",
+        "batch"
+      ],
+      "serial": {
+        "rows": 4,
+        "compute_ns": 116284667,
+        "readback_ns": 396416,
+        "workspace_bytes": 2022656,
+        "process_ns": 1244064708
+      },
+      "batch": {
+        "rows": 4,
+        "vocabulary": 248320,
+        "logits_bytes": 3973120,
+        "compute_ns": 44352250,
+        "readback_ns": 560625,
+        "workspace_bytes": 4010112,
+        "process_ns": 986957875
+      },
+      "check": {
+        "max_abs_by_row": [
+          0.006170511245727539,
+          0.003489971160888672,
+          0.0030846595764160156,
+          0.002620220184326172
+        ],
+        "batch_greedy": [
+          729,
+          0,
+          198,
+          198
+        ],
+        "serial_greedy": [
+          729,
+          0,
+          198,
+          198
+        ]
+      }
+    },
+    {
+      "order": [
+        "batch",
+        "serial"
+      ],
+      "batch": {
+        "rows": 4,
+        "vocabulary": 248320,
+        "logits_bytes": 3973120,
+        "compute_ns": 44446167,
+        "readback_ns": 656875,
+        "workspace_bytes": 4010112,
+        "process_ns": 1017297375
+      },
+      "serial": {
+        "rows": 4,
+        "compute_ns": 115176459,
+        "readback_ns": 393002,
+        "workspace_bytes": 2022656,
+        "process_ns": 1260707208
+      },
+      "check": {
+        "max_abs_by_row": [
+          0.006170511245727539,
+          0.003489971160888672,
+          0.0030846595764160156,
+          0.002620220184326172
+        ],
+        "batch_greedy": [
+          729,
+          0,
+          198,
+          198
+        ],
+        "serial_greedy": [
+          729,
+          0,
+          198,
+          198
+        ]
+      }
+    },
+    {
+      "order": [
+        "serial",
+        "batch"
+      ],
+      "serial": {
+        "rows": 4,
+        "compute_ns": 115456252,
+        "readback_ns": 431210,
+        "workspace_bytes": 2022656,
+        "process_ns": 1237470375
+      },
+      "batch": {
+        "rows": 4,
+        "vocabulary": 248320,
+        "logits_bytes": 3973120,
+        "compute_ns": 44369958,
+        "readback_ns": 681958,
+        "workspace_bytes": 4010112,
+        "process_ns": 1103729541
+      },
+      "check": {
+        "max_abs_by_row": [
+          0.006170511245727539,
+          0.003489971160888672,
+          0.0030846595764160156,
+          0.002620220184326172
+        ],
+        "batch_greedy": [
+          729,
+          0,
+          198,
+          198
+        ],
+        "serial_greedy": [
+          729,
+          0,
+          198,
+          198
+        ]
+      }
+    },
+    {
+      "order": [
+        "batch",
+        "serial"
+      ],
+      "batch": {
+        "rows": 4,
+        "vocabulary": 248320,
+        "logits_bytes": 3973120,
+        "compute_ns": 44413875,
+        "readback_ns": 680042,
+        "workspace_bytes": 4010112,
+        "process_ns": 1053489250
+      },
+      "serial": {
+        "rows": 4,
+        "compute_ns": 113282666,
+        "readback_ns": 360374,
+        "workspace_bytes": 2022656,
+        "process_ns": 1142188250
+      },
+      "check": {
+        "max_abs_by_row": [
+          0.006170511245727539,
+          0.003489971160888672,
+          0.0030846595764160156,
+          0.002620220184326172
+        ],
+        "batch_greedy": [
+          729,
+          0,
+          198,
+          198
+        ],
+        "serial_greedy": [
+          729,
+          0,
+          198,
+          198
+        ]
+      }
+    },
+    {
+      "order": [
+        "serial",
+        "batch"
+      ],
+      "serial": {
+        "rows": 4,
+        "compute_ns": 117551250,
+        "readback_ns": 583833,
+        "workspace_bytes": 2022656,
+        "process_ns": 1232135417
+      },
+      "batch": {
+        "rows": 4,
+        "vocabulary": 248320,
+        "logits_bytes": 3973120,
+        "compute_ns": 44589250,
+        "readback_ns": 833708,
+        "workspace_bytes": 4010112,
+        "process_ns": 1121711083
+      },
+      "check": {
+        "max_abs_by_row": [
+          0.006170511245727539,
+          0.003489971160888672,
+          0.0030846595764160156,
+          0.002620220184326172
+        ],
+        "batch_greedy": [
+          729,
+          0,
+          198,
+          198
+        ],
+        "serial_greedy": [
+          729,
+          0,
+          198,
+          198
+        ]
+      }
+    }
+  ],
+  "state_tracer_sha256": "42ebe5d78b6ff4656baf851cda42db7d01b424c7416f753ac4a92461ff45c101",
+  "active_state_check": {
+    "bound": "abs(batch-serial) <= 0.005 + 0.0005*abs(serial)",
+    "valid_kv_elements": 24576,
+    "active_recurrent_elements": 5050368,
+    "valid_kv_max_abs": 0.0078125,
+    "active_recurrent_max_abs": 0.0010881423950195312,
+    "valid_kv_violations": 0,
+    "active_recurrent_violations": 0
+  },
+  "paired_serial_minus_batch_compute_median_ms": 71.086294,
+  "batch_compute_wins": 5
+}

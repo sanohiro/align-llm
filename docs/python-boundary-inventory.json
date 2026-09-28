@@ -3773,6 +3773,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/measure-qwen35-target-rows",
+      "classification": "BENCHMARK_OR_MEASUREMENT",
+      "behavior": "Runs explicit real-model Align all-row and serial diagnostic arms on the same token IDs, checks all F32 logits and greedy choices under a predeclared bound, optionally compares valid KV and active recurrent state, and records alternating compute timings.",
+      "reachability": "Focused developer measurement only; launches an explicit Align smoke binary and never participates in normal product execution.",
+      "substitution": "Selects diagnostic graph arms and reduces complete output/timing evidence; it does not implement a draft model, token acceptance or product inference.",
+      "python_reason": "Independent whole-row numerical comparison and alternating measurement remain test-side responsibilities.",
+      "target": "Retain as a reproducible four-row graph feasibility screen; model graph and execution semantics stay in Align.",
+      "migration": "N/A",
+      "acceptance": "python3 scripts/measure-qwen35-target-rows --help; real 2B Metal campaign; python3 scripts/check-python-boundary --strict",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/measure-native-swiglu",
       "classification": "BENCHMARK_OR_MEASUREMENT",
       "behavior": "Independent alternating native SwiGLU and mapped-weight control/candidate/pinned-reference measurement; records all samples and exact text/count parity.",

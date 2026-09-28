@@ -8,6 +8,8 @@
  * Emits Q35_STATE-prefixed JSON lines after each successful synchronized graph.
  * A graph_complete record is required before treating its plane set as complete.
  * Hashes both recurrent parity banks and entire KV allocations, including tails.
+ * Optional ALIGN_STATE_DUMP_PATH and ALIGN_STATE_DUMP_ORDINAL together write
+ * that graph's full planes in index order for a separate numeric diagnostic.
  */
 #include "ggml.h"
 #include "ggml-backend.h"
@@ -143,6 +145,23 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
     const size_t chunk = 1024 * 1024;
     void *scratch = malloc(chunk);
     require(scratch != NULL, "state hash scratch allocation failed");
+    const char *dump_path = getenv("ALIGN_STATE_DUMP_PATH");
+    const char *dump_ordinal = getenv("ALIGN_STATE_DUMP_ORDINAL");
+    require((dump_path == NULL) == (dump_ordinal == NULL),
+            "state dump path and ordinal must be set together");
+    FILE *dump = NULL;
+    if (dump_path != NULL) {
+        require(dump_path[0] != '\0' && dump_ordinal[0] != '\0', "empty state dump selector");
+        for (const char *p = dump_ordinal; *p; ++p)
+            require(*p >= '0' && *p <= '9', "invalid state dump ordinal");
+        errno = 0;
+        unsigned long long target = strtoull(dump_ordinal, NULL, 10);
+        require(errno != ERANGE, "state dump ordinal overflow");
+        if (target == ordinal) {
+            dump = fopen(dump_path, "wb");
+            require(dump != NULL, "state dump open failed");
+        }
+    }
     for (int64_t index = 0; index < count; ++index) {
         require(align_gpu_kv_slot(owner, index, slots, 0) == 0, "missing resident state plane");
         struct ggml_tensor *tensor = NULL;
@@ -157,6 +176,8 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
             size_t n = bytes - offset < chunk ? bytes - offset : chunk;
             ggml_backend_tensor_get(tensor, scratch, offset, n);
             require(CC_SHA256_Update(&hash, scratch, (CC_LONG)n) == 1, "hash update failed");
+            if (dump != NULL) require(fwrite(scratch, 1, n, dump) == n,
+                                      "state dump write failed");
             offset += n;
         }
         unsigned char digest[CC_SHA256_DIGEST_LENGTH];
@@ -174,6 +195,7 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
                 tensor->ne[0], tensor->ne[1], tensor->ne[2], tensor->ne[3],
                 tensor->nb[0], tensor->nb[1], tensor->nb[2], tensor->nb[3], bytes, hex);
     }
+    if (dump != NULL) require(fclose(dump) == 0, "state dump close failed");
     free(scratch);
     fprintf(stderr, "Q35_STATE {\"event\":\"graph_complete\",\"ordinal\":%" PRIu64
             ",\"kind\":%d,\"state_count\":%" PRId64 "}\n", ordinal, kind, count);

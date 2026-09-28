@@ -24,51 +24,34 @@ suite passed. Exact-head preflight and all three CI checks passed. The review
 envelope and check evidence are on PR #316. Other Metal hosts, CUDA and Gemma
 remain deferred as registered in `docs/backend-parity.md`.
 
-## Active GPU weight-reuse investigation (2026-09-28)
+## Active Qwen3.5 target verification investigation (2026-09-28)
 
-Branch `agent/native-metal-resident-execution` starts from merged `main` at
-`29398bda`. The independent final-layer Q4_0 FFN was actually connected to
-the 2B decode graph in a developer interposer with three boundary modes;
-`docs/qwen35-native-final-ffn-connected-screen.md`, the checked-in probe and
-three raw paired receipts record the result. Five real decode shadow steps
-passed the existing local numeric bound; three retained requests per arm
-matched generated output/counts at 64/16, 200/32 and 330/64. Fresh secondary
-Metal views won 0/15 pairs, direct pinned-buffer borrowing won 1/15, and
-GPU-event ordering won 1/15, with adverse long-condition results. A shared
-counter verified every FFN substitution in each request, including the timed
-third request; the original unchecked-count receipts were superseded. The FFN-only
-substitution is withdrawn. No product runtime or ggml source was changed;
-complete logits/state and fault injection were not qualified for this
-discarded diagnostic. The probe found actual FFN input/gated allocation
-aliasing and stale reads from a cached secondary workspace Metal view; direct
-borrowing restored correctness on M1 but relies on pinned ggml internals.
+PR #317 (`agent/native-metal-resident-execution`) merged into `main` at
+`5b8669ee`. Its connected final-layer independent Metal FFN lost real
+requests in all three boundary modes and was withdrawn; the related-prompt
+prefill and actual Q6_K head screens motivated a complete target graph.
+Their limits and receipts are in `docs/qwen35-native-final-ffn-connected-screen.md`
+and `docs/qwen35-target-batch-feasibility.md`. Product generation remains on
+the earlier selectable mixed native state-copy route, with ggml matrix work.
 
-Next in priority order: (1) finish the focused developer probe/docs checkpoint
-and verify its boundary and publication checks; (2) measure an actual
-multi-token target pass and Qwen3.5 DeltaNet/KV acceptance-prefix transaction
-before proposing speculative verification in normal Align generation;
-(3) only if target-plus-draft time and state rollback support it, implement a
-default-off Align-owned consumer with exact output/state qualification against
-ordinary generation. The existing mixed native copy graph is the comparison
-and rollback. A one-layer graph split is not a further optimization candidate
-without a new scheduling/byte mechanism. Q4_0/Q6_K weight traffic remains the
-decode target, not a claimed hardware ceiling. Other Metal hosts, CUDA,
-Q4_1 down and Gemma remain deferred as registered in backend parity.
+Current branch `agent/qwen35-target-all-row-trial` starts from `5b8669ee`.
+A developer-only Align graph now emits all four full-model target logits rows
+for the same real 2B `[0,23066,0,0]` tokens. Five alternating M1 pairs gave
+115.456 ms serial versus 44.414 ms batched synchronized compute (5/5 wins),
+plus 1,987,456 bytes more reported graph workspace. Every complete logit row
+and the valid active KV/recurrent state met their separately predeclared
+numeric bounds. The independent state diagnostic ran outside timing. See
+`docs/qwen35-target-all-rows-screen.md` and its raw receipt. This is an
+empty-prefix graph feasibility result, not a speculative request speedup.
 
-The first target-batch feasibility screen is also complete in this branch:
-`docs/qwen35-target-batch-feasibility.md`, a real-model 200-token three-arm
-caller and an actual 417 MB Q6_K head probe record five pairs each at
-4/8/16 longer prompt lengths. The longer prompts share only the first 191
-token IDs with the base because the chat-template suffix moves, so this is
-a shape-cost comparison rather than an exact target continuation.
-Final-logit-only long-prefill deltas were
-2.562/2.400/6.684 ms versus 121.676/230.490/438.319 ms serial decode;
-batched Q6_K head projections beat serial in 5/5 pairs for every K while
-all complete rows passed the declared local numerical bound and greedy
-choice. This is feasibility evidence only: it omits the other
-complete-model target logit rows, a draft, acceptance and rollback. The next
-implementation step is an Align-owned multi-row target graph and exact
-state-transaction owner, with the cost ceiling in the performance plan.
+Next in priority order: (1) finish owner verification, one comprehensive
+review, exact-head preflight and publication of the current capability;
+(2) test the all-row graph after an identical real prefix and design an
+Align-owned full/partial acceptance, rejection replay and cleanup transaction;
+(3) measure a cheap draft and complete target-plus-draft requests against
+ordinary Align and pinned llama.cpp before choosing a default-off product
+trial. Another Metal generation, CUDA, Q4_1 down and Gemma remain deferred
+with reasons in `docs/backend-parity.md`. No source patch to ggml is proposed.
 
 ## Completed native Metal Q4_0 complete-FFN capture screen (2026-09-28)
 

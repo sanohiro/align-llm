@@ -10,6 +10,12 @@ model values; normal inference never invokes it.
 workloads as a target-batch shape-cost screen; the longer prompts are not exact
 token-ID continuations of the base. It does not perform draft
 selection, token acceptance or product inference.
+`scripts/measure-qwen35-target-rows` is `BENCHMARK_OR_MEASUREMENT`: it runs
+explicit Align diagnostic graph arms on identical real-model token IDs,
+compares complete logits rows with a predeclared local bound, and records
+alternating compute timings. Its optional state trace compares valid KV and
+active recurrent values after the timed graph replay. It has no product
+inference reachability.
 
 `scripts/run-qwen35-native-conv-copy-smoke` is `INDEPENDENT_ORACLE`: it drives
 explicit real-model Align workers, compares diagnostic hashes of complete
