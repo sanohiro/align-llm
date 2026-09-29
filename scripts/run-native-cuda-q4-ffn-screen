@@ -1,14 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -ne 3 ]; then
-  echo 'usage: run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN' >&2
+if [ "$#" -ne 3 ] && [ "$#" -ne 4 ]; then
+  echo 'usage: run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN [CAPTURE_DIR]' >&2
   exit 2
 fi
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 source_dir=$(realpath -- "$1")
 lib_dir=$(realpath -- "$2")
 plugin=$(realpath -- "$3")
+capture_dir=
+if [ "$#" -eq 4 ]; then
+  capture_dir=$(realpath -- "$4")
+  if [ ! -d "$capture_dir" ]; then
+    echo 'actual-weight capture directory missing' >&2
+    exit 2
+  fi
+fi
 if [ ! -f "$source_dir/ggml/include/ggml.h" ] \
   || [ ! -f "$lib_dir/libggml.so" ] \
   || [ ! -f "$lib_dir/libggml-base.so" ] \
@@ -24,4 +32,10 @@ nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 \
   "$root_dir/scripts/bench-native-cuda-q4-ffn.cu" \
   -L"$lib_dir" -Xlinker "-rpath=$lib_dir" -lggml -lggml-base \
   -o "$screen_dir/bench-native-cuda-q4-ffn"
-"$screen_dir/bench-native-cuda-q4-ffn" "$plugin"
+if [ -n "$capture_dir" ]; then
+  sha256sum "$capture_dir/gate.bin" "$capture_dir/up.bin" "$capture_dir/down.bin" \
+    "$capture_dir/input.bin" "$capture_dir/gated.bin" "$capture_dir/output.bin"
+  "$screen_dir/bench-native-cuda-q4-ffn" "$plugin" "$capture_dir"
+else
+  "$screen_dir/bench-native-cuda-q4-ffn" "$plugin"
+fi

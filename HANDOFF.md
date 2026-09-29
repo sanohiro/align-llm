@@ -2,51 +2,39 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active connected CUDA Q6_K output-head trial (2026-09-29)
+## Active actual-weight CUDA Q4_0 FFN screen (2026-09-29)
 
-Branch `agent/native-cuda-q6-connected` starts from merged `main` `f4f05c1`
-(PR #327); checkpoint `8d0828f` connected the default-off independent
-Q8_1/DP4A one-column Q6_K path to actual requests but duplicated ggml's
-projection. Commit `51f67aa` removes that duplicate in mode
-`1` while preserving mode `0`. The authoritative contract is in
-`docs/specs/gpu-runtime-performance.md`. Full logits (maximum difference
-`1.90734863e-6`), 252 resident-state planes at each 31/200/330-token case,
-exact greedy/rendered output, retained short/wider/short requests, malformed
-selection and forced submit/completion failures passed. `make fmt`, `make
-build` with real CUDA shim and `make check` (169 Align units) passed. Nsight
-counted three native projections and zero ggml Q6_K output projections for
-three output tokens. On the repaired binary, five paired requests per case
-beat the duplicated checkpoint by 14.453/33.427/68.092 ms median at 56/16,
-200/32 and 330/64 (all 15 wins). Against unchanged Align, native lost by
-0.705/2.260/1.957 ms (0/5, 1/5, 2/5 native wins); against pinned llama.cpp
-it gained 15.506/10.259/10.121 ms (all 15 wins). These are scoped warm-request
-measurements, not a general speed claim. Complete pairs, sources, failures
-and limits are in `docs/cuda-native-optimization-log.md`.
+Branch `agent/native-cuda-q4-profile` starts from merged `main` `27e4c840`
+(PR #328). Its Q6_K selected mode removes the duplicated ggml projection and
+passes complete logits/state, retained requests, failures, model-work and
+device-budget owners. The reviewed repair was `da69af3`; exact-head preflight
+and all three hosted checks passed. Five-pair selected warm requests beat the
+previous duplicated checkpoint by 14.453/33.427/68.092 ms median at 56/16,
+200/32 and 330/64, but lost to ordinary Align by 0.705/2.260/1.957 ms.
+They beat pinned llama.cpp by 15.506/10.259/10.121 ms in these scoped cases;
+this does not establish a general victory. See `docs/cuda-native-optimization-log.md`.
 
-One comprehensive `codex review --base origin/main` of `51f67aa` found two
-valid P2 accounting issues. The active repair adds the native model operation
-to the observation, reserves/counts 995,584 helper device bytes, and delays
-allocation until after budget admission. The extended real-model owner passed
-equal ordinary/native model-work totals (`2058` after three graphs), budget
-and device-peak checks, complete logits/state and retained requests. A local
-near-admission probe passed ordinary mode and refused selected mode at
-1,809,499,739 bytes; forced submit/completion faults passed again. The
-Python boundary guard and mutation suite passed. `make check` passed 169 Align
-units after repair. The repair delta was inspected for unrelated behavior.
+An exact 200/32 selected-mode Nsight node trace now attributes 38.577 ms and
+16.555 ms of summed GPU intervals to fused and unfused Q4_0 decode matvec,
+versus 30.069 ms to the native Q6_K head. This is attribution, not wall time.
+The next local capability captures the final decode FFN's actual 2B Q4_0
+weights and activation, validates independent CUDA against the captured ggml
+values, and compares five alternating complete-FFN pairs. The fresh Linux
+capture and actual-weight numeric owner pass; a separate down-only four-warp
+candidate passes full gated/down rows and its instrumented down kernel median
+fell from 8.064 to 7.616 microseconds in adjacent node traces. Complete FFN
+host timing is noisy and still trails ggml, so no request route is changed.
+The one-warp gate/up experiment did not establish a gain and was reverted. The exact capture
+and trace commands/results belong in the optimization log before publication.
 
-Next actions, in order: (1) commit the consolidated review repair and run
-exact-head publication preflight; (2) publish an English PR, record
-review/integration evidence and merge after required checks; (3) refresh
-`main`, profile the
-nonduplicated request's Q4_0 and Q6_K cost, and test one bounded improvement
-at a time against the current native baseline, ordinary Align and pinned
-llama.cpp. Compare SASS when source inspection is insufficient. The local
-one-column screen had ambiguous host timing (+0.014 and -0.007 ms paired
-medians) and Nsight Systems medians 893.088 us native, 886.848 us ggml.
-Nsight Compute counters remain denied (`ERR_NVGPUCTRPERM`).
-Other CUDA GPUs, Qwen sizes and Gemma are unmeasured and deferred until the
-corresponding hardware/model owner is available. No fixed percentage or
-win-count floor governs a useful measured improvement.
+Next actions: (1) finish the Q4 capture/screen docs, parity row and focused
+owners, including malformed capture; (2) commit, run one comprehensive review
+and exact-head publication preflight; (3) publish an English PR, record review
+and integration evidence, merge after checks; (4) refresh `main` and continue
+the Q4_0 profile/improve/benchmark cycle toward a connected native route.
+Nsight Compute counters remain denied (`ERR_NVGPUCTRPERM`). Other CUDA GPUs,
+Qwen sizes and Gemma remain unmeasured until their owner hardware/model is
+available. No fixed percentage floor governs a repeatable useful improvement.
 
 ## Completed CUDA Q6_K four-column screen (2026-09-29)
 

@@ -13,6 +13,9 @@ constexpr int THREADS = 128;
 constexpr int ROWS_PER_BLOCK = 2;
 constexpr int WARPS_PER_ROW = 2;
 constexpr int LANES_PER_ROW = 32 * WARPS_PER_ROW;
+constexpr int DOWN_ROWS_PER_BLOCK = 1;
+constexpr int DOWN_WARPS_PER_ROW = 4;
+constexpr int DOWN_LANES_PER_ROW = 32 * DOWN_WARPS_PER_ROW;
 constexpr int Q40_BLOCK = 32;
 
 struct Q40Block {
@@ -110,18 +113,19 @@ __global__ void gate_up_swiglu(const Q40Block *gate, const Q40Block *up,
 }
 
 __global__ void down_matvec(const Q40Block *weight, const Q81Block *input, float *output) {
-    const int lane = threadIdx.x % LANES_PER_ROW;
-    const int local_row = threadIdx.x / LANES_PER_ROW;
-    const int row = blockIdx.x * ROWS_PER_BLOCK + local_row;
-    __shared__ float partial[ROWS_PER_BLOCK][WARPS_PER_ROW];
+    const int lane = threadIdx.x % DOWN_LANES_PER_ROW;
+    const int local_row = threadIdx.x / DOWN_LANES_PER_ROW;
+    const int row = blockIdx.x * DOWN_ROWS_PER_BLOCK + local_row;
+    __shared__ float partial[DOWN_ROWS_PER_BLOCK][DOWN_WARPS_PER_ROW];
     float sum = 0.0f;
-    for (int block = lane; block < HIDDEN / Q40_BLOCK; block += LANES_PER_ROW) {
+    for (int block = lane; block < HIDDEN / Q40_BLOCK; block += DOWN_LANES_PER_ROW) {
         sum += dot(weight[row * (HIDDEN / Q40_BLOCK) + block], input[block]);
     }
     sum = reduce(sum);
     if ((threadIdx.x & 31) == 0) partial[local_row][lane >> 5] = sum;
     __syncthreads();
-    if (lane == 0) output[row] = partial[local_row][0] + partial[local_row][1];
+    if (lane == 0) output[row] = partial[local_row][0] + partial[local_row][1]
+        + partial[local_row][2] + partial[local_row][3];
 }
 }
 
@@ -162,7 +166,7 @@ extern "C" int align_native_cuda_q40_ffn_run(void *context, const void *gate, co
     quantize_q81<<<HIDDEN / Q40_BLOCK, Q40_BLOCK, 0, ctx->stream>>>(
         ctx->gated, ctx->qgated);
     launched = cudaGetLastError() == cudaSuccess && launched;
-    down_matvec<<<WIDTH / ROWS_PER_BLOCK, THREADS, 0, ctx->stream>>>(
+    down_matvec<<<WIDTH / DOWN_ROWS_PER_BLOCK, THREADS, 0, ctx->stream>>>(
         static_cast<const Q40Block *>(down), ctx->qgated, ctx->output);
     launched = cudaGetLastError() == cudaSuccess && launched;
     if (cudaStreamEndCapture(ctx->stream, &ctx->graph) != cudaSuccess || !launched

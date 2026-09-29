@@ -5,8 +5,9 @@ an NVIDIA GeForce RTX 4070 Ti (sm_89) with CUDA 13.3. The control is the
 unchanged CUDA plugin built from pinned llama.cpp `bb4caa7540188872173c44d161602d9271386413`.
 The real Qwen3.5-2B Q4_0 artifact used for session work has SHA-256
 `cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1`.
-The isolated FFN screen below instead uses deterministic synthetic Q4_0
-weights and one F32 input; its results are **not** a request-speed claim.
+The original isolated FFN screen uses deterministic synthetic Q4_0 weights;
+the later actual-weight screen captures one final decode FFN from this 2B
+artifact. Neither isolated result is a request-speed claim.
 
 ## Sources and measurement method
 
@@ -67,6 +68,104 @@ plus a scheduling boundary that avoids an extra whole-graph synchronization.
 A final owner rerun after the CUDA session work passed the same numeric checks
 and lost all five complete-FFN local pairs (ggml/native medians 0.045148/
 0.046924 ms), consistent with the earlier decision.
+
+## 2026-09-29: actual-weight final Q4_0 decode FFN
+
+After the connected Q6_K head stopped computing the redundant ggml output,
+an exact 200-prompt/32-output RTX 4070 Ti Nsight Systems node trace counted
+1,581 fused Q4_0 matvec instances (38.577 ms summed GPU intervals), 1,674
+unfused Q4_0 instances (16.555 ms), and 32 native Q6_K projections
+(30.069 ms). The two Q4_0 groups account for 42.6% of summed GPU kernel
+intervals, making them the next target. These intervals overlap host work
+and do not equal request latency. The trace used `--trace=cuda
+--cuda-graph-trace=node --sample=none --cpuctxsw=none`; the full model was
+ordinary ggml except the selected Q6_K head. The pinned Q4_0 implementation
+references are `ggml/src/ggml-cuda/mmvq.cu` (one-row, four-warp generic
+decode layout and fused gate) and `vecdotq.cuh` (Q4_0/Q8_1 dot). NVIDIA's
+[CUDA 13.4 best-practices guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#coalesced-access-to-global-memory)
+describes 32-byte memory transactions for cc 6.0+ and recommends adjacent
+warp accesses; that motivates measuring row/warp mapping but does not by
+itself predict a win for these 18-byte Q4_0 blocks.
+
+The diagnostic Linux interposer `scripts/capture-q4-ffn.c` selects the last
+2048 × 6144 Q4_0 gate/up/GLU/down chain preceding the ordinary 248,320-row
+Q6_K output head. It marks only that chain's activation and outputs before
+ggml allocation, reads them after successful decode compute, and writes
+create-only schema-1 files to an existing empty directory. It is never loaded
+for timings. The capture request was the exact CLI prompt `Hello`, maximum two
+generated tokens, returning `Hello!`, `prompt_tokens=31` and
+`completion_tokens=2`. The interposer captured graph kind `1`, the first
+decode step after the prompt's first generated token. The GGUF digest is at
+the top of this log; the alignpack and Model IR SHA-256 digests are
+`b4b418ebef9f83f911e4d604bdcce03e589fb7d2afa35f7e3bbdff3111b810b1`
+and `4c5c87078f7459a6a12ef5eb313f209cbecdd834667eeec4421e7c90384d20d1`.
+The runtime options selected `backend=cuda`, `device=CUDA0`,
+`placement=resident`, 4,294,967,296 host-budget bytes, 8,000,000,000
+device-budget bytes and `prefetch=off`, with `backend_bundle` pointing to the
+pinned same-source CUDA library directory. Build the interposer using the
+command in its source header and the pinned ggml include directory. With
+`GGUF`, `ALIGNPACK`, `MODEL_IR`, `RUNTIME_OPTIONS`, and `GGML_LIB` referring to
+those exact artifacts, reproduce the capture with this invocation (`OUT_JSON`
+must be outside the empty capture directory):
+
+```sh
+mkdir -p "$CAPTURE_DIR"
+env ALIGN_Q4_FFN_CAPTURE="$CAPTURE_DIR" LD_PRELOAD="$CAPTURE_INTERPOSER" \
+  ALIGN_LLM_NATIVE_Q6_HEAD=0 ALIGN_LLM_NATIVE_SWIGLU=0 \
+  ALIGN_LLM_NATIVE_STATE_COPY=0 \
+  ./main --provider align-runtime "$GGUF" "$ALIGNPACK" "$MODEL_IR" \
+  'Hello' "$OUT_JSON" 2 --runtime-options "$RUNTIME_OPTIONS"
+```
+
+The capture directory must already be empty. Then run:
+
+```sh
+scripts/run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN CAPTURE_DIR
+```
+
+The actual final-decode capture has gate/up/down SHA-256 digests respectively
+`aecf2ed2db40e2adb6ea5c13c8906b9109c9effaac4937d5336d116896eabc14`,
+`bbfe36a3e2cf525491fadf61508d06b1cf90ed8bb12b1aaf34beb2763dc35d4e`,
+and `aad841c012ddff8aa14b4c97a59bf25503337224ec0af526c62f038978e8c530`.
+Input, gated and final digests are `a78563211891a93d2f839ca4244b3a44cede7ea2c4e30443fb2125c6501fa2e2`,
+`a29b34e4e261e7c6c07aac556d75372ad49a405a1272c9c46e7c4f533da99d87`,
+and `d7727937372745110e9f4a9fa392dd3122a54e6e6bf1303277562b02363ecae7`.
+No model bytes are checked in. Both standalone ggml and native results match
+all captured gated/down values under the predeclared mixed bound; native
+versus standalone ggml maximum absolute differences were 1.78814e-6 for
+6,144 gated values and 4.76837e-7 for 2,048 down values on the initial
+two-warp baseline. The four-warp-down candidate passed with 1.78814e-6 and
+2.38419e-7 maximum differences. The standalone screen checks these full
+rows after warmup and after each timing pair.
+Focused negative probes with a missing `complete.txt`, malformed geometry,
+and a zero-length gate weight each failed before CUDA device initialization.
+
+| Trial | Actual-weight observation | Decision |
+| --- | --- | --- |
+| Two rows/block, two warps/row for gate/up and down | Initial five pairs: ggml/native complete-FFN medians 0.055520/0.058314 ms, native lost all five. Adjacent profiled down median 8.064 µs. | Retain as previous independent baseline. |
+| One row/block, four warps/row **only for down** | Full numeric checks pass. Its first five pairs were 0.043653/0.044871 ms; the adjacent Nsight node trace counted 112 down calls at 7.616 µs median versus 8.064 µs for the previous layout (about 0.448 µs less). Gate/up and quantize code are unchanged. | Retain the small down-kernel improvement in the independent screen. Complete FFN remains slower than ggml and is not connected to requests. |
+| Four rows/block, one warp/row for gate/up as well | Numeric checks pass; five-pair complete-FFN medians 0.060849/0.064147 ms. The within-run native loss was about 3.3 µs; no improvement was established, so this layout was reverted. | Failed local hypothesis. |
+
+The first four-warp attempt accidentally advanced the down loop by the old
+64-lane stride. Its full-row check caught a 0.17475 difference at output zero;
+correcting the stride to 128 restored parity before timing. This is why a
+mapping change must update both lane assignment and loop stride.
+
+To challenge the small gain under variable GPU clocks, baseline and down-only
+executables were built from the same tree except the mapping. Eight alternating
+complete-FFN runs, each five paired ggml/native samples, had baseline
+ggml/native median pairs of 0.047425/0.047804, 0.059497/0.063424,
+0.043998/0.046475, and 0.095330/0.081405 ms; down-only pairs were
+0.057153/0.059485, 0.047903/0.048343, 0.043361/0.044738, and
+0.045191/0.045816 ms. The last baseline run was an outlier. The complete
+operation timing does **not** resolve a repeatable 0.448-µs difference, so
+the measured claim is limited to the instrumented down kernel, supported
+also by the earlier synthetic one-row/four-warp down result (7.648 versus
+7.936 µs). Connecting a native Q4_0 route requires a graph boundary that
+preserves complete logits/state and paired whole-request evidence. NVIDIA's
+[CUDA Graphs guide](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/cuda-graphs.html)
+explains why both local arms capture their repeated work; graph capture does
+not eliminate the cost of additional product graph boundaries.
 
 ## Real Qwen3.5 CUDA admission and copy cycle (2026-09-29)
 

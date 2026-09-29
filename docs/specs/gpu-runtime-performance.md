@@ -69,6 +69,30 @@ The pinned ggml CUDA graph remains the control and the product default.
 | Failure / early exit | Every CUDA and ggml status is checked; failed execution stops before a speed verdict. |
 | Cleanup | Helper releases stream/scratch on every return; screen frees its separate CUDA and ggml allocations. |
 
+#### Actual-weight Q4_0 FFN screen after the connected Q6_K head
+
+The merged nonduplicated CUDA Q6_K route still leaves pinned ggml Q4_0 decode
+matvec dominant. On the RTX 4070 Ti, the actual 200/32 request's Nsight
+Systems node trace sums 38.577 ms fused and 16.555 ms unfused Q4_0 matvec,
+versus 30.069 ms for the independent Q6_K output head. The prior synthetic
+Q4_0 screen is numerically correct but cannot establish actual-weight behavior.
+Capture the final decode FFN from the unchanged Qwen3.5 graph and use it as
+the next local optimization baseline. The connected Metal final-FFN trial lost
+after graph partitioning; this local screen makes no request-speed promise.
+
+| Contract | Definition |
+| --- | --- |
+| Surface and format | `scripts/capture-q4-ffn.c` is a diagnostic Linux interposer loaded only with `LD_PRELOAD` and an existing empty `ALIGN_Q4_FFN_CAPTURE` directory. It writes `geometry.txt` containing `q4-ffn-capture-v1 2048 6144 18`, exact packed `gate.bin`, `up.bin`, `down.bin`, and one decode `input.bin`, `gated.bin`, `output.bin`; `complete.txt` is create-only after every file succeeds. The runner adds an optional fourth `CAPTURE_DIR` argument to the existing three explicit pinned inputs. The capture format is diagnostic schema 1, owner `capture-q4-ffn.c`; no product flag, network result, cache or model format (`N/A`). |
+| Selection and ownership | Select the final decode-layer Q4_0 FFN by exact `MUL_MAT` source/shape chain through `GLU` to the last 2048-row Q4_0 down projection, not by an undocumented tensor name. Mark the source activation and intermediate/final values as graph outputs before allocation so the diagnostic read is valid. The capture borrows ggml buffers only after synchronized graph completion, retains no device pointer beyond the process, and refuses ambiguous/malformed graphs. The screen owns a separate quantized weight/input copy per arm; no dequantized matrix or model-sized scratch. |
+| Validation and result | Require exactly 7,077,888 bytes per Q4_0 weight, 8,192 input bytes, 24,576 gated bytes and 8,192 final bytes, finite F32 capture values and an exact completion marker before device work. Compare every standalone ggml and native gated/final value with the captured real values under `abs(delta) <= 0.005 + 0.0005*abs(reference)`; compare native directly with standalone ggml as well. Preserve the existing synthetic owner. Report weight digests, all five alternating pairs and per-arm complete-operation medians, including synchronization. |
+| Cost and adoption | Preparation <=900 s, capture request <=180 s, local campaign <=120 s. After 12 warmups, run five alternating pairs of 20 complete FFNs. Keep each result even if slower; a useful independent gain over its preceding version may be retained without a fixed percentage floor. Connected or default routing needs separate complete logits/state/failure and paired whole-request evidence; a local outcome alone cannot claim request speed. |
+
+| Closure case | Implementation and exact owner |
+| --- | --- |
+| Construction / malformed capture | `capture-q4-ffn.c` checks the graph chain and empty destination; `run-native-cuda-q4-ffn-screen` and `bench-native-cuda-q4-ffn.cu` reject incomplete files and exact-size/schema mismatch. |
+| Success / repeated execution | Ordinary real-model decode generates the capture; `run-native-cuda-q4-ffn-screen ... CAPTURE_DIR` compares all captured gated/down values to standalone ggml and native before timing and after each pair. The existing three-input synthetic command remains its control. |
+| Failure / early exit / cleanup | Capture never writes `complete.txt` on an error; the screen refuses before a verdict and releases its CUDA/ggml allocations. The interposer is absent from all timing commands. |
+
 ### Native CUDA recurrent-state copy trial (2026-09-29)
 
 Once the ordinary CUDA Qwen3.5 session passes the real-model owner, reuse its
