@@ -167,6 +167,61 @@ preserves complete logits/state and paired whole-request evidence. NVIDIA's
 explains why both local arms capture their repeated work; graph capture does
 not eliminate the cost of additional product graph boundaries.
 
+## 2026-09-29: Q4_0 half-block lane mapping follow-up
+
+The pinned `vecdotq.cuh` uses two lanes per Q4_0 block in decode: each lane
+reads eight packed bytes and two Q8_1 four-byte groups, then subtracts half
+of the block's F16-scaled zero-point correction. The preceding independent
+CUDA kernel instead gave one lane all 16 packed bytes and four Q8_1 groups.
+NVIDIA's current [CUDA Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#coalesced-access-to-global-memory)
+supports testing adjacent lane accesses, but the 18-byte block layout and
+register effects make the result empirical. This trial used the unchanged
+actual-weight capture digests above, pinned ggml commit `bb4caa7540188872173c44d161602d9271386413`,
+its `cuda-kit-28a6fe3` plugin and RTX 4070 Ti. Both arms were compiled with
+`nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89`.
+
+The first candidate applied half-block mapping to gate/up and down. Every
+captured gated/final element passed the predeclared bound; maximum absolute
+native-versus-standalone-ggml differences were `1.66893e-6` and `9.53674e-7`.
+Its adjacent 112-instance Nsight node trace reduced the down median from
+`7.744` to `7.136` microseconds but increased gate/up from `11.585` to
+`11.904` microseconds. Gate/up half-block mapping was reverted. The retained
+candidate changes down only; the correction is `-4 * Q8_1.sum` per lane, so
+the two lanes recover the original block's `-8 * Q8_1.sum` after reduction.
+
+The down-only actual-weight owner passed all 6,144 gated and 2,048 final
+values, with maximum absolute differences `1.78814e-6` and `9.53674e-7`.
+The separate synthetic full-row owner also passed, with maxima `1.49012e-8`
+and zero. Both used the existing 12 warmups, five alternating pairs of 20
+complete FFNs, and output checks after every pair. The adjacent alternating
+Nsight node traces gave these GPU medians (microseconds, 112 instances each):
+
+| Trace order | Preceding gate/up | Preceding down | Down-only gate/up | Down-only down |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline then candidate | 11.489 | 7.681 | 11.552 | 7.168 |
+| Candidate then baseline | 11.680 | 7.776 | 11.456 | 7.104 |
+
+Quantize stayed at `1.088` microseconds median in all four traces. Thus the
+down kernel improved by `0.513` and `0.672` microseconds in the two adjacent
+comparisons, while gate/up remained close to its previous interval. The
+first independent complete-FFN run had native/ggml medians `0.044760/0.042882`
+ms for the preceding binary; the down-only run had `0.091230/0.094810` ms.
+A further five alternating baseline/candidate process pairs had substantial
+clock variation: complete native medians ranged `0.042984–0.096308` ms for
+baseline and `0.043144–0.058450` ms for candidate. Their paired differences
+do not establish complete-FFN speedup. No connected request or general
+llama.cpp gain is claimed; the improvement retained here is the repeatable
+down-kernel interval only. Raw owner, ten process-arm and four node-trace
+receipts are retained outside Git as `q4-halfblock-*` under the local CUDA
+evidence directory.
+
+`ncu` counters still fail with `ERR_NVGPUCTRPERM`. NVIDIA's
+[Nsight Compute profiling guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/)
+states that WSL counter access must be enabled in the Windows host NVIDIA
+Control Panel. Nsight Systems node timing remains available without those
+counters. A next experiment should test a larger native Q4_0 boundary, since
+this sub-microsecond down gain does not by itself cover an extra graph split.
+
 ## Real Qwen3.5 CUDA admission and copy cycle (2026-09-29)
 
 The unchanged ggml CUDA graph initially failed to build F16 attention-cache

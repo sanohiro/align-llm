@@ -58,7 +58,7 @@ __global__ void quantize_q81(const float *input, Q81Block *output) {
     if (lane == 0) output[block].scale_sum = __floats2half2_rn(scale, sum);
 }
 
-__device__ float dot(const Q40Block &block, const Q81Block &input) {
+__device__ float dot_full(const Q40Block &block, const Q81Block &input) {
     int sum = 0;
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
@@ -75,6 +75,27 @@ __device__ float dot(const Q40Block &block, const Q81Block &input) {
     }
     const float2 scale_sum = __half22float2(input.scale_sum);
     return __half2float(block.scale) * (float(sum) * scale_sum.x - 8.0f * scale_sum.y);
+}
+
+// Neighboring lanes consume the two halves of one packed Q4_0 block.
+__device__ float dot_half(const Q40Block &block, const Q81Block &input, int half) {
+    int sum = 0;
+#pragma unroll
+    for (int j = 0; j < 2; ++j) {
+        const int offset = half * 8 + j * 4;
+        const uint32_t packed = uint32_t(block.packed[offset])
+            | (uint32_t(block.packed[offset + 1]) << 8)
+            | (uint32_t(block.packed[offset + 2]) << 16)
+            | (uint32_t(block.packed[offset + 3]) << 24);
+        const int low = int(packed & 0x0f0f0f0fU);
+        const int high = int((packed >> 4) & 0x0f0f0f0fU);
+        const int qlow = int(reinterpret_cast<const uint32_t *>(input.values + half * 8)[j]);
+        const int qhigh = int(reinterpret_cast<const uint32_t *>(input.values + 16 + half * 8)[j]);
+        sum = __dp4a(low, qlow, sum);
+        sum = __dp4a(high, qhigh, sum);
+    }
+    const float2 scale_sum = __half22float2(input.scale_sum);
+    return __half2float(block.scale) * (float(sum) * scale_sum.x - 4.0f * scale_sum.y);
 }
 
 __device__ float reduce(float value) {
@@ -95,8 +116,8 @@ __global__ void gate_up_swiglu(const Q40Block *gate, const Q40Block *up,
     float up_sum = 0.0f;
     for (int block = lane; block < WIDTH / Q40_BLOCK; block += LANES_PER_ROW) {
         const int weight = row * (WIDTH / Q40_BLOCK) + block;
-        gate_sum += dot(gate[weight], input[block]);
-        up_sum += dot(up[weight], input[block]);
+        gate_sum += dot_full(gate[weight], input[block]);
+        up_sum += dot_full(up[weight], input[block]);
     }
     gate_sum = reduce(gate_sum);
     up_sum = reduce(up_sum);
@@ -118,8 +139,9 @@ __global__ void down_matvec(const Q40Block *weight, const Q81Block *input, float
     const int row = blockIdx.x * DOWN_ROWS_PER_BLOCK + local_row;
     __shared__ float partial[DOWN_ROWS_PER_BLOCK][DOWN_WARPS_PER_ROW];
     float sum = 0.0f;
-    for (int block = lane; block < HIDDEN / Q40_BLOCK; block += DOWN_LANES_PER_ROW) {
-        sum += dot(weight[row * (HIDDEN / Q40_BLOCK) + block], input[block]);
+    for (int piece = lane; piece < 2 * HIDDEN / Q40_BLOCK; piece += DOWN_LANES_PER_ROW) {
+        const int block = piece / 2;
+        sum += dot_half(weight[row * (HIDDEN / Q40_BLOCK) + block], input[block], piece & 1);
     }
     sum = reduce(sum);
     if ((threadIdx.x & 31) == 0) partial[local_row][lane >> 5] = sum;

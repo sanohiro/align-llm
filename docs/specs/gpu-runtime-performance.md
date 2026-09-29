@@ -93,6 +93,21 @@ after graph partitioning; this local screen makes no request-speed promise.
 | Success / repeated execution | Ordinary real-model decode generates the capture; `run-native-cuda-q4-ffn-screen ... CAPTURE_DIR` compares all captured gated/down values to standalone ggml and native before timing and after each pair. The existing three-input synthetic command remains its control. |
 | Failure / early exit / cleanup | Capture never writes `complete.txt` on an error; the screen refuses before a verdict and releases its CUDA/ggml allocations. The interposer is absent from all timing commands. |
 
+#### Q4_0 half-block lane mapping screen
+
+The actual-weight screen found the native down kernel slower than pinned ggml.
+The pinned Q4_0 vector dot distributes each packed block across two lanes,
+while the current independent CUDA dot assigns a whole block to one lane.
+Screen the half-block mapping in the existing independent helper with the
+captured final-decode weights and the synthetic owner. Keep the four-kernel
+graph, ggml control and product route unchanged.
+
+| Contract | Definition |
+| --- | --- |
+| Numerical owner | `run-native-cuda-q4-ffn-screen` with and without `CAPTURE_DIR` compares every gated and final element under the existing mixed bound. Each lane's zero-point correction must sum to the original whole-block correction. |
+| Measurement and cost ceiling | Use the same pinned ggml source/plugin, RTX 4070 Ti, 12 warmups and five alternating 20-operation pairs. Compare a preserved preceding binary to the candidate, then attribute down and gate/up with Nsight Systems node traces if the complete result is close. Preparation <=900 s, each local campaign <=120 s, and device scratch <=32 KiB beyond existing outputs. No new weights, persisted format or product selection. |
+| Adoption | Retain a repeatable useful kernel or complete-FFN improvement without a fixed percentage floor. A numerical failure or repeatable slowdown is logged and reverted. A local screen does not establish request latency. |
+
 ### Native CUDA recurrent-state copy trial (2026-09-29)
 
 Once the ordinary CUDA Qwen3.5 session passes the real-model owner, reuse its
