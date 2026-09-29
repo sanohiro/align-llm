@@ -18,6 +18,11 @@ correctness and a reason to measure the real boundary; adoption needs demonstrat
 useful effect, correctness, uncertainty, workload coverage, regression, memory and
 maintenance assessment. Whole-request evidence is produced by trial integration;
 it is never a prerequisite for permitting that integration.
+For a continuing independent GPU path, retain a correct native baseline and
+compare each revision with that baseline as well as ggml. A reproducible
+incremental native gain may be retained even while the native path remains
+slower than ggml; a local ggml loss does not bar guarded real-model trial
+integration. Default routing decisions still use complete request evidence.
 
 GGML is one implementation option. Reuse, modify, fuse, or replace operations,
 buffer management, scheduling, or a whole execution path when supported by an
@@ -97,6 +102,46 @@ reference-executable-digest-bound repeat won 5/15 against ordinary Align and
 default-off. Conditions and failed variants are in
 `docs/cuda-native-optimization-log.md`; other CUDA hosts and models remain
 unmeasured.
+
+### Independent CUDA Q6_K four-column output-head screen (2026-09-29)
+
+The ordinary CUDA 200/32 trace has 32 full-vocabulary Q6_K projections. The
+first belongs to final prefill and the remaining 31 to decode. The pinned
+kernel's median interval is about 0.885 ms for a 417,177,600-byte weight.
+Metal's independent four-column Q6_K attempt was correct but lost its complete
+operation comparison, so CUDA must test actual bytes and completed work before
+any graph connection. This developer screen tests compressed-weight reuse over
+four activations; it does not select product inference.
+
+| Contract | Definition |
+| --- | --- |
+| Consumer and selection | `scripts/run-native-cuda-q6-batch4-screen GGML_SOURCE GGML_BUNDLE CAPTURE_DIR` builds the independent CUDA probe against the pinned ggml headers and libraries and runs it with an explicit CUDA plugin. The real-model capture is produced separately by `scripts/capture-q6-projection.c` with `LD_PRELOAD`; capture never runs during timing. No product flag, API, cache, schema or persistent model format changes (`N/A`: developer-only screen). |
+| Inputs and results | Require the `q6-capture-v1` geometry of 2,048 inputs and 248,320 outputs, exactly 417,177,600 packed Q6_K weight bytes, and three finite 2,048-element F32 activations plus their complete captured outputs. Form a fourth column by repeating the first input. Compare every output of pinned ggml's four-column graph and the native CUDA kernel to the corresponding single-column captured output, and compare their greedy indices. Report the model weight digest, CUDA device, every alternating pair, numeric maximum and per-arm complete-operation medians. |
+| Ownership and failure | The probe owns one independent CUDA stream and quantized weight, input and output device allocations; the pinned ggml backend owns a separate buffer and graph. No allocation crosses the two arms. Reject missing/malformed capture, unsupported device/geometry, launch or synchronization failure, nonfinite/mismatched result before any timing verdict. Release all buffers and stream on normal exit. The capture helper never changes the real model's selected path and fails on ambiguous projection or stale session weights. |
+| Numeric and cost ceiling | Predeclare `abs(candidate - captured) <= 0.01` for every F32 logit, with an exact lowest-index greedy choice; this allows rounding changes but no output disagreement outside that bound. Keep one quantized 417 MB weight per arm, no dequantized weight or model-sized scratch, and <=16 MiB per-arm activation/output memory. After 12 warmups, measure five alternating pairs of 20 complete operations with device completion, all samples retained. Preparation <=900 s, measurement <=120 s. This correct independent kernel is a baseline for an opt-in connected real-model trial even if its local timing loses to ggml. Compare each improvement with the preceding independent kernel as well as unchanged ggml. Product default selection needs accepted logits/state, failure/cleanup and paired whole requests against ordinary Align and pinned llama.cpp, with no fixed improvement percentage. |
+
+| Closure case | Owner |
+| --- | --- |
+| Construction and malformed capture | Probe validates geometry, exact file sizes and finite inputs before device work; capture refuses ambiguous/missing real projection. |
+| Success and repeated execution | Complete captured-output/ggml/native F32 and greedy checks before and after warmup and after every pair. |
+| Launch, synchronization and early failure | Checked CUDA and ggml status; no timing verdict after failure. |
+| Cleanup | Independent stream and allocations are released after complete probe; process exit also covers fail-fast diagnostic paths. |
+
+**RTX 4070 Ti result.** The Linux capture recovered the same 417,177,600-byte
+weight digest as the earlier Metal capture. Its three activation values came
+from this CUDA host and passed complete four-column output and greedy checks.
+The F32-direct first mapping failed the predeclared `0.01` absolute bound,
+because the pinned CUDA path converts activations to Q8_1. After the CUDA
+probe implemented that conversion, its best DP4A mapping reached a maximum
+absolute difference of `1.91e-6` across all four full output columns. Five
+alternating complete-operation pairs yielded a median paired native gain of
+`-0.004725 ms` and only two native wins. The final source owner repeat lost
+all five pairs with `-0.033346 ms` median paired gain. A second mapping with
+two rows per warp also lost all five pairs. This screen alone does not change
+the product graph; the next capability connects a guarded opt-in route for
+real-model profiling and incremental optimization. The complete measurements
+and profiling limits are in `docs/cuda-native-optimization-log.md`. Another
+CUDA device and a connected request remain unmeasured.
 
 ### Independent Q6_K small-batch output-head screen (2026-09-28)
 
