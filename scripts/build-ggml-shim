@@ -63,6 +63,12 @@ compiler="${CC:-cc}"
 archiver="${AR:-ar}"
 static_mode="${ALIGN_LLM_GGML_SHIM_STATIC:-0}"
 relocatable="${ALIGN_LLM_GGML_SHIM_RELOCATABLE:-0}"
+native_cuda="${ALIGN_LLM_NATIVE_CUDA:-0}"
+
+case "${native_cuda}" in
+  0|1) ;;
+  *) printf '%s\n' 'build-ggml-shim: ALIGN_LLM_NATIVE_CUDA must be 0 or 1' >&2; exit 1 ;;
+esac
 
 case "${relocatable}" in
   0|1) ;;
@@ -85,6 +91,10 @@ case "${static_mode}" in
 esac
 if [ "${static_mode}" = 1 ] && { [ -n "${ALIGN_LLM_GGML_INCLUDE:-}" ] || [ -n "${ALIGN_LLM_GGML_FORCE:-}" ]; }; then
   printf '%s\n' "build-ggml-shim: static mode accepts only the ordinary ggml-free stub" >&2
+  exit 1
+fi
+if [ "${native_cuda}" = 1 ] && { [ "${static_mode}" = 1 ] || [ -z "${ALIGN_LLM_GGML_INCLUDE:-}" ] || [[ "${OSTYPE:-}" != linux* ]]; }; then
+  printf '%s\n' 'build-ggml-shim: native CUDA requires a Linux real shim' >&2
   exit 1
 fi
 
@@ -162,14 +172,24 @@ PY_HASH
     no-host-ptr) include_flags+=("-DALIGN_GGML_FORCE_NO_HOST_PTR=1")
                flavour="real+force-no-host-ptr" ;;
     native-copy-submit)
-               [ "${suffix}" = dylib ] || { printf '%s\n' "native copy failure requires Darwin" >&2; exit 1; }
+               { [ "${suffix}" = dylib ] || [ "${native_cuda}" = 1 ]; } || {
+                 printf '%s\n' "native copy failure requires Darwin or native CUDA" >&2; exit 1; }
                include_flags+=("-DALIGN_GGML_FORCE_NATIVE_COPY_SUBMIT_FAILURE=1")
-               native_flags+=("-DALIGN_NATIVE_METAL_FORCE_SUBMIT_FAILURE=1")
+               if [ "${suffix}" = dylib ]; then
+                 native_flags+=("-DALIGN_NATIVE_METAL_FORCE_SUBMIT_FAILURE=1")
+               else
+                 native_flags+=("-DALIGN_NATIVE_CUDA_FORCE_SUBMIT_FAILURE=1")
+               fi
                flavour="real+force-native-copy-submit" ;;
     native-copy-complete)
-               [ "${suffix}" = dylib ] || { printf '%s\n' "native copy failure requires Darwin" >&2; exit 1; }
+               { [ "${suffix}" = dylib ] || [ "${native_cuda}" = 1 ]; } || {
+                 printf '%s\n' "native copy failure requires Darwin or native CUDA" >&2; exit 1; }
                include_flags+=("-DALIGN_GGML_FORCE_NATIVE_COPY_COMPLETION_FAILURE=1")
-               native_flags+=("-DALIGN_NATIVE_METAL_FORCE_COMPLETION_FAILURE=1")
+               if [ "${suffix}" = dylib ]; then
+                 native_flags+=("-DALIGN_NATIVE_METAL_FORCE_COMPLETION_FAILURE=1")
+               else
+                 native_flags+=("-DALIGN_NATIVE_CUDA_FORCE_COMPLETION_FAILURE=1")
+               fi
                flavour="real+force-native-copy-complete" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
@@ -412,6 +432,21 @@ if [[ "${flavour}" = real* ]] && [ "${suffix}" = dylib ]; then
     -c "${root_dir}/scripts/native_metal_state_copy.mm" -o "${native_object}"
   native_objects+=("${native_object}")
   link_flags+=("-framework" "Foundation" "-framework" "Metal" "-lc++")
+fi
+if [[ "${flavour}" = real* ]] && [ "${native_cuda}" = 1 ]; then
+  cuda_compiler="${NVCC:-nvcc}"
+  if ! command -v "${cuda_compiler}" >/dev/null 2>&1; then
+    printf '%s\n' 'build-ggml-shim: nvcc is required for native CUDA' >&2
+    exit 1
+  fi
+  cuda_root=$(dirname "$(dirname "$(readlink -f "$(command -v "${cuda_compiler}")")")")
+  native_object="${out_dir}/align_native_cuda_state_copy.o"
+  "${cuda_compiler}" -O2 -std=c++17 -Xcompiler -fPIC \
+    "${native_flags[@]+"${native_flags[@]}"}" \
+    -c "${root_dir}/scripts/native_cuda_state_copy.cu" -o "${native_object}"
+  native_objects+=("${native_object}")
+  include_flags+=("-DALIGN_LLM_NATIVE_CUDA=1")
+  link_flags+=("-L${cuda_root}/lib64" "-lcudart" "-lstdc++")
 fi
 
 # `-ffp-contract=off` is a **correctness** flag here, not an optimisation preference

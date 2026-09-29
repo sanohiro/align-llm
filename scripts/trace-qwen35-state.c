@@ -13,7 +13,19 @@
  */
 #include "ggml.h"
 #include "ggml-backend.h"
+#if defined(__APPLE__)
 #include <CommonCrypto/CommonDigest.h>
+#else
+#include <dlfcn.h>
+#include <openssl/sha.h>
+#define CC_SHA256_DIGEST_LENGTH SHA256_DIGEST_LENGTH
+#define CC_SHA256_CTX SHA256_CTX
+#define CC_LONG size_t
+#define CC_SHA256 SHA256
+#define CC_SHA256_Init SHA256_Init
+#define CC_SHA256_Update SHA256_Update
+#define CC_SHA256_Final SHA256_Final
+#endif
 #include <errno.h>
 #include <inttypes.h>
 #include <stdint.h>
@@ -31,6 +43,22 @@ static void require(int condition, const char *message) {
         fprintf(stderr, "Q35_STATE {\"event\":\"error\",\"message\":\"%s\"}\n", message);
         abort();
     }
+}
+
+static int32_t compute_original(void *owner, int32_t kind, const void *key,
+                                int64_t length, void *value) {
+#if defined(__APPLE__)
+    return align_gpu_graph_compute(owner, kind, key, length, value);
+#else
+    typedef int32_t (*compute_fn)(void *, int32_t, const void *, int64_t, void *);
+    static compute_fn original;
+    if (original == NULL) {
+        void *symbol = dlsym(RTLD_NEXT, "align_gpu_graph_compute");
+        require(symbol != NULL, "native graph compute symbol unavailable");
+        memcpy(&original, &symbol, sizeof(original));
+    }
+    return original(owner, kind, key, length, value);
+#endif
 }
 
 static int64_t state_count(void) {
@@ -68,7 +96,7 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
     static void *captured_owner;
     static uint64_t ordinal;
     if (count && captured_owner) require(owner == captured_owner, "diagnostic owner changed");
-    int32_t status = align_gpu_graph_compute(owner, kind, key, length, value);
+    int32_t status = compute_original(owner, kind, key, length, value);
     if (!count) return status;
     if (status) {
         fprintf(stderr, "Q35_STATE {\"event\":\"graph_failed\",\"ordinal\":%" PRIu64
@@ -203,7 +231,14 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
     return status;
 }
 
+#if defined(__APPLE__)
 __attribute__((used)) static struct { const void *replacement, *original; } interpose_graph
     __attribute__((section("__DATA,__interpose"))) = {
         (const void *)&traced_compute, (const void *)&align_gpu_graph_compute
     };
+#else
+int32_t align_gpu_graph_compute(void *owner, int32_t kind, const void *key,
+                               int64_t length, void *value) {
+    return traced_compute(owner, kind, key, length, value);
+}
+#endif

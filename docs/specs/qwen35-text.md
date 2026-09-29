@@ -4,6 +4,38 @@ Current optimization decisions follow [the 2026-09-26 policy](gpu-runtime-perfor
 
 Status: active. This plan owns the `qwen35` extension; the existing Qwen2 and OLMoE contracts remain in their own plans.
 
+### CUDA resident session admission (2026-09-29)
+
+The RTX host now has the same pinned ggml revision used for the Metal Qwen3.5
+session. Admit the unchanged ggml graph on CUDA for the authenticated 2B Q4_0
+artifact before connecting a native CUDA specialization. This is a real client
+boundary for the independent CUDA FFN screen in the GPU performance plan.
+
+| Contract | Definition |
+| --- | --- |
+| Public selection | The existing schema-1 runtime options accept `backend: "cuda"`, `device: "CUDA0"`, an admitted CUDA bundle and resident placement for Qwen3.5 generation, session and local serving. The default remains `metal` when a caller selects Metal; the existing options parser has no new key or default. No cache or model format changes (`N/A`: source-bound GGUF/pack remain identical). |
+| Inputs and results | Authenticate the published 2B Q4_0 digest, Model IR and alignpack, then use the same explicit Qwen3.5 graph, state and greedy loop. Return the existing provider/session/serving schemas and error categories. A CUDA session has no mapped Metal weights, shared Metal logits, NEON scan or graph-greedy trial; selecting one refuses before weight allocation. The ordinary ggml graph is the CUDA baseline and fallback. |
+| Owner and allocation | Align owns mode, graph, state, session, output and failure policy; pinned ggml CUDA owns weight/workspace/KV buffers and graph execution. CUDA native FFN is not selected by this admission step. Existing host/device budgets and reverse teardown remain in force. Qwen3.5 reserves one additional bounded I32 prefill-index input, up to 512 elements, in both session backends; Metal leaves it unused. On CUDA with F16 cached attention, the graph uses the existing indexed KV write for both attention K and V instead of the F32-to-F16 in-place SET unsupported by the pinned CUDA backend. Align populates absolute indices before graph compute; decode keeps its separate one-element index input. |
+| Validation order and evidence | Parse options and experimental flags, verify source/pack, admit device, plan capacities, upload and build; then require the CUDA graph to pass a real 2B three-token oracle on 31/200/330-token prompts and a six-request reset/malformed-input sequence. On Linux the generation owner compares rendered outputs; with `QWEN35_ID_DIAGNOSTIC` it additionally checks the existing Align diagnostic's three repeated generated-ID arrays per prompt against the pinned llama.cpp oracle. A real CUDA HTTP/SSE serving owner covers invalid requests, disconnect, recovery and restart. Any unsupported ggml CUDA operation or parity failure closes CUDA admission before publication. Build and owner preparation <=3600 s, each request <=180 s. |
+
+| Closure case | Owner |
+| --- | --- |
+| Construction and malformed options | Qwen3.5 `prepare` backend/flag admission, bounded index-input registration, provider session backend admission and model-free options owner. |
+| Success and repeated execution | Real pinned 2B Qwen3.5 CUDA provider/session owner and pinned llama.cpp token oracle, including an offset prefill chunk exercising absolute indexed K/V writes. |
+| Compute/readback failure, early exit and cleanup | Existing native GPU device/session owners plus a real malformed request followed by a successful request; no fallback after compute failure. |
+
+The authenticated 2B CUDA generation, three repeated exact-ID diagnostic
+requests per prompt, six retained-session requests and HTTP/SSE serving owner
+passed in both ggml and opt-in native-copy modes on the RTX 4070 Ti. The indexed
+prefill write ran across the 200/330-token cases. Mode `0` versus mode `1`
+produced identical full logit and valid resident-state hashes in the real-model
+copy owner. See `docs/cuda-native-optimization-log.md` for conditions and
+measured request results. The existing lookup-trial diagnostic remains Metal
+only: its multi-row verification prefill has not been ported to CUDA indexed
+F16 K/V writes and rejects CUDA before changing session state. Other CUDA
+devices and model sizes remain unmeasured.
+
+
 ## Evidence and delivery order
 
 The first real consumer is `ggml-org/Qwen3.5-0.8B-GGUF`, file `Qwen3.5-0.8B-Q4_0.gguf` (563,036,064 bytes; SHA-256 `57d1997790d1744fba5b40a7317df71ea5e2acee28c47e78f0cce39c0703f8cf`). Its GGUF inspection at the current `.llama-revision` reports architecture `qwen35`, 24 layers, 320 tensors, embedding width 1024, feed-forward width 3584, vocabulary 248320, context 262144, full attention every fourth layer, and 18 recurrent Gated DeltaNet layers. The six full-attention layers and 18 recurrent layers have distinct tensor sets. The file declares `tokenizer.ggml.pre = qwen35` and has a tied output embedding. Before #294, `--model-ir` refused it with `R1_UNSUPPORTED_ARCH`; #294 completed the first boundary.

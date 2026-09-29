@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 3 ]; then
+  echo 'usage: run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN' >&2
+  exit 2
+fi
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+source_dir=$(realpath -- "$1")
+lib_dir=$(realpath -- "$2")
+plugin=$(realpath -- "$3")
+if [ ! -f "$source_dir/ggml/include/ggml.h" ] \
+  || [ ! -f "$lib_dir/libggml.so" ] \
+  || [ ! -f "$lib_dir/libggml-base.so" ] \
+  || [ ! -f "$plugin" ]; then
+  echo 'pinned ggml source, libraries, or CUDA plugin missing' >&2
+  exit 2
+fi
+screen_dir=$(mktemp -d)
+trap 'rm -rf -- "$screen_dir"' EXIT
+nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 \
+  -I"$source_dir/ggml/include" \
+  "$root_dir/scripts/native_cuda_q40_ffn.cu" \
+  "$root_dir/scripts/bench-native-cuda-q4-ffn.cu" \
+  -L"$lib_dir" -Xlinker "-rpath=$lib_dir" -lggml -lggml-base \
+  -o "$screen_dir/bench-native-cuda-q4-ffn"
+"$screen_dir/bench-native-cuda-q4-ffn" "$plugin"
