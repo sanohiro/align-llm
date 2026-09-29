@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure paired retained Qwen3.5 CUDA requests across copy modes."""
+"""Measure paired retained Qwen3.5 CUDA requests across native modes."""
 
 from __future__ import annotations
 
@@ -75,6 +75,9 @@ def llama_request(reference: Path, binary: Path, model: Path, work: Path,
 
 
 def main() -> None:
+    measure_mode = os.environ.get("QWEN35_CUDA_MEASURE_MODE", "state-copy")
+    if measure_mode not in ("state-copy", "q6-head"):
+        raise RuntimeError("QWEN35_CUDA_MEASURE_MODE must be state-copy or q6-head")
     model = Path(os.environ["QWEN35_GGUF"]).resolve()
     pack = Path(os.environ["QWEN35_ALIGNPACK"]).resolve()
     geometry = Path(os.environ["QWEN35_MODEL_IR"]).resolve()
@@ -102,7 +105,7 @@ def main() -> None:
     bundle = Path(json.loads(options.read_text(encoding="utf-8"))["backend_bundle"])
     with (bundle / "libggml-cuda.so").open("rb") as stream:
         plugin_hash = hashlib.file_digest(stream, "sha256").hexdigest()
-    print(f"model_sha256={digest} plugin_sha256={plugin_hash} "
+    print(f"measure_mode={measure_mode} model_sha256={digest} plugin_sha256={plugin_hash} "
           f"llama_bench_sha256={reference_digest or 'none'} "
           f"llama_source_commit={reference_revision or 'none'}", flush=True)
     command = [str(binary), "--runtime-session", str(model), str(pack),
@@ -111,11 +114,14 @@ def main() -> None:
     environment["ALIGN_LLM_NATIVE_CONV_COPY"] = "0"
     environment["ALIGN_LLM_NATIVE_PREFILL_STATE_COPY"] = "0"
     environment["ALIGN_LLM_NATIVE_COPY_GREEDY"] = "0"
+    ordinary_selection = dict(environment, ALIGN_LLM_NATIVE_STATE_COPY="0",
+                              ALIGN_LLM_NATIVE_Q6_HEAD="0")
+    native_selection = dict(environment,
+                            ALIGN_LLM_NATIVE_STATE_COPY="1" if measure_mode == "state-copy" else "0",
+                            ALIGN_LLM_NATIVE_Q6_HEAD="1" if measure_mode == "q6-head" else "0")
     with tempfile.TemporaryDirectory(prefix="qwen35-cuda-measure-") as temporary, \
-         Session(command, timeout=180,
-                 env=dict(environment, ALIGN_LLM_NATIVE_STATE_COPY="0")) as ordinary, \
-         Session(command, timeout=180,
-                 env=dict(environment, ALIGN_LLM_NATIVE_STATE_COPY="1")) as native:
+         Session(command, timeout=180, env=ordinary_selection) as ordinary, \
+         Session(command, timeout=180, env=native_selection) as native:
         work = Path(temporary)
         for label, user, prompt, completion in CASES:
             prepared = (prepare_reference(binary, model, work, label, user, prompt)

@@ -3331,6 +3331,19 @@
       "bootstrap": null
     },
     {
+      "path": "scripts/run-qwen35-native-q6-head-smoke",
+      "classification": "INDEPENDENT_ORACLE",
+      "behavior": "Compare every diagnostic F32 output logit, exact greedy choice, rendered output and resident-state digest between ordinary and opt-in native Q6_K CUDA head sessions on the recorded real 2B model.",
+      "reachability": "Focused developer qualification only; never part of normal product execution.",
+      "substitution": "Drives external Align workers and a diagnostic interposer; it neither computes model values nor selects a production inference operation.",
+      "python_reason": "Independent full-vector numerical and state comparison remains outside Align product execution.",
+      "target": "Retain as the connected native CUDA Q6_K head numerical qualification owner.",
+      "migration": "N/A",
+      "acceptance": "QWEN35_GGUF=... QWEN35_ALIGNPACK=... QWEN35_MODEL_IR=... QWEN35_RUNTIME_OPTIONS=... QWEN35_NATIVE_Q6_BINARY=... QWEN35_STATE_TRACE=... QWEN35_EXPECTED_SHA256=... QWEN35_NATIVE_Q6_FAILURE=submit|complete(optional) python3 scripts/run-qwen35-native-q6-head-smoke; python3 scripts/check-python-boundary",
+      "frozen_sha256": null,
+      "bootstrap": null
+    },
+    {
       "path": "scripts/run-qwen35-native-conv-copy-smoke",
       "classification": "INDEPENDENT_ORACLE",
       "behavior": "Compare complete real-model logits and resident-state hashes between selectable native decode or prefill copy modes, including chunk boundaries and repeated requests, and reject invalid mode construction.",
@@ -3879,13 +3892,13 @@
     {
       "path": "scripts/measure-qwen35-native-cuda",
       "classification": "BENCHMARK_OR_MEASUREMENT",
-      "behavior": "Measure five alternating ordinary and native CUDA retained Qwen3.5 requests at each fixed prompt and optionally compare a digest-bound pinned llama.cpp executable on identical prompt IDs and output counts.",
+      "behavior": "Measure five alternating ordinary and native CUDA retained Qwen3.5 requests for either state copy or the opt-in independent Q6_K head at each fixed prompt; optionally compare a digest-bound pinned llama.cpp executable on identical prompt IDs and output counts.",
       "reachability": "Focused developer measurement only; launches external workers and never participates in normal product execution.",
       "substitution": "Checks workload and rendered output parity and reduces timings; model graph, logits and token decisions remain in Align or pinned llama.cpp.",
       "python_reason": "Independent three-arm paired timing belongs outside Align product execution.",
       "target": "Retain as a reproducible real-model CUDA request measurement caller.",
       "migration": "N/A",
-      "acceptance": "QWEN35_GGUF=... QWEN35_ALIGNPACK=... QWEN35_MODEL_IR=... QWEN35_RUNTIME_OPTIONS=... QWEN35_NATIVE_COPY_BINARY=... QWEN35_LLAMA_BENCH=... QWEN35_LLAMA_BENCH_SHA256=... QWEN35_LLAMA_SOURCE=... QWEN35_EXPECTED_SHA256=... python3 scripts/measure-qwen35-native-cuda; python3 scripts/check-python-boundary",
+      "acceptance": "QWEN35_GGUF=... QWEN35_ALIGNPACK=... QWEN35_MODEL_IR=... QWEN35_RUNTIME_OPTIONS=... QWEN35_NATIVE_COPY_BINARY=... QWEN35_LLAMA_BENCH=... QWEN35_LLAMA_BENCH_SHA256=... QWEN35_LLAMA_SOURCE=... QWEN35_EXPECTED_SHA256=... QWEN35_CUDA_MEASURE_MODE=state-copy|q6-head python3 scripts/measure-qwen35-native-cuda; python3 scripts/check-python-boundary",
       "frozen_sha256": null,
       "bootstrap": null
     },

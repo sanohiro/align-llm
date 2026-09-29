@@ -150,6 +150,17 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
             unsigned char *bytes = malloc((size_t)logit_bytes);
             require(bytes != NULL && logits->buffer != NULL, "graph logit storage unavailable");
             ggml_backend_tensor_get(logits, bytes, 0, (size_t)logit_bytes);
+            const char *logit_dump = getenv("ALIGN_LOGIT_DUMP_DIR");
+            if (logit_dump != NULL) {
+                char path[4096];
+                int length = snprintf(path, sizeof(path), "%s/%" PRIu64 ".bin",
+                                      logit_dump, logit_ordinal);
+                require(length > 0 && (size_t)length < sizeof(path), "logit dump path too long");
+                FILE *file = fopen(path, "wb");
+                require(file != NULL && fwrite(bytes, 1, (size_t)logit_bytes, file)
+                        == (size_t)logit_bytes && fclose(file) == 0,
+                        "logit dump write failed");
+            }
             unsigned char digest[CC_SHA256_DIGEST_LENGTH];
             char hex[2 * CC_SHA256_DIGEST_LENGTH + 1];
             static const char digits[] = "0123456789abcdef";

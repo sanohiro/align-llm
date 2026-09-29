@@ -2,38 +2,53 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active CUDA Q6_K four-column screen (2026-09-29)
+## Active connected CUDA Q6_K output-head trial (2026-09-29)
 
-Branch `agent/native-cuda-q6-head` starts at merged `main` `5f03606`
-(PR #326). It ports the actual-weight Q6_K capture to Linux and adds an
-independent CUDA four-column output-head developer probe. The Q6_K weight
-digest matches Metal's capture. A 200/32 ordinary Align Nsight trace contains
-one final-prefill and 31 decode Q6_K projections; Q4_0 matvec and Q6_K
-projection account for about 78% of summed decode kernel intervals. The first
-F32-direct native mapping failed its predeclared numeric bound; a Q8_1/DP4A
-mapping passed all four full output columns and greedy choices with maximum
-absolute error `1.91e-6`, but its first five-pair complete-operation comparison
-against pinned ggml yielded only 2/5 native wins and `-0.004725 ms` median
-paired gain. The final owner repeat lost 5/5 with `-0.033346 ms` median.
-A two-row-per-warp mapping, 32-register cap and fast-math build
-also lost. Keep the screen outside product inference. Nsight Compute counters
-were denied (`ERR_NVGPUCTRPERM`); Nsight Systems GPU intervals remain usable.
-Details, adverse measurements, NVIDIA and ggml source references are in
-`docs/cuda-native-optimization-log.md`; capture weights, binaries and traces
-remain outside Git.
+Branch `agent/native-cuda-q6-connected` starts from merged `main` `f4f05c1`
+(PR #327). The authoritative contract is in
+`docs/specs/gpu-runtime-performance.md`. The default-off independent Q8_1/DP4A
+one-column Q6_K path now runs real Qwen3.5 requests over borrowed resident
+buffers while ggml remains the control. Three complete logits rows and 252
+resident-state planes per 31/200/330-token case, exact greedy/rendered output,
+retained short/wider/short requests, malformed selection and forced
+submit/completion failures passed. `make check` passed 169 Align units,
+`make build` built the real CUDA shim, and the Python boundary guard/mutation
+suite passed. The first connected step deliberately duplicates ggml's
+projection. Five-pair 56/16, 200/32 and 330/64 requests lost to ordinary
+Align by 16.317/26.797/68.096 ms paired median; the latter two also lost to
+pinned llama.cpp. A three-token Nsight trace counted three ggml plus three
+native Q6_K projections, each roughly 0.887 ms median GPU interval. All 15
+paired samples, sources, reproducibility and limits are in
+`docs/cuda-native-optimization-log.md`; no speed adoption is claimed.
 
-Next actions, in order: (1) publish this numeric/profiling baseline after
-exact-head verification; (2) connect the independent Q6_K projection as a
-guarded opt-in real-model CUDA path while retaining ggml as control; (3)
-profile and improve the native connected path, comparing each revision with
-its previous native result, ordinary Align and pinned llama.cpp. Compare
-generated SASS when source-level inspection is insufficient, and then
-investigate larger Q4_0/normalization/activation execution units. Metal's
-failed split-FFN connection is evidence to check boundary overhead, not a
-reason to stop the independent backend.
+Next actions, in order: (1) remove the duplicated ggml output projection in
+mode `1` while preserving the mode-`0` graph, then rerun full logits/state,
+failure and retained-request owners; (2) profile and compare the nonduplicated
+native request against this connected version, ordinary Align and pinned
+llama.cpp; (3) optimize against the preceding native revision, comparing
+generated SASS when source inspection is insufficient, and investigate Q4_0
+and larger fused execution units. The local one-column screen had ambiguous
+host timing (+0.014 and -0.007 ms paired medians) and Nsight Systems medians
+893.088 us native, 886.848 us ggml. Nsight Compute counters remain denied
+(`ERR_NVGPUCTRPERM`).
 Other CUDA GPUs, Qwen sizes and Gemma are unmeasured and deferred until the
-corresponding hardware/model owner is available. There is no fixed percentage
-or win-count floor for a useful measured improvement.
+corresponding hardware/model owner is available. No fixed percentage or
+win-count floor governs a useful measured improvement.
+
+## Completed CUDA Q6_K four-column screen (2026-09-29)
+
+PR #327 merged at `f4f05c1`. Linux capture recovered the Metal-matching
+417,177,600-byte Q6_K weight and three real activations. A Q8_1/DP4A native
+kernel passed all four complete logits rows and greedy choices with maximum
+absolute error `1.91e-6`. Five-pair completed-operation comparisons lost to
+pinned ggml by `0.004725` and `0.033346 ms` median; two-row/warp, register-cap,
+fast-math, read-only and aligned-load variants did not establish a gain. The
+200/32 trace attributed about 78% of summed decode kernel intervals to Q4_0
+matvec and Q6_K projection. The exact-head owner/preflight, one comprehensive
+review with a corrected Linux preload recipe, and all three CI checks passed.
+Raw captures, traces and binaries remain outside Git; reproducible details,
+failed attempts and NVIDIA/ggml references are in
+`docs/cuda-native-optimization-log.md`.
 
 ## Completed native CUDA Qwen3.5 capability (2026-09-29)
 

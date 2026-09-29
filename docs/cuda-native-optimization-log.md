@@ -342,3 +342,93 @@ ggml does not block that trial connection. Keep measured incremental native
 gains even before the native route overtakes ggml; there is no percentage or
 win-count floor. Broader Q4_0/normalization/activation fusion remains a
 follow-up, informed by the connected profile and the Metal split-FFN loss.
+
+## Connected one-column Q6_K trial: correctness and duplicate cost (2026-09-29)
+
+Branch `agent/native-cuda-q6-connected` selects the independent Q8_1/DP4A
+kernel through Align's default-off `ALIGN_LLM_NATIVE_Q6_HEAD=1` mode. The
+kernel borrows the real resident Q6_K weight, the normalized F32 activation
+and the ggml output buffer. For this first connection it runs after the
+synchronized ggml graph and overwrites the F32 logits. Thus the graph still
+performs the same Q6_K projection. This intentional duplicate establishes a
+real-request correctness, ownership and failure baseline; it is not a speed
+candidate for default routing.
+
+Before connection, replacing four columns with one in the same actual-weight
+screen produced maximum absolute logit difference `1.91e-6` and identical
+greedy choice. Two uninstrumented five-pair repeats had median paired native
+gains of `+0.013978 ms` (3/5 wins) and `-0.007316 ms` (2/5 wins).
+Nsight Systems reported 113 instances of each one-column projection:
+median native `893.088 us`, ggml `886.848 us`; native and ggml Q8_1
+conversion medians were `1.408` and `1.568 us`. This small GPU interval
+loss and sign-changing completed-operation result do not establish a local win.
+
+On the authenticated 2B model, three final-prefill/decode graphs at each of
+31-, 200- and 330-token prompts passed all 248,320 F32 logits under the
+predeclared `0.01` bound, with maximum absolute difference `1.91e-6` in every
+case. Greedy output and all 252 valid resident-state hashes per case matched
+mode `0`. A short/wider/short retained session also returned the same output
+and token counts. Invalid mode `2` returned an error with empty output.
+Forced CUDA submit and completion faults left the ordinary ggml control
+usable but made the selected session return only a failed envelope and exit 2.
+The standalone C/CUDA module owns one stream and 2,304 bytes of Q8_1 scratch;
+no second model weight or full-logit device buffer is allocated.
+
+Five alternating warm request pairs per condition used the same 2B GGUF,
+prompt IDs, output counts and digest-bound pinned llama.cpp executable
+`0aabc02758cf34b086d253d6b164cb6027a2aa2188b17fd66c42f483e608ae29`
+from source `bb4caa7540188872173c44d161602d9271386413`. Both Align
+sessions stayed resident; each llama.cpp sample was its third warmed
+iteration in a fresh process. The timed interval excludes startup and model
+load. Every generated output matched. Times are milliseconds:
+
+| Prompt/output | Pair | Ordinary Align | Native Q6_K | Pinned llama.cpp |
+| --- | ---: | ---: | ---: | ---: |
+| 56/16 | 0 | 78.506 | 94.983 | 89.619 |
+| 56/16 | 1 | 72.494 | 90.082 | 93.494 |
+| 56/16 | 2 | 72.042 | 88.319 | 92.876 |
+| 56/16 | 3 | 72.619 | 88.647 | 89.952 |
+| 56/16 | 4 | 72.182 | 88.500 | 104.056 |
+| 200/32 | 0 | 157.556 | 189.085 | 168.373 |
+| 200/32 | 1 | 167.882 | 188.266 | 171.192 |
+| 200/32 | 2 | 160.982 | 187.779 | 174.700 |
+| 200/32 | 3 | 170.292 | 191.027 | 168.334 |
+| 200/32 | 4 | 164.936 | 208.372 | 167.003 |
+| 330/64 | 0 | 330.331 | 366.819 | 328.225 |
+| 330/64 | 1 | 317.890 | 386.848 | 330.505 |
+| 330/64 | 2 | 305.276 | 373.372 | 325.204 |
+| 330/64 | 3 | 312.270 | 379.543 | 318.696 |
+| 330/64 | 4 | 304.875 | 382.355 | 332.610 |
+
+Median paired native gain versus ordinary Align was `-16.317`, `-26.797`
+and `-68.096 ms`, with 0/5 native wins in each condition. Median paired gain
+versus pinned llama.cpp was `+3.412`, `-20.712` and `-49.745 ms`, with
+4/5, 0/5 and 0/5 wins. This is expected for a duplicated roughly 0.9 ms
+projection per output token, but the request measurements are the evidence;
+the isolated kernel interval alone does not predict request wall time.
+The retained raw stdout is `q6-connected-measure.stdout` outside Git.
+
+A three-token Nsight Systems node trace counted exactly three pinned ggml
+Q6_K output launches and three native `project` launches. Their median GPU
+intervals were `886.940 us` and `887.484 us`; native Q8_1 quantization
+added three `1.440 us` intervals. The profile establishes the duplicated
+device work; it does not attribute all host/request overhead. Nsight Compute
+counters remained inaccessible (`ERR_NVGPUCTRPERM`), so there is no claim about
+executed memory transactions. The pinned ggml source
+`ggml/src/ggml-backend.cpp` confirms that `ggml_backend_graph_compute`
+synchronizes before returning; NVIDIA's
+[asynchronous execution guide](https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/asynchronous-execution.html)
+defines the stream boundary, and its
+[best practices guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+distinguishes useful payload bandwidth from measured DRAM traffic.
+
+Reproduce the numeric owner with `QWEN35_GGUF`, `QWEN35_ALIGNPACK`,
+`QWEN35_MODEL_IR`, `QWEN35_RUNTIME_OPTIONS`, `QWEN35_NATIVE_Q6_BINARY`,
+`QWEN35_STATE_TRACE` and `QWEN35_EXPECTED_SHA256` set, then run
+`scripts/run-qwen35-native-q6-head-smoke`. The trace interposer's optional
+`ALIGN_LOGIT_DUMP_DIR` writes full F32 vectors only in this diagnostic.
+For request timing, set `QWEN35_CUDA_MEASURE_MODE=q6-head` and the existing
+digest-bound pinned llama.cpp inputs, then run
+`scripts/measure-qwen35-native-cuda`. The next code change must remove the
+ggml projection from selected graphs while retaining it for mode `0`, then
+recheck full logits/state/failures and measure the new connected baseline.

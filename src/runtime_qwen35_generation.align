@@ -81,6 +81,7 @@ fn key(borrow owner: ggml_ffi.GpuDevice, borrow options: runtime_options.Runtime
   if last_ffn_row { b.write(":final-ffn-row") }
   if graph_greedy { b.write(":graph-greedy") }
   if ggml_ffi.gpu_native_state_copy_enabled(owner) { b.write(":native-state-copy") }
+  if ggml_ffi.gpu_native_q6_head_enabled(owner) { b.write(":native-q6-head") }
   if ggml_ffi.gpu_native_conv_copy_enabled(owner) { b.write(":native-conv-copy") }
   if ggml_ffi.gpu_native_prefill_state_copy_enabled(owner) {
     b.write(":native-prefill-state-copy")
@@ -371,6 +372,8 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
   probe_prompt: i64, capacity: i64, config: runtime_qwen35_execution.Config,
 ) -> Result<i64, Error> {
   if (options.backend != "metal" && options.backend != "cuda")
+    || (config.native_q6_head && (options.backend != "cuda"
+        || g.n_embd != 2048 || g.n_vocab != 248320))
     || (options.backend == "cuda" && (config.mapped_weights || config.shared_logits
         || config.neon_greedy || config.graph_greedy
         || config.native_conv_copy || config.native_prefill_state_copy
@@ -381,6 +384,9 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
     || probe_prompt < 1 || probe_prompt > MAX_PROMPT
     || capacity < probe_prompt || capacity > g.context_length { return Err(Error.Invalid) }
   ggml_ffi.gpu_native_state_copy_select(owner, config.native_state_copy) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_native_q6_head_select(owner, config.native_q6_head) else {
     return Err(Error.Invalid)
   }
   ggml_ffi.gpu_native_conv_copy_select(owner, config.native_conv_copy) else {

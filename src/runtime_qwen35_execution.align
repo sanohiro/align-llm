@@ -13,6 +13,7 @@ pub Config {
   neon_greedy: bool,
   graph_greedy: bool,
   native_state_copy: bool,
+  native_q6_head: bool,
   native_conv_copy: bool,
   native_prefill_state_copy: bool,
   native_copy_greedy: bool,
@@ -28,6 +29,7 @@ pub fn read() -> Result<Config, Error> {
   mut neon_greedy := false
   mut graph_greedy := false
   mut native_state_copy := false
+  mut native_q6_head := false
   mut native_conv_copy := false
   mut native_prefill_state_copy := false
   mut native_copy_greedy := false
@@ -95,6 +97,13 @@ pub fn read() -> Result<Config, Error> {
     },
     None => {},
   }
+  match env.get("ALIGN_LLM_NATIVE_Q6_HEAD") {
+    Some(value) => {
+      if value == "1" { native_q6_head = true
+      } else if value != "0" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
   match env.get("ALIGN_LLM_NATIVE_CONV_COPY") {
     Some(value) => {
       if value == "1" { native_conv_copy = true
@@ -129,6 +138,7 @@ pub fn read() -> Result<Config, Error> {
       mapped_weights: mapped_weights, shared_logits: shared_logits,
       neon_greedy: neon_greedy, graph_greedy: graph_greedy,
       native_state_copy: native_state_copy, native_conv_copy: native_conv_copy,
+      native_q6_head: native_q6_head,
       native_prefill_state_copy: native_prefill_state_copy,
       native_copy_greedy: native_copy_greedy })
 }

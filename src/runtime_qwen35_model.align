@@ -181,6 +181,9 @@ fn build_tokens_rows(
     // layer's output tail has no consumer until the final chunk requests logits.
     return Ok(())
   }
+  if ggml_ffi.gpu_native_q6_head_enabled(owner) && (all_logits_rows || graph_greedy) {
+    return Err(Error.Invalid)
+  }
   norm_index := runtime_qwen35_roles.head_norm_slot(g)
   ggml_ffi.gpu_weight_slot(owner, norm_index, slots, 1) else {
     return Err(Error.Invalid)
@@ -219,6 +222,11 @@ fn build_tokens_rows(
     }
     ggml_ffi.graph_expand(graph, slots, OUTPUT, "q35_logits") else {
       return Err(Error.Invalid)
+    }
+    if ggml_ffi.gpu_native_q6_head_enabled(owner) {
+      ggml_ffi.gpu_native_q6_head_register(owner, kind, slots, 0, 91, OUTPUT) else {
+        return Err(Error.Invalid)
+      }
     }
     if kind != ggml_ffi.GPU_GRAPH_PREFILL
       && ggml_ffi.gpu_native_copy_greedy_enabled(owner) {
