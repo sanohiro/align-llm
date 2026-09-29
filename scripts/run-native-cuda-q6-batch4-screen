@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [ "$#" -ne 3 ]; then
+  echo 'usage: run-native-cuda-q6-batch4-screen GGML_SOURCE GGML_BUNDLE CAPTURE_DIR' >&2
+  exit 2
+fi
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+source_dir=$(realpath -- "$1")
+bundle_dir=$(realpath -- "$2")
+capture_dir=$(realpath -- "$3")
+if [ ! -f "$source_dir/ggml/include/ggml.h" ] \
+  || [ ! -f "$bundle_dir/libggml.so" ] \
+  || [ ! -f "$bundle_dir/libggml-base.so" ] \
+  || [ ! -f "$bundle_dir/libggml-cuda.so" ] \
+  || [ ! -f "$capture_dir/complete.txt" ]; then
+  echo 'pinned ggml source, CUDA bundle, or complete actual-weight capture missing' >&2
+  exit 2
+fi
+screen_dir=$(mktemp -d)
+trap 'rm -rf -- "$screen_dir"' EXIT
+nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 \
+  -I"$source_dir/ggml/include" \
+  "$root_dir/scripts/bench-native-cuda-q6-batch4.cu" \
+  -L"$bundle_dir" -Xlinker "-rpath=$bundle_dir" -lggml -lggml-base \
+  -o "$screen_dir/bench-native-cuda-q6-batch4"
+sha256sum "$capture_dir/weights.bin"
+"$screen_dir/bench-native-cuda-q6-batch4" "$bundle_dir/libggml-cuda.so" "$capture_dir"

@@ -2,46 +2,55 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active native CUDA Qwen3.5 capability (2026-09-29)
+## Active CUDA Q6_K four-column screen (2026-09-29)
 
-Branch `agent/native-cuda-q4-ffn` starts at pulled `main` `bc6cc1f` and holds
-the CUDA implementation and evidence updates. The authenticated Qwen3.5-2B
-Q4_0 artifact runs through the existing ggml CUDA graph on RTX 4070 Ti after
-adding indexed F16 K/V prefill writes. Generation at 31/200/330 prompt tokens
-passed exact pinned-oracle IDs in three repeated diagnostic requests per case;
-six retained requests and HTTP/SSE serving passed in both ordinary and opt-in
-native-state-copy modes. The independent CUDA Q4_0
-gate/up/SwiGLU/down screen passed full synthetic numerical comparison but lost
-its best complete-FFN local timing, so it is not connected to product requests.
-The separate native CUDA recurrent-state copy passes direct bounds and data
-owners, exact ordinary/native full-logit and valid-state hashes, graph-copy
-removal and forced submit/completion failures. It batches 18 large decode state
-planes into one CUDA kernel. A 200/32 Nsight trace found 558 fewer async copies
-than the initial native helper, but two real-model three-condition campaigns
-won only 12/30 paired requests against ordinary Align. A subsequent
-reference-executable-digest-bound campaign won 5/15 against ordinary Align
-and 13/15 against pinned llama.cpp. Keep `0` as default; this is
-no broad llama.cpp or incremental native speed claim. Source references,
-conditions, adverse samples and local receipt names are in
-`docs/cuda-native-optimization-log.md`; weights, binaries and traces stay out
-of Git.
+Branch `agent/native-cuda-q6-head` starts at merged `main` `5f03606`
+(PR #326). It ports the actual-weight Q6_K capture to Linux and adds an
+independent CUDA four-column output-head developer probe. The Q6_K weight
+digest matches Metal's capture. A 200/32 ordinary Align Nsight trace contains
+one final-prefill and 31 decode Q6_K projections; Q4_0 matvec and Q6_K
+projection account for about 78% of summed decode kernel intervals. The first
+F32-direct native mapping failed its predeclared numeric bound; a Q8_1/DP4A
+mapping passed all four full output columns and greedy choices with maximum
+absolute error `1.91e-6`, but its first five-pair complete-operation comparison
+against pinned ggml yielded only 2/5 native wins and `-0.004725 ms` median
+paired gain. The final owner repeat lost 5/5 with `-0.033346 ms` median.
+A two-row-per-warp mapping, 32-register cap and fast-math build
+also lost. Keep the screen outside product inference. Nsight Compute counters
+were denied (`ERR_NVGPUCTRPERM`); Nsight Systems GPU intervals remain usable.
+Details, adverse measurements, NVIDIA and ggml source references are in
+`docs/cuda-native-optimization-log.md`; capture weights, binaries and traces
+remain outside Git.
 
-Next actions, in order: (1) run exact-head publication preflight and resolve
-its findings if any; (2) separate prefill/decode Q4_0/Q6_K intervals and test a larger native
-execution boundary or Q6_K output projection, retaining ggml as control.
-The older lookup-trial diagnostic explicitly refuses CUDA until its multi-row
-target graph gains indexed F16 K/V writes and an exact state owner; ordinary
-CUDA generation and serving do not select that experiment.
-Other CUDA hosts and model sizes remain unmeasured. The current local checkpoint
-passed `make fmt`, `make check` (169 units), real 2B generation, complete
-logit/state comparison, direct CUDA copy smoke, forced failures and the paired
-campaigns. One comprehensive `codex review --uncommitted` found a CUDA lookup
-trial admission bug; the shared entrypoint now rejects CUDA before mutation,
-and the repaired Align owner and direct CUDA refusal/normal-arm check passed.
-The committed-head review found that the measurement caller did not bind the
-pinned reference executable. It now verifies its expected SHA-256 and source
-commit; the digest-bound paired campaign and a wrong-digest refusal passed.
-Final preflight remains open for this repair.
+Next actions, in order: (1) publish this numeric/profiling baseline after
+exact-head verification; (2) connect the independent Q6_K projection as a
+guarded opt-in real-model CUDA path while retaining ggml as control; (3)
+profile and improve the native connected path, comparing each revision with
+its previous native result, ordinary Align and pinned llama.cpp. Compare
+generated SASS when source-level inspection is insufficient, and then
+investigate larger Q4_0/normalization/activation execution units. Metal's
+failed split-FFN connection is evidence to check boundary overhead, not a
+reason to stop the independent backend.
+Other CUDA GPUs, Qwen sizes and Gemma are unmeasured and deferred until the
+corresponding hardware/model owner is available. There is no fixed percentage
+or win-count floor for a useful measured improvement.
+
+## Completed native CUDA Qwen3.5 capability (2026-09-29)
+
+PR #326 merged at `5f03606`. The authenticated Qwen3.5-2B Q4_0 artifact now
+runs ordinary ggml CUDA generation and serving after indexed F16 K/V prefill
+writes. Exact pinned-oracle IDs at 31/200/330 prompt lengths, six retained
+requests, HTTP/SSE, direct native-copy bounds, complete logits and valid state,
+forced submit/completion faults, and `make check` (169 units) passed. The
+default-off independent recurrent-state copy batches 18 large decode planes
+but the digest-bound campaign won only 5/15 pairs against ordinary Align and
+13/15 against pinned llama.cpp. The independent Q4_0 FFN screen passed
+numeric comparison but lost its complete operation timing; neither kernel is
+a broad speed claim. Final exact-head preflight, comprehensive review and
+all three hosted CI checks passed. The older Metal lookup-trial diagnostic
+explicitly refuses CUDA before state mutation. Source and receipts are in
+`docs/cuda-native-optimization-log.md`; other CUDA hosts and models are
+unmeasured.
 
 ## Completed current Metal speed and bottleneck qualification (2026-09-28)
 

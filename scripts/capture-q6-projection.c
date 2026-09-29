@@ -1,8 +1,10 @@
 /* Independent Q6_K output-projection capture; never load during a timing run.
  * Build: clang -O2 -dynamiclib -undefined dynamic_lookup -I GGML/ggml/include \
  *   scripts/capture-q6-projection.c -o capture-q6-projection.dylib
+ * Linux: cc -O2 -shared -fPIC -I GGML/ggml/include \
+ *   scripts/capture-q6-projection.c -o capture-q6-projection.so -ldl
  * Set ALIGN_Q6_CAPTURE to a new, existing empty directory and inject with
- * DYLD_INSERT_LIBRARIES. Run one prompt producing a single final projection and
+ * DYLD_INSERT_LIBRARIES or LD_PRELOAD. Run one prompt producing a final projection and
  * at least three generated tokens. Retains one prefill and two decode projections;
  * nonfinal prefill graphs without a projection are allowed.
  * Align diagnostic strings are not ggml tensor names: select the unique Q6_K
@@ -10,6 +12,9 @@
  */
 #include "ggml.h"
 #include "ggml-backend.h"
+#if !defined(__APPLE__)
+#include <dlfcn.h>
+#endif
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -17,10 +22,14 @@
 #include <string.h>
 #include <unistd.h>
 
+#if defined(__APPLE__)
 #define INTERPOSE(replacement, original) \
     __attribute__((used)) static struct { const void *a; const void *b; } \
     interpose_##original __attribute__((section("__DATA,__interpose"))) = \
         { (const void *)&replacement, (const void *)&original }
+#else
+#define INTERPOSE(replacement, original)
+#endif
 
 static void require(int ok, const char *message) {
     if (!ok) { fprintf(stderr, "Q6_CAPTURE error=%s\n", message); abort(); }
@@ -37,7 +46,18 @@ static int projection(const struct ggml_tensor *t) {
 }
 
 static void capture_expand(struct ggml_cgraph *graph, struct ggml_tensor *tensor) {
+#if defined(__APPLE__)
     ggml_build_forward_expand(graph, tensor);
+#else
+    typedef void (*expand_fn)(struct ggml_cgraph *, struct ggml_tensor *);
+    static expand_fn original;
+    if (!original) {
+        void *symbol = dlsym(RTLD_NEXT, "ggml_build_forward_expand");
+        require(symbol != NULL, "graph expansion symbol unavailable");
+        memcpy(&original, &symbol, sizeof(original));
+    }
+    original(graph, tensor);
+#endif
     if (!getenv("ALIGN_Q6_CAPTURE")) return;
     for (int i = 0; i < ggml_graph_n_nodes(graph); ++i) {
         struct ggml_tensor *t = ggml_graph_node(graph, i);
@@ -74,7 +94,18 @@ static void save(const char *dir, const char *name, const struct ggml_tensor *t)
 extern int32_t align_gpu_graph_compute(void *, int32_t, const void *, int64_t, void *);
 static int32_t capture_compute(void *owner, int32_t kind, const void *key,
                                int64_t length, void *value) {
+#if defined(__APPLE__)
     int32_t status = align_gpu_graph_compute(owner, kind, key, length, value);
+#else
+    typedef int32_t (*compute_fn)(void *, int32_t, const void *, int64_t, void *);
+    static compute_fn original;
+    if (!original) {
+        void *symbol = dlsym(RTLD_NEXT, "align_gpu_graph_compute");
+        require(symbol != NULL, "graph compute symbol unavailable");
+        memcpy(&original, &symbol, sizeof(original));
+    }
+    int32_t status = original(owner, kind, key, length, value);
+#endif
     static unsigned ordinal;
     static int64_t width, rows;
     static const void *captured_owner, *weight_data;
@@ -128,3 +159,14 @@ static int32_t capture_compute(void *owner, int32_t kind, const void *key,
     return status;
 }
 INTERPOSE(capture_compute, align_gpu_graph_compute);
+
+#if !defined(__APPLE__)
+void ggml_build_forward_expand(struct ggml_cgraph *graph, struct ggml_tensor *tensor) {
+    capture_expand(graph, tensor);
+}
+
+int32_t align_gpu_graph_compute(void *owner, int32_t kind, const void *key,
+                                int64_t length, void *value) {
+    return capture_compute(owner, kind, key, length, value);
+}
+#endif

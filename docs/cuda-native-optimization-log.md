@@ -195,3 +195,150 @@ partition and reduction design.
 The CUDA admission, real copy trial and paired measurements above completed
 this cycle. The exact per-step Q4_0/Q6_K profile and a competitive independent
 matrix operation remain the next CUDA performance hypothesis.
+
+## Decode split and actual-weight Q6_K four-column cycle (2026-09-29)
+
+The first follow-up used the existing ordinary and native-copy 200/32 Nsight
+Systems node traces. In each trace the `mul_mat_vec_q` launch with grid X
+248,320 is the full-vocabulary Q6_K projection. There are 32 such launches:
+one final-prefill projection and 31 decode projections. Partitioning the
+timestamp-sorted kernel rows at the first projection gives the following
+ordinary Align attribution. Sums are instrumented kernel intervals, not
+whole-request time; the first bucket excludes its final projection.
+
+| Segment and signature | Count | Sum | Median |
+| --- | ---: | ---: | ---: |
+| Final prefill, all kernels before first Q6_K projection | 1,952 | 17.359 ms | N/A |
+| Decode Q4_0 matvec, grid X 6,144 | 1,302 | 35.096 ms | 0.03136 ms |
+| Decode Q4_0 matvec, grid X 2,048 | 2,046 | 22.556 ms | 0.00765 ms |
+| Decode Q6_K output projection, grid X 248,320 | 31 | 28.374 ms | 0.88468 ms |
+| Decode, all kernel signatures | 18,538 | 109.808 ms | N/A |
+
+The two Q4_0 groups plus the Q6_K projection account for about 78% of
+summed decode kernel intervals. The Q6_K launch is a useful local target,
+though 417,177,600 packed bytes per projection make memory traffic a strong
+constraint. The count and grouping were computed from
+`CUPTI_ACTIVITY_KIND_KERNEL` and `StringIds` in the local
+`align-200-default.sqlite`; the first projection was identified by its grid
+and the captured graph's output geometry. Host gaps, transfers and readback
+are outside these sums.
+
+The existing [Metal four-column screen](qwen35-q6-batch4-screen.md) showed
+that sharing packed output-head weights across related activations could be
+numerically valid yet slower after full command completion. On CUDA, the
+Linux-capable `capture-q6-projection.c` now captures the same actual
+2,048-by-248,320 Q6_K tensor and one final-prefill plus two decode
+activations. The weight SHA-256 is
+`06e53b86ebe6f3e7a4b83110fd717e847404acd4bbc4670be1c80f241ff4830e`,
+identical to Metal's independently captured tensor. The three CUDA input
+SHA-256 values are `16c0354900a1c95930b78c17cd2ca088e0b48b70612cd998da842818a68bda06`,
+`a3456024b7c061cef13d7e902298fa42ee2ae4247662152b5e572e504f8fc762`
+and `ca4b797dc3a94ca130906c5a634ab1d4cd16ae63f6fd2418a56bd802076f0835`.
+The model digest is the same authenticated `cd70221b...d9bb1` GGUF named
+above; the CUDA plugin digest from the pinned bundle is
+`ec1ddd96247a97ba6f2a564301efca6a1e9b479f29b6bdb9d166ead2bbb4f774`.
+The capture files, binaries and traces stay outside Git.
+
+The first independent kernel ported the Metal F32 dot path directly. It
+failed the predeclared `0.01` all-logit bound at row zero: captured/ggml
+`13.9653`, native `13.9546`. The cause was a numerical-path mismatch: this
+pinned ggml CUDA Q6_K matvec quantizes each F32 input group to Q8_1 and uses
+packed Q6_K × Q8_1 dot products, as seen in pinned
+`ggml/src/ggml-cuda/quantize.cu:54-99` and
+`ggml/src/ggml-cuda/vecdotq.cuh:627-650,1002-1025`. The first Q8_1
+version also failed (`17.2841` at row zero) because its warp maximum was not
+broadcast from lane zero. That error was repaired before timing. The
+numerically correct scalar-int version took about `1.37 ms` versus ggml's
+`0.96 ms`; 128 threads instead of 256 worsened it to about `1.44 ms`.
+
+Packing four signed Q6_K values and using CUDA `__dp4a` for each Q8_1 group
+reduced the independent complete operation to about `0.98 ms`. Every value
+in all four 248,320-row columns passed the original `0.01` bound and all
+four lowest-index greedy choices matched; the worst absolute difference was
+`1.91e-6`. Twelve warmups preceded five alternating pairs of 20 completed
+operations, including Q8_1 conversion, launch and stream completion for the
+native arm. Positive ggml minus native favors independent CUDA.
+
+| Pair | ggml complete | Independent CUDA complete | Difference |
+| --- | ---: | ---: | ---: |
+| 0 | 0.969943 ms | 0.974669 ms | -0.004726 ms |
+| 1 | 0.960306 ms | 0.987474 ms | -0.027168 ms |
+| 2 | 0.972798 ms | 0.967053 ms | +0.005745 ms |
+| 3 | 0.948140 ms | 0.977703 ms | -0.029563 ms |
+| 4 | 0.984654 ms | 0.984211 ms | +0.000443 ms |
+
+Median paired difference is `-0.004725 ms`, with two independent wins.
+The final source owner rerun, after the diagnostic edits, found another
+five-pair loss: ggml/native medians `1.004149/1.036641 ms`, median paired
+difference `-0.033346 ms`, and zero native wins. Its raw stdout is retained
+locally as `q6-final-owner.stdout`. Both campaigns support keeping the
+candidate outside the graph; neither is hidden by a percentage floor.
+Nsight Systems node tracing found median GPU intervals of `0.92092 ms` for
+the native projection and `0.90694 ms` for pinned ggml, with native/pinned
+Q8_1 conversion `0.00144/0.00166 ms`. This agrees with a small local loss,
+not a reproducible gain. A two-rows-per-warp variant lost all five pairs
+(median paired `-0.069509 ms`); a 32-register cap lost all five (median
+`-0.034834 ms`); `--use_fast_math` won one of five (median `-0.030982 ms`).
+No variant is connected to a product request. These comparisons do not
+establish a CUDA four-column request benefit or a general architecture
+ceiling; another device and a larger fused execution unit remain open.
+
+[NVIDIA's current best-practices guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+explains why warp memory coalescing and register pressure matter for this
+mapping. [Nsight Compute's profiling guide](https://docs.nvidia.com/nsight-compute/ProfilingGuide/)
+describes the memory and occupancy counters needed to distinguish them.
+`ncu --set basic --kernel-name regex:q6_batch4 --launch-count 1` failed here
+with `ERR_NVGPUCTRPERM`; the instrumented `ncu` run's wall times are invalid
+for comparison, and no counter-based bottleneck is claimed. Nsight Systems
+kernel intervals are the available measurement. The pinned ggml CUDA
+`mmvq.cu` uses a different warp/row and packed-dot mapping, explaining why
+the first scalar port was a poor comparison candidate; it does not prove a
+specific remaining bottleneck without counters.
+
+After the source-level comparison, NVIDIA's
+[CUDA Binary Utilities guide](https://docs.nvidia.com/cuda/cuda-binary-utilities/)
+provided a way to inspect the generated sm_89 cubins without GPU counters.
+`cuobjdump --dump-elf-symbols`, `--extract-elf`, `--dump-sass` and
+`--dump-resource-usage` identified the exact profiled functions. The native
+one-row-per-warp Q6_K kernel used 40 registers, no shared memory and 49
+static `LDG` instructions in its disassembly. Pinned ggml's four-column
+Q6_K `mul_mat_vec_q` used 80 registers, 3,072 bytes shared memory and 30
+static `LDG` instructions. Its grid was 124,160 blocks of 32 threads,
+versus the native grid of 31,040 blocks of 256 threads. Static instruction
+counts are not executed load counts or measured memory transactions, and
+these kernels distribute work across rows differently.
+
+The native SASS used ordinary `LDG.E` while ggml used read-only
+`LDG.E.CONSTANT`. An `__ldg` trial changed all 49 native static loads to
+the read-only form but had no clear completed-operation gain: two of five
+native wins and `-0.024997 ms` median paired difference. Reading aligned
+two-byte Q6_K words reduced static loads from 49 to 43; Nsight Systems
+median native GPU interval was `0.922066 ms`, versus `0.920925 ms` for the
+prior DP4A mapping, while pinned ggml remained `0.906738/0.906940 ms` in
+those traces. The two-byte variant also won only two of five local pairs.
+The checked-in kernel retains the prior DP4A mapping. These are useful
+failures: fewer static loads and read-only cache hints alone did not produce
+a measured gain on this device. A connected native path can expose a
+different scheduling or fusion bottleneck.
+
+Reproduce the capture outside timing with the authenticated GGUF, pack and
+normal mode-0 CUDA binary, an empty capture directory, and the pinned headers:
+
+```sh
+cc -O2 -Wall -Wextra -Werror -shared -fPIC -I GGML_SOURCE/ggml/include \
+  scripts/capture-q6-projection.c -o CAPTURE_HELPER.so -ldl
+ALIGN_Q6_CAPTURE=CAPTURE_DIR LD_PRELOAD=CAPTURE_HELPER.so \
+  ALIGN_LLM_NATIVE_STATE_COPY=0 BINARY --provider align-runtime GGUF PACK MODEL_IR \
+  Hello RESULT.json 3 --runtime-options OPTIONS.json
+scripts/run-native-cuda-q6-batch4-screen GGML_SOURCE GGML_BUNDLE CAPTURE_DIR
+```
+
+The default ggml route is retained. The independent Q6_K implementation is
+also retained as the native baseline. The next CUDA capability should
+connect it behind a guarded opt-in selection on real Qwen3.5 requests,
+profile its device and scheduling boundary, and improve it against its own
+previous revision, ordinary Align and pinned llama.cpp. A local loss to
+ggml does not block that trial connection. Keep measured incremental native
+gains even before the native route overtakes ggml; there is no percentage or
+win-count floor. Broader Q4_0/normalization/activation fusion remains a
+follow-up, informed by the connected profile and the Metal split-FFN loss.
