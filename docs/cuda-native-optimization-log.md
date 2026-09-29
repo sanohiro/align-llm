@@ -92,11 +92,32 @@ The diagnostic Linux interposer `scripts/capture-q4-ffn.c` selects the last
 Q6_K output head. It marks only that chain's activation and outputs before
 ggml allocation, reads them after successful decode compute, and writes
 create-only schema-1 files to an existing empty directory. It is never loaded
-for timings. Reproduce the capture with the pinned real shim, mode
-`ALIGN_LLM_NATIVE_Q6_HEAD=0`, `ALIGN_LLM_NATIVE_SWIGLU=0`,
-`ALIGN_Q4_FFN_CAPTURE=CAPTURE_DIR`, `LD_PRELOAD=CAPTURE_INTERPOSER`, and one
-ordinary CLI request with at least one decode step. Build the interposer using
-the command in its source header. Then run:
+for timings. The capture request was the exact CLI prompt `Hello`, maximum two
+generated tokens, returning `Hello!`, `prompt_tokens=31` and
+`completion_tokens=2`. The interposer captured graph kind `1`, the first
+decode step after the prompt's first generated token. The GGUF digest is at
+the top of this log; the alignpack and Model IR SHA-256 digests are
+`b4b418ebef9f83f911e4d604bdcce03e589fb7d2afa35f7e3bbdff3111b810b1`
+and `4c5c87078f7459a6a12ef5eb313f209cbecdd834667eeec4421e7c90384d20d1`.
+The runtime options selected `backend=cuda`, `device=CUDA0`,
+`placement=resident`, 4,294,967,296 host-budget bytes, 8,000,000,000
+device-budget bytes and `prefetch=off`, with `backend_bundle` pointing to the
+pinned same-source CUDA library directory. Build the interposer using the
+command in its source header and the pinned ggml include directory. With
+`GGUF`, `ALIGNPACK`, `MODEL_IR`, `RUNTIME_OPTIONS`, and `GGML_LIB` referring to
+those exact artifacts, reproduce the capture with this invocation (`OUT_JSON`
+must be outside the empty capture directory):
+
+```sh
+mkdir -p "$CAPTURE_DIR"
+env ALIGN_Q4_FFN_CAPTURE="$CAPTURE_DIR" LD_PRELOAD="$CAPTURE_INTERPOSER" \
+  ALIGN_LLM_NATIVE_Q6_HEAD=0 ALIGN_LLM_NATIVE_SWIGLU=0 \
+  ALIGN_LLM_NATIVE_STATE_COPY=0 \
+  ./main --provider align-runtime "$GGUF" "$ALIGNPACK" "$MODEL_IR" \
+  'Hello' "$OUT_JSON" 2 --runtime-options "$RUNTIME_OPTIONS"
+```
+
+The capture directory must already be empty. Then run:
 
 ```sh
 scripts/run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN CAPTURE_DIR
