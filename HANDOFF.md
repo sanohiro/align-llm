@@ -2,39 +2,36 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active actual-weight CUDA Q4_0 FFN screen (2026-09-29)
+## Active native CUDA Q4_0 down mapping screen (2026-09-29)
 
-Branch `agent/native-cuda-q4-profile` starts from merged `main` `27e4c840`
-(PR #328). Its Q6_K selected mode removes the duplicated ggml projection and
-passes complete logits/state, retained requests, failures, model-work and
-device-budget owners. The reviewed repair was `da69af3`; exact-head preflight
-and all three hosted checks passed. Five-pair selected warm requests beat the
-previous duplicated checkpoint by 14.453/33.427/68.092 ms median at 56/16,
-200/32 and 330/64, but lost to ordinary Align by 0.705/2.260/1.957 ms.
-They beat pinned llama.cpp by 15.506/10.259/10.121 ms in these scoped cases;
-this does not establish a general victory. See `docs/cuda-native-optimization-log.md`.
+PR #329 merged at `2bcb685`. Its exact actual-weight final-decode FFN capture,
+synthetic/real full-row owners, comprehensive review, exact-head preflight and
+all three hosted checks passed. The independent four-warp down kernel improved
+from 8.064 to 7.616 microseconds in the adjacent node trace, but complete FFN
+timing was noisy and still trailed ggml. The selected Q6_K product route keeps
+ggml Q4_0 and remains default-off. See `docs/cuda-native-optimization-log.md`.
 
-An exact 200/32 selected-mode Nsight node trace now attributes 38.577 ms and
-16.555 ms of summed GPU intervals to fused and unfused Q4_0 decode matvec,
-versus 30.069 ms to the native Q6_K head. This is attribution, not wall time.
-The next local capability captures the final decode FFN's actual 2B Q4_0
-weights and activation, validates independent CUDA against the captured ggml
-values, and compares five alternating complete-FFN pairs. The fresh Linux
-capture and actual-weight numeric owner pass; a separate down-only four-warp
-candidate passes full gated/down rows and its instrumented down kernel median
-fell from 8.064 to 7.616 microseconds in adjacent node traces. Complete FFN
-host timing is noisy and still trails ggml, so no request route is changed.
-The one-warp gate/up experiment did not establish a gain and was reverted. The exact capture
-and trace commands/results belong in the optimization log before publication.
+Branch `agent/native-cuda-q4-next` starts from pulled `main` `2bcb685`.
+The current trial distributes each Q4_0 down block across two neighboring
+lanes, leaving gate/up unchanged. The actual-weight and synthetic complete-row
+owners pass. Two alternating Nsight traces put the preceding down median at
+7.681/7.776 microseconds and the candidate at 7.168/7.104 microseconds;
+gate/up and quantize intervals stay near their previous values. Half-block
+gate/up lost 0.319 microseconds in the first adjacent trace and was reverted.
+Complete-FFN host timings fluctuate substantially with GPU clocks, so only a
+local down-kernel improvement is supported. No request route changed.
 
-Next actions: (1) finish the Q4 capture/screen docs, parity row and focused
-owners, including malformed capture; (2) commit, run one comprehensive review
-and exact-head publication preflight; (3) publish an English PR, record review
-and integration evidence, merge after checks; (4) refresh `main` and continue
-the Q4_0 profile/improve/benchmark cycle toward a connected native route.
-Nsight Compute counters remain denied (`ERR_NVGPUCTRPERM`). Other CUDA GPUs,
-Qwen sizes and Gemma remain unmeasured until their owner hardware/model is
-available. No fixed percentage floor governs a repeatable useful improvement.
+The source/evidence log and backend parity row are complete. One comprehensive
+host-native `codex review --uncommitted` (session
+`01a0ed3d-ac81-7d41-a9de-c0e1d3160ec3`) found no actionable defect.
+Next actions: (1) commit the reviewed source and run exact-head preflight;
+(2) publish an English PR, record review/integration evidence and merge after
+checks; (3) refresh `main`, profile a larger connected Q4_0 boundary and
+continue small measured CUDA improvements toward a native request path.
+Nsight Compute counters remain denied (`ERR_NVGPUCTRPERM`); NVIDIA documents
+that WSL counter access is controlled by the Windows host. Other CUDA GPUs,
+Qwen sizes and Gemma remain unmeasured until available. No fixed percentage
+floor governs a repeatable useful improvement.
 
 ## Completed CUDA Q6_K four-column screen (2026-09-29)
 
