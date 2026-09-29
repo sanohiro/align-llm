@@ -53,6 +53,9 @@
 #if defined(__APPLE__)
 #include "native_metal_state_copy.h"
 #endif
+#if defined(ALIGN_LLM_NATIVE_CUDA)
+#include "native_cuda_state_copy.h"
+#endif
 
 /* G1 linked-core observation. The executable owns immutable installed cores; the
  * plugin bundle is admitted only after Align verifies these actual loaded paths. */
@@ -2584,6 +2587,19 @@ int32_t align_gpu_native_state_copy_mode(void *owner, int32_t mode) {
     if (state->native_state_copy_context == NULL) return ALIGN_GPU_UNSUPPORTED;
     state->native_state_copy = 1;
     return ALIGN_GPU_OK;
+#elif defined(ALIGN_LLM_NATIVE_CUDA)
+    ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(state->backend);
+    const char *name = buft == NULL ? NULL : ggml_backend_buft_name(buft);
+    if (state->native_state_copy || name == NULL || strncmp(name, "CUDA", 4) != 0)
+        return ALIGN_GPU_CONFIG;
+    ggml_backend_reg_t registry = ggml_backend_dev_backend_reg(state->device);
+    if (registry == NULL || ggml_backend_reg_dev_count(registry) != 1
+        || strcmp(ggml_backend_dev_name(state->device), "CUDA0") != 0)
+        return ALIGN_GPU_UNSUPPORTED;
+    state->native_state_copy_context = align_native_cuda_copy_open(0);
+    if (state->native_state_copy_context == NULL) return ALIGN_GPU_UNSUPPORTED;
+    state->native_state_copy = 1;
+    return ALIGN_GPU_OK;
 #else
     return ALIGN_GPU_UNSUPPORTED;
 #endif
@@ -3285,6 +3301,12 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
         state->workspace_failed = 1;
         return ALIGN_GPU_COMPUTE;
     }
+#elif defined(ALIGN_LLM_NATIVE_CUDA)
+    if (state->native_state_copy_context != NULL
+        && !align_native_cuda_copy_wait(state->native_state_copy_context)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
 #endif
     for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; ++kind) {
         if (state->graph_prepared[kind]) {
@@ -3431,6 +3453,12 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
 #if defined(__APPLE__)
     if (state->native_state_copy_context != NULL
         && !align_native_metal_copy_wait(state->native_state_copy_context)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
+#elif defined(ALIGN_LLM_NATIVE_CUDA)
+    if (state->native_state_copy_context != NULL
+        && !align_native_cuda_copy_wait(state->native_state_copy_context)) {
         state->workspace_failed = 1;
         return ALIGN_GPU_COMPUTE;
     }
@@ -3609,6 +3637,62 @@ static int align_gpu_native_copy_commit(struct align_gpu_device_state *state, in
 }
 #endif
 
+#if defined(ALIGN_LLM_NATIVE_CUDA)
+static int align_gpu_native_cuda_extent(struct ggml_tensor *tensor,
+        void **base, size_t *capacity, uint64_t *offset) {
+    ggml_backend_buffer_t buffer;
+    const char *name;
+    void *start;
+    size_t size;
+    if (tensor == NULL || tensor->buffer == NULL || tensor->data == NULL
+        || tensor->type != GGML_TYPE_F32 || !ggml_is_contiguous(tensor)) return 0;
+    buffer = tensor->buffer;
+    name = ggml_backend_buft_name(ggml_backend_buffer_get_type(buffer));
+    if (name == NULL || strncmp(name, "CUDA", 4) != 0) return 0;
+    start = ggml_backend_buffer_get_base(buffer);
+    size = ggml_backend_buffer_get_size(buffer);
+    if (start == NULL || (uintptr_t) tensor->data < (uintptr_t) start) return 0;
+    *offset = (uint64_t) ((uintptr_t) tensor->data - (uintptr_t) start);
+    if (*offset > size || ggml_nbytes(tensor) > size - (size_t) *offset) return 0;
+    *base = start;
+    *capacity = size;
+    return 1;
+}
+
+static int align_gpu_native_cuda_copy_commit(struct align_gpu_device_state *state, int kind) {
+    struct align_native_cuda_copy copies[64];
+    void *source_base = NULL, *destination_base = NULL;
+    size_t source_size = 0, destination_size = 0;
+    int count = state->native_state_copy_count[kind];
+    if (count == 0) return 1;
+    if (!state->native_state_copy || state->native_state_copy_context == NULL) return 0;
+    for (int at = 0; at < count; ++at) {
+        struct ggml_tensor *src = state->native_state_copy_sources[kind][at];
+        struct ggml_tensor *dst = state->native_state_copy_destinations[kind][at];
+        void *src_base, *dst_base;
+        size_t src_size, dst_size, bytes;
+        uint64_t src_offset, dst_offset;
+        if (src == NULL || dst == NULL || ggml_nbytes(src) != ggml_nbytes(dst)
+            || !align_gpu_native_cuda_extent(src, &src_base, &src_size, &src_offset)
+            || !align_gpu_native_cuda_extent(dst, &dst_base, &dst_size, &dst_offset)) return 0;
+        if (source_base != NULL && (source_base != src_base || source_size != src_size)) return 0;
+        if (destination_base != NULL
+            && (destination_base != dst_base || destination_size != dst_size)) return 0;
+        source_base = src_base;
+        destination_base = dst_base;
+        source_size = src_size;
+        destination_size = dst_size;
+        bytes = ggml_nbytes(src);
+        if (source_base == destination_base
+            && src_offset < dst_offset + bytes && dst_offset < src_offset + bytes) return 0;
+        copies[at] = (struct align_native_cuda_copy) { src_offset, dst_offset, bytes };
+    }
+    return align_native_cuda_copy_submit(state->native_state_copy_context,
+        source_base, source_size, destination_base, destination_size,
+        copies, (size_t) count);
+}
+#endif
+
 int64_t align_gpu_native_copy_greedy_result(void *owner) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
 #if defined(__APPLE__)
@@ -3627,6 +3711,15 @@ int32_t align_gpu_native_state_copy_finish(void *owner) {
 #if defined(__APPLE__)
     if (state->native_state_copy_context != NULL
         && !align_native_metal_copy_wait(state->native_state_copy_context)) {
+#if defined(ALIGN_GGML_FORCE_NATIVE_COPY_COMPLETION_FAILURE)
+        fprintf(stderr, "native_state_copy request completion failure\n");
+#endif
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
+#elif defined(ALIGN_LLM_NATIVE_CUDA)
+    if (state->native_state_copy_context != NULL
+        && !align_native_cuda_copy_wait(state->native_state_copy_context)) {
 #if defined(ALIGN_GGML_FORCE_NATIVE_COPY_COMPLETION_FAILURE)
         fprintf(stderr, "native_state_copy request completion failure\n");
 #endif
@@ -3686,6 +3779,14 @@ int32_t align_gpu_graph_compute(
     }
 #if defined(__APPLE__)
     if (!align_gpu_native_copy_commit(state, kind)) {
+#if defined(ALIGN_GGML_FORCE_NATIVE_COPY_SUBMIT_FAILURE)
+        fprintf(stderr, "native_state_copy request submit failure\n");
+#endif
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
+#elif defined(ALIGN_LLM_NATIVE_CUDA)
+    if (!align_gpu_native_cuda_copy_commit(state, kind)) {
 #if defined(ALIGN_GGML_FORCE_NATIVE_COPY_SUBMIT_FAILURE)
         fprintf(stderr, "native_state_copy request submit failure\n");
 #endif
@@ -3769,6 +3870,11 @@ void align_gpu_device_close(void *owner) {
 #if defined(__APPLE__)
     if (state->native_state_copy_context != NULL) {
         align_native_metal_copy_close(state->native_state_copy_context);
+        state->native_state_copy_context = NULL;
+    }
+#elif defined(ALIGN_LLM_NATIVE_CUDA)
+    if (state->native_state_copy_context != NULL) {
+        align_native_cuda_copy_close(state->native_state_copy_context);
         state->native_state_copy_context = NULL;
     }
 #endif

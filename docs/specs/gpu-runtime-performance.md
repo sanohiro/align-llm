@@ -42,6 +42,62 @@ after observing failures.
 This section supersedes historical percentage-based admission/shipping prose
 elsewhere in this repository. Historical receipts must not be rewritten.
 
+### Native CUDA Q4_0 FFN screen (2026-09-29)
+
+The CUDA host has an RTX 4070 Ti. At the start of this capability the Qwen3.5
+session and its real-model correctness owner admitted Metal only. Test the
+independent Q4_0 gate/up/SwiGLU/down kernel on CUDA before changing admission.
+The pinned ggml CUDA graph remains the control and the product default.
+
+| Contract | Definition |
+| --- | --- |
+| Consumer and selection | `scripts/run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN` builds and runs the independent CUDA screen. No product flag, public inference API, cache or persisted schema is added (`N/A`: no product adoption at this stage). The runner requires three explicit pinned inputs and writes no model artifact. |
+| Inputs and outputs | Q4_0 matrices with dimensions 2048×6144, 2048×6144 and 6144×2048, plus one F32 input row. The owner generates deterministic packed Q4_0 weights and an F32 activation, uploads one quantized copy per matrix, and compares every intermediate and final F32 result with the same-source ggml CUDA graph. Shape and format are checked before launch. The result prints host/device identity, maximum absolute error, and five alternating per-arm pairs. |
+| Ownership and errors | The native CUDA helper owns its stream and scratch/output buffers; the caller owns weights and input. The ggml backend owns its separate graph and buffers. On CUDA allocation, launch, synchronization, numerical or ggml failure the screen exits nonzero and emits no performance verdict. All allocations and the stream are released on exit. No pointer is retained by the helper after its call. |
+| Numerical and measurement gate | Require finite native values and each element to satisfy `abs(native - ggml) <= 0.005 + 0.0005 * abs(ggml)` before timing. Warm both arms 12 times, then run five alternating pairs of 20 complete FFNs, including device completion in both timings. Record all pairs; report a local result, never a request or llama.cpp speed claim. Preparation <=900 s, measurement <=120 s, and device scratch <=32 KiB beyond its F32 intermediate and final outputs. |
+| Later consumer | The real Qwen3.5 CUDA session is admitted separately below. This FFN screen lost complete local comparisons and has no product selection. A future FFN specialization needs real weights, exact logits/state parity, failure and cleanup owners, then paired complete requests against unchanged Align and pinned llama.cpp before enabling it. A local loss or gain alone cannot decide product adoption. |
+
+| Closure case | Owner |
+| --- | --- |
+| Construction / malformed input | Runner argument/path checks; helper rejects unsupported dimensions and null pointers. |
+| Success / repeated execution | Screen compares complete intermediate and final rows before and after warmup, then checks both arms after every measured pair. |
+| Failure / early exit | Every CUDA and ggml status is checked; failed execution stops before a speed verdict. |
+| Cleanup | Helper releases stream/scratch on every return; screen frees its separate CUDA and ggml allocations. |
+
+### Native CUDA recurrent-state copy trial (2026-09-29)
+
+Once the ordinary CUDA Qwen3.5 session passes the real-model owner, reuse its
+existing `ALIGN_LLM_NATIVE_STATE_COPY=1` selection for a CUDA device copy of
+contiguous DeltaNet state. The Metal route and the `0`/absent ggml route keep
+their current semantics. This trial does not depend on the standalone FFN
+screen's speed result.
+
+| Contract | Definition |
+| --- | --- |
+| Public selection | The existing `ALIGN_LLM_NATIVE_STATE_COPY` variable admits `0` (default ggml graph) and `1` (device copy) for a Qwen3.5 resident CUDA session. Invalid values or an unavailable native CUDA build fail before weight upload. The shim's existing state-copy ABI and graph-kind registration are reused. No new options, result, model, cache or pack schema (`N/A`: all are unchanged). |
+| Operation | On decode graph construction, Align registers each complete contiguous F32 DeltaNet next-state source and equally shaped resident destination. The ggml graph produces the source and all other model operations; it omits only those registered ggml `CPY` nodes. After synchronous ggml graph compute, the native CUDA module submits checked device-to-device copies on one owned stream. Align waits before state parity, next dependent graph or token publication. Prefill and strided convolution copies stay on ggml. |
+| Ownership and validation | ggml owns source workspace and destination KV allocations. The native module borrows bounded pointers, owns only the CUDA stream and retains no state payload. Require selected sole `CUDA0`, CUDA buffer types, in-buffer extents, equal shape/bytes, nonoverlap and at most 64 registered pairs. Workspace rebuild, invalidation and close drain the stream before ggml frees memory. A submission/completion fault poisons the request; no error-driven fallback. |
+| Acceptance and cost | Actual 2B CUDA 31/200/330-token generation and repeated-session outputs must match the pinned llama.cpp oracle; compare all active recurrent-state planes and complete logits against mode `0` before timing. Run forced submission/completion failures with no published token. Then measure unchanged ggml mode, native mode and pinned llama.cpp in five alternating request pairs for each length. Build/owner preparation <=3600 s, each paired campaign <=900 s, each request <=180 s. Native module reserves no model-sized buffer. |
+
+| Closure case | Owner |
+| --- | --- |
+| Construction / invalid mode / allocation | Qwen3.5 config reader, native device admission and real session owner. |
+| Success / repeated requests | Real CUDA provider/session oracle, complete logits and state comparison, five-pair request measurement. |
+| Malformed registration / changed graph | Real-shim native copy owner with wrong extent, duplicate destination and invalidation after pending work. |
+| Submit/completion failure / early exit / cleanup | Injected real-shim owner; native stream drain and reverse device teardown. |
+
+**RTX 4070 Ti result.** The authenticated 2B owner passed exact normal/native
+full-logit and valid-state hashes at all three prompt lengths, repeated exact
+generated IDs against pinned llama.cpp, default and native generation/serving,
+and injected submission/completion failures. A batched CUDA copy reduced traced
+copy submissions, but two preliminary five-pair campaigns at each of 56/16,
+200/32 and 330/64 won only 12/30 native versus ordinary Align pairs. The
+reference-executable-digest-bound repeat won 5/15 against ordinary Align and
+13/15 against pinned llama.cpp. Keep the selection
+default-off. Conditions and failed variants are in
+`docs/cuda-native-optimization-log.md`; other CUDA hosts and models remain
+unmeasured.
+
 ### Independent Q6_K small-batch output-head screen (2026-09-28)
 
 The current four-row target verifier amortizes model weights across candidate

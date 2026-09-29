@@ -116,10 +116,17 @@ pub fn build_many(
   key_index := runtime_qwen35_state.attention_index(g, layer, runtime_qwen35_state.KEY)?
   value_index := runtime_qwen35_state.attention_index(g, layer, runtime_qwen35_state.VALUE)?
   if kind == ggml_ffi.GPU_GRAPH_PREFILL {
-    runtime_kv.write_prefix(owner, key_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
-      position, position + count, slots, 41, 52)?
-    runtime_kv.write_prefix(owner, value_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
-      position, position + count, slots, 42, 40)?
+    if ggml_ffi.gpu_kv_prefill_indexed(owner) {
+      runtime_kv.write_indexed_prefix(owner, key_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
+        index_input, position + count, slots, 41, 52)?
+      runtime_kv.write_indexed_prefix(owner, value_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
+        index_input, position + count, slots, 42, 40)?
+    } else {
+      runtime_kv.write_prefix(owner, key_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
+        position, position + count, slots, 41, 52)?
+      runtime_kv.write_prefix(owner, value_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
+        position, position + count, slots, 42, 40)?
+    }
   } else {
     runtime_kv.write_indexed_prefix(owner, key_index, kind, ggml_ffi.GPU_KV_LAYOUT_K,
       index_input, position + count, slots, 41, 52)?

@@ -59,6 +59,11 @@ owner also selects mixed decode, prefill or native greedy mode for command-failu
 Its native greedy variant compares the same real-model output, full logits and
 state while selecting only the experimental decode token reduction; this remains
 an `INDEPENDENT_ORACLE` and does not supply product inference logic.
+`scripts/run-qwen35-native-cuda-copy-smoke` is also `INDEPENDENT_ORACLE`:
+it selects explicit default and native CUDA copy arms on the recorded real
+2B artifact, compares complete output-logit and resident-plane hashes after
+each graph, and asserts the decode copy-node difference. It only launches the
+Align product; its tracing and decisions never enter product inference.
 `scripts/measure-native-swiglu` remains `BENCHMARK_OR_MEASUREMENT`; its explicit
 copy and native-greedy arms are independent workload selectors and cannot choose a model
 token or graph operation. `scripts/measure-metal-worker-footprint` retains its
@@ -113,6 +118,12 @@ roles; latency is reported for assessment without a fixed shipping percentage.
 `scripts/measure-cuda-optimization` and `scripts/run-gpu-session-measurement`
 remain `BENCHMARK_OR_MEASUREMENT`; valid evidence now reports assessment required,
 paired changes and wins instead of a percentage-based adoption verdict.
+`scripts/measure-qwen35-native-cuda` is `BENCHMARK_OR_MEASUREMENT`: it holds
+explicit ordinary and native CUDA Align sessions, checks the same actual
+request work and output, and records five alternating warm request pairs at
+three fixed prompts. Its optional pinned comparison validates the supplied
+benchmark executable digest and source revision before timing. It neither
+computes logits nor chooses product tokens.
 
 `scripts/measure-native-swiglu` is `BENCHMARK_OR_MEASUREMENT`: it launches
 native products/reference executables, captures timing and checks output/counts.
@@ -178,11 +189,19 @@ It launches external native workers and is never imported by normal product exec
 remain `INDEPENDENT_ORACLE` for the dense 2B adoption. Their expected GGUF
 SHA-256 can be supplied explicitly for a second recorded source; the commands
 still compare Align output with pinned llama.cpp and remain outside normal
-product execution. The default remains the qualified 0.8B file.
+product execution. The default remains the qualified 0.8B file. The generation
+oracle also accepts a checked pinned llama.cpp source path on Linux when the
+Metal tokenizer executable is unavailable; it drives the same Qwen3.5 CUDA
+provider and retained-session boundary, without supplying inference logic.
+When given `QWEN35_ID_DIAGNOSTIC`, it also compares the existing Align
+diagnostic's repeated generated-ID arrays with the pinned llama.cpp oracle.
+The serving owner permits the same Linux linked shim without a Darwin library
+path; it still drives only external product and oracle processes.
 `scripts/run-qwen35-native-copy-failure-smoke` is `INDEPENDENT_ORACLE`: it
-drives a real-model worker built with one test-only Metal command failure and
-checks the failed envelope and process exit. It does not implement inference
-or run in a product path.
+drives a real-model worker built with one test-only Metal or CUDA command
+failure and checks the failed envelope and process exit. CUDA admits only
+recurrent-state copy; Metal retains its qualified mixed and prefill variants.
+It does not implement inference or run in a product path.
 `scripts/run-openai-serving-smoke` remains an `INDEPENDENT_ORACLE`; its external
 model id can be selected for the 2B text consumer while it compares the real
 HTTP path with pinned llama.cpp. Its default remains the 0.8B id.

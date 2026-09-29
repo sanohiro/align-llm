@@ -522,7 +522,8 @@ fn run_qwen35_session(config: model.ProviderConfig,
   borrow mut observation: SessionObservation,
   model_id: str, port: i64,
 ) -> Result<(), Error> {
-  if config.runtime_cache_budget_bytes != 0 || options.backend != "metal" {
+  if config.runtime_cache_budget_bytes != 0
+    || (options.backend != "metal" && options.backend != "cuda") {
     return Err(Error.Invalid)
   }
   geometry := read_geometry(config.runtime_geometry_path)?

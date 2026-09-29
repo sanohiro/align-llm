@@ -1,0 +1,199 @@
+// Independent CUDA Q4_0 FFN screen against the pinned ggml CUDA graph.
+#include "native_cuda_q40_ffn.h"
+
+#include "ggml.h"
+#include "ggml-alloc.h"
+#include "ggml-backend.h"
+
+#include <cuda_runtime.h>
+
+#include <algorithm>
+#include <chrono>
+#include <cmath>
+#include <cstdint>
+#include <cstdio>
+#include <cstdlib>
+#include <utility>
+#include <vector>
+
+static constexpr int WIDTH = 2048;
+static constexpr int HIDDEN = 6144;
+static constexpr int WARMUPS = 12;
+static constexpr int PAIRS = 5;
+static constexpr int ITERATIONS = 20;
+
+[[noreturn]] static void fail(const char *message) {
+    std::fprintf(stderr, "native CUDA FFN screen: %s\n", message);
+    std::exit(1);
+}
+
+static std::vector<uint8_t> make_weights(size_t bytes, unsigned seed) {
+    if (bytes % 18 != 0) fail("unexpected Q4_0 tensor size");
+    std::vector<uint8_t> data(bytes);
+    for (size_t block = 0; block < bytes / 18; ++block) {
+        const size_t at = block * 18;
+        data[at] = 0;
+        data[at + 1] = 0x24;  // F16 scale 1/64.
+        for (unsigned i = 0; i < 16; ++i) {
+            const unsigned low = (block * 17 + i * 7 + seed * 13) & 15;
+            const unsigned high = (block * 11 + i * 3 + seed * 19) & 15;
+            data[at + 2 + i] = uint8_t(low | (high << 4));
+        }
+    }
+    return data;
+}
+
+static double elapsed_ms(std::chrono::steady_clock::time_point start) {
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+}
+
+static double median(std::vector<double> values) {
+    std::sort(values.begin(), values.end());
+    return values[values.size() / 2];
+}
+
+static float check_row(ggml_tensor *tensor, const std::vector<float> &actual,
+        const char *label) {
+    std::vector<float> expected(actual.size());
+    ggml_backend_tensor_get(tensor, expected.data(), 0, expected.size() * sizeof(float));
+    float worst = 0.0f;
+    for (size_t i = 0; i < actual.size(); ++i) {
+        const float diff = std::fabs(expected[i] - actual[i]);
+        if (!std::isfinite(actual[i]) || !std::isfinite(expected[i])
+            || diff > 0.005f + 0.0005f * std::fabs(expected[i])) {
+            std::fprintf(stderr, "%s mismatch at %zu: ggml=%g native=%g diff=%g\n",
+                label, i, expected[i], actual[i], diff);
+            std::exit(1);
+        }
+        worst = std::max(worst, diff);
+    }
+    return worst;
+}
+
+int main(int argc, char **argv) {
+    if (argc != 2) fail("usage: bench-native-cuda-q4-ffn LIBGGML_CUDA_SO");
+    ggml_backend_reg_t registry = ggml_backend_load(argv[1]);
+    if (registry == nullptr || ggml_backend_reg_dev_count(registry) != 1)
+        fail("pinned ggml CUDA plugin must have exactly one device");
+    ggml_backend_dev_t device = ggml_backend_reg_dev_get(registry, 0);
+    if (device == nullptr) fail("pinned ggml CUDA device unavailable");
+    ggml_backend_t backend = ggml_backend_dev_init(device, nullptr);
+    if (backend == nullptr) fail("pinned ggml CUDA backend init failed");
+    cudaDeviceProp properties{};
+    if (cudaGetDeviceProperties(&properties, 0) != cudaSuccess)
+        fail("CUDA device query failed");
+    std::printf("device=%s ggml_device=%s\n", properties.name,
+        ggml_backend_dev_description(device));
+
+    ggml_init_params params = {
+        ggml_tensor_overhead() * 32 + ggml_graph_overhead_custom(32, false),
+        nullptr, true
+    };
+    ggml_context *ctx = ggml_init(params);
+    if (ctx == nullptr) fail("ggml context allocation failed");
+    ggml_tensor *wg = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_0, WIDTH, HIDDEN);
+    ggml_tensor *wu = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_0, WIDTH, HIDDEN);
+    ggml_tensor *wd = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_0, HIDDEN, WIDTH);
+    ggml_tensor *x = ggml_new_tensor_1d(ctx, GGML_TYPE_F32, WIDTH);
+    ggml_tensor *gate = ggml_mul_mat(ctx, wg, x);
+    ggml_tensor *up = ggml_mul_mat(ctx, wu, x);
+    ggml_tensor *gated = ggml_swiglu_split(ctx, gate, up);
+    ggml_tensor *down = ggml_mul_mat(ctx, wd, gated);
+    ggml_cgraph *graph = ggml_new_graph_custom(ctx, 32, false);
+    ggml_build_forward_expand(graph, down);
+    ggml_backend_buffer_t ggml_buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
+    if (ggml_buffer == nullptr) fail("ggml CUDA tensor allocation failed");
+
+    auto gate_weights = make_weights(ggml_nbytes(wg), 1);
+    auto up_weights = make_weights(ggml_nbytes(wu), 2);
+    auto down_weights = make_weights(ggml_nbytes(wd), 3);
+    std::vector<float> input(WIDTH);
+    for (int i = 0; i < WIDTH; ++i) input[i] = std::sin(i * 0.013f);
+    ggml_backend_tensor_set(wg, gate_weights.data(), 0, gate_weights.size());
+    ggml_backend_tensor_set(wu, up_weights.data(), 0, up_weights.size());
+    ggml_backend_tensor_set(wd, down_weights.data(), 0, down_weights.size());
+    ggml_backend_tensor_set(x, input.data(), 0, input.size() * sizeof(float));
+
+    void *dg = nullptr, *du = nullptr, *dd = nullptr;
+    float *dx = nullptr;
+    if (cudaMalloc(&dg, gate_weights.size()) != cudaSuccess
+        || cudaMalloc(&du, up_weights.size()) != cudaSuccess
+        || cudaMalloc(&dd, down_weights.size()) != cudaSuccess
+        || cudaMalloc(&dx, input.size() * sizeof(float)) != cudaSuccess)
+        fail("native CUDA input allocation failed");
+    if (cudaMemcpy(dg, gate_weights.data(), gate_weights.size(), cudaMemcpyHostToDevice)
+            != cudaSuccess
+        || cudaMemcpy(du, up_weights.data(), up_weights.size(), cudaMemcpyHostToDevice)
+            != cudaSuccess
+        || cudaMemcpy(dd, down_weights.data(), down_weights.size(), cudaMemcpyHostToDevice)
+            != cudaSuccess
+        || cudaMemcpy(dx, input.data(), input.size() * sizeof(float), cudaMemcpyHostToDevice)
+            != cudaSuccess) fail("native CUDA input upload failed");
+    void *native = align_native_cuda_q40_ffn_open(WIDTH, HIDDEN);
+    if (native == nullptr) fail("native CUDA FFN init failed");
+    if (align_native_cuda_q40_ffn_open(WIDTH - 1, HIDDEN) != nullptr
+        || align_native_cuda_q40_ffn_run(native, nullptr, du, dd, dx)
+        || align_native_cuda_q40_ffn_read(native, nullptr, HIDDEN,
+            nullptr, WIDTH)) fail("native CUDA admission accepted invalid input");
+
+    auto run_ggml = [&]() -> double {
+        const auto start = std::chrono::steady_clock::now();
+        if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS)
+            fail("ggml CUDA graph compute failed");
+        // The synchronous ggml entrypoint already waits for this graph.
+        return elapsed_ms(start);
+    };
+    auto run_native = [&]() -> double {
+        const auto start = std::chrono::steady_clock::now();
+        if (!align_native_cuda_q40_ffn_run(native, dg, du, dd, dx))
+            fail("native CUDA FFN compute failed");
+        return elapsed_ms(start);
+    };
+    std::vector<float> native_gated(HIDDEN), native_down(WIDTH);
+    auto check_both = [&]() -> std::pair<float, float> {
+        if (!align_native_cuda_q40_ffn_read(native, native_gated.data(), native_gated.size(),
+                native_down.data(), native_down.size())) fail("native CUDA output read failed");
+        const float gated_error = check_row(gated, native_gated, "gated");
+        return {gated_error, check_row(down, native_down, "down")};
+    };
+    for (int i = 0; i < WARMUPS; ++i) {
+        run_ggml();
+        run_native();
+    }
+    auto errors = check_both();
+    if (align_native_cuda_q40_ffn_run(native, static_cast<uint8_t *>(dg) + 1,
+            du, dd, dx)) fail("captured CUDA graph accepted a changed weight pointer");
+    std::printf("gated_max_abs_diff=%g down_max_abs_diff=%g\n",
+        errors.first, errors.second);
+
+    std::vector<double> ggml_times, native_times;
+    for (int pair = 0; pair < PAIRS; ++pair) {
+        double ggml_ms = 0.0, native_ms = 0.0;
+        for (int i = 0; i < ITERATIONS; ++i) {
+            if (pair % 2 == 0) {
+                ggml_ms += run_ggml();
+                native_ms += run_native();
+            } else {
+                native_ms += run_native();
+                ggml_ms += run_ggml();
+            }
+        }
+        check_both();
+        ggml_times.push_back(ggml_ms / ITERATIONS);
+        native_times.push_back(native_ms / ITERATIONS);
+        std::printf("pair=%d ggml_ms=%.6f native_ms=%.6f\n",
+            pair, ggml_times.back(), native_times.back());
+    }
+    std::printf("median_ggml_ms=%.6f median_native_ms=%.6f\n",
+        median(ggml_times), median(native_times));
+    align_native_cuda_q40_ffn_close(native);
+    cudaFree(dx);
+    cudaFree(dd);
+    cudaFree(du);
+    cudaFree(dg);
+    ggml_backend_buffer_free(ggml_buffer);
+    ggml_free(ctx);
+    ggml_backend_free(backend);
+    return 0;
+}

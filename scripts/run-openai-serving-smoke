@@ -117,7 +117,8 @@ def main() -> None:
     options = Path(os.environ["QWEN35_RUNTIME_OPTIONS"]).resolve()
     oracle = Path(os.environ["QWEN35_LLAMA_ORACLE"]).resolve()
     env = os.environ.copy()
-    env["DYLD_LIBRARY_PATH"] = os.environ["QWEN35_LIB_PATH"]
+    if "QWEN35_LIB_PATH" in os.environ:
+        env["DYLD_LIBRARY_PATH"] = os.environ["QWEN35_LIB_PATH"]
     oracle_env = env.copy()
     oracle_env.pop("DYLD_LIBRARY_PATH", None)
     with tempfile.TemporaryDirectory(prefix="openai-serving-") as temporary:

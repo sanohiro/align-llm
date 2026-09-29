@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Compare complete CUDA Qwen3.5 logits and resident state across copy modes."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+
+
+CASES = (("short", "Hello", 31), ("chunked", "hello " * 170, 200),
+         ("wider-attention", "hello " * 300, 330))
+
+
+def recorded(path: Path, expected: str) -> None:
+    with path.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != expected:
+            raise RuntimeError("GGUF differs from the recorded real-model source")
+
+
+def run(binary: Path, model: Path, pack: Path, geometry: Path, options: Path,
+        trace: Path, work: Path, name: str, user: str, mode: str) -> tuple[dict, list, list, list]:
+    result_path = work / f"{name}-{mode}.json"
+    env = dict(os.environ, LD_PRELOAD=str(trace), ALIGN_STATE_COUNT="84",
+               ALIGN_GRAPH_LOGIT_BYTES="993280", ALIGN_LLM_NATIVE_STATE_COPY=mode,
+               ALIGN_LLM_PREFILL_CHUNK="512", ALIGN_LLM_NATIVE_CONV_COPY="0",
+               ALIGN_LLM_NATIVE_PREFILL_STATE_COPY="0", ALIGN_LLM_NATIVE_COPY_GREEDY="0")
+    command = [str(binary), "--provider", "align-runtime", str(model), str(pack),
+               str(geometry), user, str(result_path), "3", "--runtime-options", str(options)]
+    process = subprocess.run(command, env=env, capture_output=True, timeout=180, check=False)
+    if process.returncode:
+        raise RuntimeError(f"{name} mode {mode} failed: {process.stderr[-1200:]!r}")
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    states, graphs, completed, logits = [], [], [], []
+    for line in process.stderr.decode("utf-8", "replace").splitlines():
+        if line.startswith("Q35_STATE "):
+            row = json.loads(line[len("Q35_STATE "):])
+            if row["event"] in ("error", "graph_failed"):
+                raise RuntimeError(f"{name} mode {mode}: {row}")
+            if row["event"] == "plane":
+                states.append((row["ordinal"], row["index"], row["sha256"]))
+            elif row["event"] == "graph":
+                graphs.append(row)
+            elif row["event"] == "graph_complete":
+                completed.append(row["ordinal"])
+        elif line.startswith("Q35_LOGIT "):
+            row = json.loads(line[len("Q35_LOGIT "):])
+            logits.append((row["ordinal"], row["sha256"]))
+    if len(graphs) != 3 or completed != [0, 1, 2] or len(states) != 252 \
+            or len(logits) != 3 or any(row[0] != at for at, row in enumerate(logits)):
+        raise RuntimeError(f"{name} mode {mode}: incomplete full-vector/state trace")
+    return result, states, graphs, logits
+
+
+def main() -> None:
+    model = Path(os.environ["QWEN35_GGUF"]).resolve()
+    pack = Path(os.environ["QWEN35_ALIGNPACK"]).resolve()
+    geometry = Path(os.environ["QWEN35_MODEL_IR"]).resolve()
+    options = Path(os.environ["QWEN35_RUNTIME_OPTIONS"]).resolve()
+    binary = Path(os.environ["QWEN35_NATIVE_COPY_BINARY"]).resolve()
+    trace = Path(os.environ["QWEN35_STATE_TRACE"]).resolve()
+    recorded(model, os.environ["QWEN35_EXPECTED_SHA256"])
+    if not binary.is_file() or not trace.is_file():
+        raise RuntimeError("real CUDA binary or state tracer is missing")
+    with tempfile.TemporaryDirectory(prefix="qwen35-native-cuda-copy-") as temporary:
+        work = Path(temporary)
+        for name, user, tokens in CASES:
+            ordinary = run(binary, model, pack, geometry, options, trace, work, name, user, "0")
+            native = run(binary, model, pack, geometry, options, trace, work, name, user, "1")
+            for mode, observed in (("0", ordinary), ("1", native)):
+                result = observed[0]
+                if result["status"] != "ok" or result["prompt_tokens"] != tokens \
+                        or result["completion_tokens"] != 3:
+                    raise RuntimeError(f"{name} mode {mode}: unexpected result {result}")
+            if ordinary[0]["output"] != native[0]["output"] \
+                    or ordinary[1] != native[1] or ordinary[3] != native[3]:
+                raise RuntimeError(f"{name}: native copy changed output, resident state or logits")
+            for at, (control, selected) in enumerate(zip(ordinary[2], native[2])):
+                removed = control["ops"]["CPY"] - selected["ops"]["CPY"]
+                if control["kind"] != selected["kind"] or removed != (0 if at == 0 else 18):
+                    raise RuntimeError(f"{name}: graph {at} removed {removed} CPY nodes")
+            print(f"{name}: {tokens} prompt tokens, 3 full logits and 252 state planes match")
+
+
+if __name__ == "__main__":
+    main()

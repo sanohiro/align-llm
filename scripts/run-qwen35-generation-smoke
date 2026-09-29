@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Compare the real Qwen3.5 provider with pinned Metal llama.cpp greedy output."""
+"""Compare the real Qwen3.5 GPU provider with pinned llama.cpp greedy output."""
 
 from __future__ import annotations
 
@@ -34,12 +34,22 @@ def main() -> None:
     geometry = Path(os.environ["QWEN35_MODEL_IR"]).resolve()
     options = Path(os.environ["QWEN35_RUNTIME_OPTIONS"]).resolve()
     oracle = Path(os.environ["QWEN35_LLAMA_ORACLE"]).resolve()
-    reference = Path(os.environ["QWEN35_LLAMA_TOKENIZE"]).resolve()
-    probe = subprocess.run([str(reference), "--version"], capture_output=True,
-                           timeout=30, check=False)
-    version = (probe.stdout + probe.stderr).decode("utf-8")
-    if probe.returncode or "commit bb4caa7" not in version:
-        raise RuntimeError("llama.cpp reference is not the pinned revision")
+    id_diagnostic_value = os.environ.get("QWEN35_ID_DIAGNOSTIC")
+    id_diagnostic = Path(id_diagnostic_value).resolve() if id_diagnostic_value else None
+    reference = os.environ.get("QWEN35_LLAMA_TOKENIZE")
+    if reference is not None:
+        probe = subprocess.run([str(Path(reference).resolve()), "--version"],
+                               capture_output=True, timeout=30, check=False)
+        version = (probe.stdout + probe.stderr).decode("utf-8")
+        if probe.returncode or "commit bb4caa7" not in version:
+            raise RuntimeError("llama.cpp reference is not the pinned revision")
+    else:
+        source = Path(os.environ["QWEN35_LLAMA_SOURCE"]).resolve()
+        probe = subprocess.run(["git", "-C", str(source), "rev-parse", "HEAD"],
+                               capture_output=True, timeout=30, check=False)
+        if probe.returncode or probe.stdout.decode("ascii").strip() != (
+                "bb4caa7540188872173c44d161602d9271386413"):
+            raise RuntimeError("llama.cpp source is not the pinned revision")
     digest = hashlib.sha256()
     with model.open("rb") as source:
         for part in iter(lambda: source.read(1024 * 1024), b""):
@@ -48,13 +58,23 @@ def main() -> None:
     if digest.hexdigest() != expected_sha256:
         raise RuntimeError("GGUF differs from the recorded Qwen3.5 file")
     environment = os.environ.copy()
-    environment["DYLD_LIBRARY_PATH"] = os.environ["QWEN35_LIB_PATH"]
+    if "QWEN35_LIB_PATH" in os.environ:
+        environment["DYLD_LIBRARY_PATH"] = os.environ["QWEN35_LIB_PATH"]
     reference_environment = environment.copy()
     reference_environment.pop("DYLD_LIBRARY_PATH", None)
     with tempfile.TemporaryDirectory(prefix="qwen35-generation-") as temporary:
         work = Path(temporary)
         system_path = work / "system.txt"
         system_path.write_text(SYSTEM, encoding="utf-8")
+        eog_path = work / "eog.json"
+        if id_diagnostic is not None:
+            end_marker = work / "end-marker.txt"
+            end_marker.write_text("<|im_end|>", encoding="utf-8")
+            eog = json.loads(run([str(ROOT / "main"), "--tokenize", str(model),
+                                  str(end_marker), "parse-control"]))
+            if len(eog) != 1:
+                raise RuntimeError("Qwen3.5 end marker is not one token")
+            eog_path.write_text(json.dumps(eog) + "\n", encoding="utf-8")
         expected_results = {}
         for label, user, prompt_length in CASES:
             user_path = work / f"{label}-user.txt"
@@ -68,6 +88,12 @@ def main() -> None:
                                    encoding="utf-8")
             expected = json.loads(run([str(oracle), str(model), "--greedy-ids",
                                        str(prompt_path), "3"], env=reference_environment))
+            if id_diagnostic is not None:
+                receipts = json.loads(run([str(id_diagnostic), str(model), str(pack),
+                                           str(geometry), str(options), str(prompt_path),
+                                           str(eog_path), "3", "normal", "3"], env=environment))
+                if len(receipts) != 3 or any(row["token_ids"] != expected for row in receipts):
+                    raise RuntimeError(f"{label}: repeated Align IDs differ from pinned llama.cpp")
             expected_path = work / f"{label}-expected.json"
             expected_path.write_text(json.dumps(expected), encoding="utf-8")
             expected_text = run([str(ROOT / "main"), "--detokenize", str(model),
@@ -83,7 +109,9 @@ def main() -> None:
                     or actual["completion_tokens"] != 3
                     or actual["total_tokens"] != prompt_length + 3):
                 raise RuntimeError(f"{label}: provider result differs from pinned llama.cpp: {actual!r}")
-            print(f"{label}: {prompt_length} prompt tokens, 3 matching greedy tokens")
+            description = ("exact greedy IDs and rendered output match" if id_diagnostic
+                           else "rendered greedy output matches")
+            print(f"{label}: {prompt_length} prompt tokens, {description}")
         command = [str(ROOT / "main"), "--runtime-session", str(model), str(pack),
                    str(geometry), str(options), "0"]
         with Session(command, timeout=180, env=environment) as session:
@@ -113,7 +141,7 @@ def main() -> None:
             repeated = session.generate(dict(request, user="Hello"))
             if repeated["output"] != expected_results["short"][0]:
                 raise RuntimeError("retained session leaked state after early exit")
-        print("session: six requests agree with llama.cpp and recover after invalid input")
+        print("session: six rendered requests agree with llama.cpp and recover after invalid input")
 
 
 if __name__ == "__main__":

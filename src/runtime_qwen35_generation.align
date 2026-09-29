@@ -205,6 +205,17 @@ fn update_prefill(borrow owner: ggml_ffi.GpuDevice,
   mut position_view := positions[0..count * 16]
   runtime_qwen35_geometry.write_text_positions(position, count, position_view)?
   runtime_inputs.update(owner, 1, 0, position_view)?
+  if ggml_ffi.gpu_kv_prefill_indexed(owner) {
+    mut index_storage := buffer.filled(count * 4, 0 as u8)
+    mut index_bytes := index_storage.bytes()
+    mut index_at := 0
+    loop {
+      if index_at >= count { break }
+      index_bytes.set_u32_le(index_at * 4, (position + index_at) as u32)
+      index_at = index_at + 1
+    }
+    runtime_inputs.update(owner, 7, 0, index_bytes)?
+  }
   mut row := 0
   loop {
     if row >= count { break }
@@ -359,7 +370,12 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
   geometry_text: str, borrow g: runtime_qwen35_geometry.Geometry,
   probe_prompt: i64, capacity: i64, config: runtime_qwen35_execution.Config,
 ) -> Result<i64, Error> {
-  if options.backend != "metal" || !runtime_qwen35_geometry.valid_layer_pattern(g)
+  if (options.backend != "metal" && options.backend != "cuda")
+    || (options.backend == "cuda" && (config.mapped_weights || config.shared_logits
+        || config.neon_greedy || config.graph_greedy
+        || config.native_conv_copy || config.native_prefill_state_copy
+        || config.native_copy_greedy))
+    || !runtime_qwen35_geometry.valid_layer_pattern(g)
     || (config.graph_greedy && (g.n_vocab < 8192
         || !ggml_ffi.gpu_ingraph_argmax_supported(owner)))
     || probe_prompt < 1 || probe_prompt > MAX_PROMPT
@@ -415,7 +431,7 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
   }
   runtime_qwen35_load.define_resident(owner, g, capacity)?
   mask_capacity := runtime_inputs.attention_width(capacity, g.context_length)?
-  runtime_inputs.begin(owner, 7)?
+  runtime_inputs.begin(owner, 8)?
   input_token := runtime_inputs.add(owner, runtime_inputs.Shape {
       ggml_type: 26, n_dims: 1, ne0: config.prefill_chunk, ne1: 1, ne2: 1, ne3: 1,
     })?
@@ -437,9 +453,12 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
   decode_index := runtime_inputs.add(owner, runtime_inputs.Shape {
       ggml_type: 26, n_dims: 1, ne0: 1, ne1: 1, ne2: 1, ne3: 1,
     })?
+  prefill_index := runtime_inputs.add(owner, runtime_inputs.Shape {
+      ggml_type: 26, n_dims: 1, ne0: config.prefill_chunk, ne1: 1, ne2: 1, ne3: 1,
+    })?
   if input_token != 0 || input_position != 1 || input_mask != 2
     || decode_token != 3 || decode_position != 4 || decode_mask != 5
-    || decode_index != 6 { return Err(Error.Invalid) }
+    || decode_index != 6 || prefill_index != 7 { return Err(Error.Invalid) }
   runtime_inputs.finish(owner)?
   prefill_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_PREFILL, 25165824)
   decode_a_ctx := runtime_execution.context(owner, ggml_ffi.GPU_GRAPH_DECODE, 25165824)
@@ -526,7 +545,7 @@ fn generate_lookup_with_drafts(borrow mut session: Session,
   borrow prompt: array<i64>, borrow eog: array<i64>, max_tokens: i64,
   draft_count: i64, native_target_greedy: bool,
 ) -> Result<LookupTrialResult, Error> {
-  if !session.healthy { return Err(Error.Invalid) }
+  if !session.healthy || session.options.backend != "metal" { return Err(Error.Invalid) }
   if draft_count != 1 && draft_count != MAX_LOOKUP_DRAFTS { return Err(Error.Invalid) }
   if native_target_greedy && (!session.native_state_copy
       || draft_count != MAX_LOOKUP_DRAFTS) { return Err(Error.Invalid) }
@@ -585,7 +604,7 @@ fn execute(borrow mut session: Session,
     final_row := session.last_ffn_row && emit_logits && count > 1
       && offset + count == prompt.len()
     runtime_qwen35_model.build_tokens_final_row_greedy(session.owner, session.geometry, state,
-      offset, count, ggml_ffi.GPU_GRAPH_PREFILL, 6, ctx, graph, prefill_slots,
+      offset, count, ggml_ffi.GPU_GRAPH_PREFILL, 7, ctx, graph, prefill_slots,
       emit_logits, final_row, session.graph_greedy && emit_logits)?
     prefill_key = key(session.owner, session.options, session.geometry_text,
       ggml_ffi.GPU_GRAPH_PREFILL, offset, count, width, state.active, emit_logits, final_row,
@@ -1006,7 +1025,7 @@ pub fn begin_stream(borrow mut session: Session,
     final_row := session.last_ffn_row && emit_logits && count > 1
       && offset + count == prompt.len()
     runtime_qwen35_model.build_tokens_final_row_greedy(session.owner, session.geometry, state,
-      offset, count, ggml_ffi.GPU_GRAPH_PREFILL, 6, ctx, graph, prefill_slots,
+      offset, count, ggml_ffi.GPU_GRAPH_PREFILL, 7, ctx, graph, prefill_slots,
       emit_logits, final_row, session.graph_greedy && emit_logits)?
     prefill_key = key(session.owner, session.options, session.geometry_text,
       ggml_ffi.GPU_GRAPH_PREFILL, offset, count, width, state.active, emit_logits, final_row,
