@@ -102,6 +102,20 @@ fn lookup_target_key(borrow session: Session,
   return encoding.hex_encode(digest[0..digest.len()]).clone()
 }
 
+fn read_logits(borrow owner: ggml_ffi.GpuDevice, borrow slots: slice<u8>,
+  borrow output: slice<u8>, label: str,
+) -> Result<(), Error> {
+  if ggml_ffi.gpu_native_q6_head_enabled(owner) {
+    ggml_ffi.gpu_native_q6_head_read(owner, output, label) else {
+      return Err(Error.Invalid)
+    }
+  } else {
+    ggml_ffi.gpu_slot_get(owner, slots, runtime_qwen35_model.OUTPUT,
+      output, 0, output.len(), label) else { return Err(Error.Invalid) }
+  }
+  return Ok(())
+}
+
 fn read_choice(borrow owner: ggml_ffi.GpuDevice, borrow slots: slice<u8>,
   shared_logits: bool, neon_greedy: bool, graph_greedy: bool,
   native_copy_greedy: bool, n_vocab: i64,
@@ -132,8 +146,7 @@ fn read_choice(borrow owner: ggml_ffi.GpuDevice, borrow slots: slice<u8>,
     return Ok(token)
   }
   if output.len() != n_vocab * 4 { return Err(Error.Invalid) }
-  ggml_ffi.gpu_slot_get(owner, slots, runtime_qwen35_model.OUTPUT,
-    output, 0, output.len(), label) else { return Err(Error.Invalid) }
+  read_logits(owner, slots, output, label)?
   return runtime_generation.greedy(output, -1)
 }
 
@@ -626,10 +639,7 @@ fn execute(borrow mut session: Session,
           session.geometry.n_vocab, logits, "q35_provider_prefill_logits")?
       } else if !session.shared_logits && !session.neon_greedy && !session.graph_greedy {
         // Preserve the copied path's intermediate readback without sampling it.
-        ggml_ffi.gpu_slot_get(session.owner, prefill_slots, runtime_qwen35_model.OUTPUT,
-          logits, 0, logits.len(), "q35_provider_prefill_logits") else {
-          return Err(Error.Invalid)
-        }
+        read_logits(session.owner, prefill_slots, logits, "q35_provider_prefill_logits")?
       }
     }
     if session.native_prefill_state_copy {
@@ -856,10 +866,8 @@ fn execute_lookup_tail(borrow mut session: Session,
             stats.target_native_greedy_ns = stats.target_native_greedy_ns
               + time.instant() - read_started
           } else {
-            ggml_ffi.gpu_slot_get(session.owner, target_slots, runtime_qwen35_model.OUTPUT,
-              target_logits, 0, target_logits.len(), "q35_lookup_target_logits") else {
-              return Err(Error.Invalid)
-            }
+            read_logits(session.owner, target_slots, target_logits,
+              "q35_lookup_target_logits")?
             if session.native_prefill_state_copy {
               ggml_ffi.gpu_native_state_copy_finish(session.owner) else {
                 return Err(Error.Invalid)
@@ -1047,10 +1055,7 @@ pub fn begin_stream(borrow mut session: Session,
           session.geometry.n_vocab, logits, "q35_provider_prefill_logits")?
       } else if !session.shared_logits && !session.neon_greedy && !session.graph_greedy {
         // Preserve the copied path's intermediate readback without sampling it.
-        ggml_ffi.gpu_slot_get(session.owner, prefill_slots, runtime_qwen35_model.OUTPUT,
-          logits, 0, logits.len(), "q35_provider_prefill_logits") else {
-          return Err(Error.Invalid)
-        }
+        read_logits(session.owner, prefill_slots, logits, "q35_provider_prefill_logits")?
       }
     }
     if session.native_prefill_state_copy {

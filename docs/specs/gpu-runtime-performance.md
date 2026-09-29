@@ -171,6 +171,27 @@ These are local observations, not a request-speed claim.
 | Launch, completion, early exit | `native_cuda_q6_head` checks each CUDA operation; `ggml_shim` poisons failures before publication. The smoke owner injects submit and completion faults and checks no output or token is published. |
 | Invalidate and cleanup | `ggml_shim` drains the helper before graph workspace rebuild/invalidate and owner destruction; the smoke owner rebuilds a graph and executes again after the prior storage is gone. |
 
+#### Remove the duplicate projection on the selected CUDA path
+
+The first connected request measured a median 16.317/26.797/68.096 ms loss
+at 56/16, 200/32 and 330/64. Nsight Systems counted one ggml plus one native
+Q6_K projection per output token. Keep this correctness checkpoint, then make
+mode `1` execute the independent projection once while mode `0` retains the
+original graph and readback.
+
+| Contract | Definition |
+| --- | --- |
+| Graph and result | In mode `1`, construct the Q6_K output tensor only as checked shape/format metadata. Mark the normalized single-row F32 activation as the graph output so ggml computes all upstream layers and state writes but does not schedule its Q6_K projection. The native CUDA helper writes all 248,320 F32 logits to its own bounded device output. Align selects the native full-logit read ABI at every normal-generation read point; mode `0` keeps `gpu_slot_get` from ggml. The four-row target graph remains unsupported in mode `1`. |
+| Owner, allocation and failure | The ggml owner retains the weight and normalized activation through synchronized graph completion. The helper owns one 993,280-byte output and 2,304-byte Q8_1 scratch plus one stream; no second weight or dequantized matrix. It stores no borrowed pointer across calls. A graph compute failure, missing registration, invalid CUDA pointer, launch/read failure or stale output returns a checked fault before token/state publication. A new graph compute clears prior native-output readiness. Invalidation and Drop drain the helper before releasing ggml storage. |
+| Identity, validation and metrics | The existing `ALIGN_LLM_NATIVE_Q6_HEAD=0|1` mode and graph key distinguish this topology; no new public flag, persisted/cache schema or network contract (`N/A`). Validate mode/backend/geometry, register exact tensor metadata, allocate graph workspace, then check CUDA pointer extents at compute and exact output length/readiness at read. Reuse the three-prompt complete-logit/state/retained/failure owner and reprofile to verify zero ggml Q6_K output launches in mode `1`. Repeat five alternating paired request comparisons against the previous duplicated native checkpoint, unchanged Align and pinned llama.cpp. Preparation <=3600 s, campaign <=900 s, request <=180 s. Retain every pair; adopt an unambiguous useful gain without a universal percentage floor. |
+
+| Closure case | Implementation and exact owner |
+| --- | --- |
+| Construction and malformed shape | `runtime_qwen35_model`, `ggml_ffi` and `ggml_shim` retain exact Q6_K metadata and refuse unsupported graph/shape; `run-qwen35-native-q6-head-smoke` exercises mode refusal and full actual model geometry. |
+| Success and repeated use | `runtime_qwen35_model` expands normalized activation, `ggml_shim` launches native once after ggml upstream work, and `runtime_qwen35_generation` reads the native output; `run-qwen35-native-q6-head-smoke` compares all logits/state and repeated requests. |
+| Compute/read failure and early exit | `native_cuda_q6_head` and `ggml_shim` poison or refuse stale/failed output; the same smoke owner runs submit/completion fault builds and asserts no token/result publication. |
+| Invalidate and cleanup | `ggml_shim` clears readiness on new compute/invalidation, drains on workspace rebuild and owner Drop; the retained-request owner crosses graph reuse and new request storage. |
+
 ### Independent Q6_K small-batch output-head screen (2026-09-28)
 
 The current four-row target verifier amortizes model weights across candidate

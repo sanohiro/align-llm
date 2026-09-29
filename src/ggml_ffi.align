@@ -376,6 +376,7 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_native_state_copy_enabled(owner: raw) -> i32
   fn align_gpu_native_q6_head_mode(owner: raw, mode: i32) -> i32
   fn align_gpu_native_q6_head_enabled(owner: raw) -> i32
+  fn align_gpu_native_q6_head_read(owner: raw, bytes: slice<u8>, n: i64) -> i32
   fn align_gpu_native_q6_head_register(owner: raw, kind: i32, slots: slice<u8>,
     weight: i64, input: i64, output: i64) -> i32
   fn align_gpu_native_state_copy_finish(owner: raw) -> i32
@@ -1191,6 +1192,20 @@ pub fn gpu_native_q6_head_select(borrow owner: GpuDevice, enabled: bool) -> Resu
 pub fn gpu_native_q6_head_enabled(borrow owner: GpuDevice) -> bool {
   unsafe {
     return align_gpu_native_q6_head_enabled(resource.raw(resource.borrow(owner))) == 1
+  }
+}
+
+pub fn gpu_native_q6_head_read(borrow owner: GpuDevice,
+  borrow bytes: slice<u8>, label: str,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_READBACK)
+  if bytes.len() != 993280 { return Err(fault("CONFIG", label)) }
+  unsafe {
+    status := align_gpu_native_q6_head_read(
+      resource.raw(resource.borrow(owner)), bytes, bytes.len(),
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
   }
 }
 

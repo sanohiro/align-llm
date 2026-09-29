@@ -13,10 +13,10 @@
  */
 #include "ggml.h"
 #include "ggml-backend.h"
+#include <dlfcn.h>
 #if defined(__APPLE__)
 #include <CommonCrypto/CommonDigest.h>
 #else
-#include <dlfcn.h>
 #include <openssl/sha.h>
 #define CC_SHA256_DIGEST_LENGTH SHA256_DIGEST_LENGTH
 #define CC_SHA256_CTX SHA256_CTX
@@ -90,6 +90,25 @@ static int64_t graph_logit_bytes(void) {
     return (int64_t)value;
 }
 
+static int native_q6_read_if_ready(void *owner, void *bytes, int64_t length) {
+    typedef int32_t (*enabled_fn)(void *);
+    typedef int32_t (*read_fn)(void *, void *, int64_t);
+    static int initialized;
+    static enabled_fn enabled;
+    static read_fn read;
+    if (!initialized) {
+        void *enabled_symbol = dlsym(RTLD_DEFAULT, "align_gpu_native_q6_head_enabled");
+        void *read_symbol = dlsym(RTLD_DEFAULT, "align_gpu_native_q6_head_read");
+        if (enabled_symbol != NULL && read_symbol != NULL) {
+            memcpy(&enabled, &enabled_symbol, sizeof(enabled));
+            memcpy(&read, &read_symbol, sizeof(read));
+        }
+        initialized = 1;
+    }
+    return enabled != NULL && read != NULL && enabled(owner) == 1
+        && read(owner, bytes, length) == 0;
+}
+
 static int32_t traced_compute(void *owner, int32_t kind, const void *key,
                               int64_t length, void *value) {
     int64_t count = state_count();
@@ -145,11 +164,18 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
                 logits = t;
             }
         }
+        unsigned char *bytes = malloc((size_t)logit_bytes);
+        require(bytes != NULL, "logit diagnostic allocation failed");
+        int have_logits = 0;
         if (logits != NULL) {
-            static uint64_t logit_ordinal;
-            unsigned char *bytes = malloc((size_t)logit_bytes);
-            require(bytes != NULL && logits->buffer != NULL, "graph logit storage unavailable");
+            require(logits->buffer != NULL, "graph logit storage unavailable");
             ggml_backend_tensor_get(logits, bytes, 0, (size_t)logit_bytes);
+            have_logits = 1;
+        } else {
+            have_logits = native_q6_read_if_ready(owner, bytes, logit_bytes);
+        }
+        if (have_logits) {
+            static uint64_t logit_ordinal;
             const char *logit_dump = getenv("ALIGN_LOGIT_DUMP_DIR");
             if (logit_dump != NULL) {
                 char path[4096];
@@ -165,7 +191,6 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
             char hex[2 * CC_SHA256_DIGEST_LENGTH + 1];
             static const char digits[] = "0123456789abcdef";
             CC_SHA256(bytes, (CC_LONG)logit_bytes, digest);
-            free(bytes);
             for (size_t i = 0; i < sizeof(digest); ++i) {
                 hex[2*i] = digits[digest[i] >> 4];
                 hex[2*i+1] = digits[digest[i] & 15];
@@ -174,6 +199,7 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
             fprintf(stderr, "Q35_LOGIT {\"ordinal\":%" PRIu64 ",\"bytes\":%" PRId64
                     ",\"sha256\":\"%s\"}\n", logit_ordinal++, logit_bytes, hex);
         }
+        free(bytes);
     }
     fprintf(stderr, "Q35_STATE {\"event\":\"graph\",\"ordinal\":%" PRIu64 ",\"kind\":%d,"
             "\"nodes\":%d,\"state_count\":%" PRId64 ",\"ops\":{\"MUL_MAT\":%d,\"CPY\":%d,"

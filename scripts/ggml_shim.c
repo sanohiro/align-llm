@@ -1077,6 +1077,7 @@ struct align_gpu_device_state {
     int native_copy_greedy;
     void *native_state_copy_context;
     int native_q6_head;
+    int native_q6_head_ready;
     void *native_q6_head_context;
     struct ggml_tensor *native_q6_head_weights[ALIGN_GPU_GRAPH_KINDS];
     struct ggml_tensor *native_q6_head_inputs[ALIGN_GPU_GRAPH_KINDS];
@@ -2644,6 +2645,27 @@ int32_t align_gpu_native_q6_head_enabled(void *owner) {
     return state != NULL && state->native_q6_head == 1 ? 1 : 0;
 }
 
+int32_t align_gpu_native_q6_head_read(void *owner, void *bytes, int64_t n) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || !state->native_q6_head || !state->native_q6_head_ready
+        || state->workspace_failed || bytes == NULL || n != 993280
+        || state->observation_failed || state->observation_read_calls == INT64_MAX
+        || state->observation_read_bytes > INT64_MAX - n) return ALIGN_GPU_CONFIG;
+#if defined(ALIGN_LLM_NATIVE_CUDA)
+    if (state->native_q6_head_context == NULL
+        || !align_native_cuda_q6_head_read(state->native_q6_head_context,
+            bytes, (size_t) n)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
+    state->observation_read_bytes += n;
+    state->observation_read_calls += 1;
+    return ALIGN_GPU_OK;
+#else
+    return ALIGN_GPU_UNSUPPORTED;
+#endif
+}
+
 int32_t align_gpu_native_conv_copy_mode(void *owner, int32_t mode) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || (mode != 0 && mode != 1) || state->weights_finished
@@ -3541,6 +3563,7 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
     state->native_q6_head_weights[kind] = NULL;
     state->native_q6_head_inputs[kind] = NULL;
     state->native_q6_head_outputs[kind] = NULL;
+    state->native_q6_head_ready = 0;
     if (kind == ALIGN_GPU_GRAPH_PREFILL) { state->prefill_rows_registered = 0; state->prefill_rows_valid = 0; }
     state->graph_prepared[kind] = 0;
     state->workspace_graphs[kind] = NULL;
@@ -3770,24 +3793,20 @@ static int align_gpu_native_cuda_copy_commit(struct align_gpu_device_state *stat
 static int align_gpu_native_q6_head_commit(struct align_gpu_device_state *state, int kind) {
     struct ggml_tensor *weight;
     struct ggml_tensor *input;
-    struct ggml_tensor *output;
-    void *input_base, *output_base, *weight_base;
-    size_t input_size, output_size, weight_size;
-    uint64_t input_offset, output_offset, weight_offset;
+    void *input_base, *weight_base;
+    size_t input_size, weight_size;
+    uint64_t input_offset, weight_offset;
     ggml_backend_buffer_t buffer;
     const char *name;
     if (!state->native_q6_head) return 1;
     weight = state->native_q6_head_weights[kind];
     if (weight == NULL) return 1; /* Non-logit graph. */
     input = state->native_q6_head_inputs[kind];
-    output = state->native_q6_head_outputs[kind];
     if (state->native_q6_head_context == NULL || weight->buffer != state->weights_buffer
-        || weight->data == NULL || input == NULL || output == NULL
-        || !align_gpu_native_cuda_extent(input, &input_base, &input_size, &input_offset)
-        || !align_gpu_native_cuda_extent(output, &output_base, &output_size, &output_offset))
+        || weight->data == NULL || input == NULL
+        || state->native_q6_head_outputs[kind] == NULL
+        || !align_gpu_native_cuda_extent(input, &input_base, &input_size, &input_offset))
         return 0;
-    if (input_base == output_base && input_offset < output_offset + 993280
-        && output_offset < input_offset + 8192) return 0;
     buffer = weight->buffer;
     name = ggml_backend_buft_name(ggml_backend_buffer_get_type(buffer));
     weight_base = ggml_backend_buffer_get_base(buffer);
@@ -3797,8 +3816,10 @@ static int align_gpu_native_q6_head_commit(struct align_gpu_device_state *state,
     weight_offset = (uint64_t) ((uintptr_t) weight->data - (uintptr_t) weight_base);
     if (weight_offset > weight_size || 417177600 > weight_size - (size_t) weight_offset)
         return 0;
-    return align_native_cuda_q6_head_run(state->native_q6_head_context,
-        weight->data, input->data, output->data);
+    if (!align_native_cuda_q6_head_run(state->native_q6_head_context,
+            weight->data, input->data)) return 0;
+    state->native_q6_head_ready = 1;
+    return 1;
 }
 #endif
 
@@ -3874,6 +3895,7 @@ int32_t align_gpu_graph_compute(
     observed_ops = state->graph_cached_ops[kind];
     observed_layers = state->graph_cached_layers[kind];
     observed_experts = state->graph_cached_experts[kind];
+    state->native_q6_head_ready = 0;
     if (state->observation_failed || state->observation_nodes > INT64_MAX - observed_nodes
         || state->observation_model_ops > INT64_MAX - observed_ops
         || state->observation_layers > INT64_MAX - observed_layers

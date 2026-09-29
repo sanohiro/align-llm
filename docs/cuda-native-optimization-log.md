@@ -429,6 +429,103 @@ Reproduce the numeric owner with `QWEN35_GGUF`, `QWEN35_ALIGNPACK`,
 `ALIGN_LOGIT_DUMP_DIR` writes full F32 vectors only in this diagnostic.
 For request timing, set `QWEN35_CUDA_MEASURE_MODE=q6-head` and the existing
 digest-bound pinned llama.cpp inputs, then run
-`scripts/measure-qwen35-native-cuda`. The next code change must remove the
-ggml projection from selected graphs while retaining it for mode `0`, then
-recheck full logits/state/failures and measure the new connected baseline.
+`scripts/measure-qwen35-native-cuda`.
+
+## Connected Q6_K without duplicate projection (2026-09-29)
+
+The second connected step makes mode `1` expand the normalized activation as
+the ggml graph output. The Q6_K output tensor remains checked metadata but is
+not graph-expanded. After synchronized upstream graph completion, the same
+native Q8_1/DP4A kernel writes its own 993,280-byte device output, which Align
+reads through a checked native ABI. Mode `0` still executes and reads ggml's
+Q6_K projection. The helper adds only that output allocation; weights remain
+borrowed and compressed. This removes the previous redundant compute without
+changing the independent kernel's arithmetic.
+
+The real-model owner again passed three complete 248,320-element F32 logits
+rows at each of 31, 200 and 330 prompt tokens, with maximum absolute error
+`1.90734863e-6` against mode `0`, exact greedy/rendered output and all 252
+state-plane hashes per case. The short/wider/short retained session matched.
+Mode `2` was refused with empty output. Forced submit and completion failures
+left ordinary requests working and made selected requests fail without output
+or token publication, worker exit 2. `make build` passed with the real CUDA
+shim, and `make fmt` passed.
+
+An Nsight Systems three-token node trace counted three native `project`
+launches and **zero ggml Q6_K output projection launches** in mode `1`;
+the native project's median device interval was `890.491 us` and native Q8_1
+conversion was `1.280 us`. A separate three-count Q6_K row-gather operation
+still occurs elsewhere in the graph; it is not the removed output projection.
+The GPU interval is close to the duplicated trial's `887.484 us`, consistent
+with the unchanged kernel. Nsight Compute counters are still denied by
+`ERR_NVGPUCTRPERM`, so memory-transaction and occupancy causes remain
+unmeasured. The profile is `q6-nonduplicate-trace.nsys-rep` outside Git.
+
+The same five alternating warm request pairs used the digest-bound model,
+backend and pinned llama.cpp described above. All outputs matched. The
+ordinary/native pair executes in retained sessions; each llama.cpp sample is
+its third warmed iteration in a fresh process. Times are milliseconds:
+
+| Prompt/output | Pair | Ordinary Align | Native Q6_K | Pinned llama.cpp |
+| --- | ---: | ---: | ---: | ---: |
+| 56/16 | 0 | 87.101 | 103.029 | 95.927 |
+| 56/16 | 1 | 76.056 | 80.354 | 90.486 |
+| 56/16 | 2 | 74.495 | 73.825 | 87.671 |
+| 56/16 | 3 | 73.138 | 73.942 | 86.540 |
+| 56/16 | 4 | 72.151 | 99.736 | 88.357 |
+| 200/32 | 0 | 163.332 | 159.320 | 178.903 |
+| 200/32 | 1 | 158.209 | 168.646 | 171.565 |
+| 200/32 | 2 | 162.083 | 159.317 | 168.879 |
+| 200/32 | 3 | 164.269 | 161.927 | 169.249 |
+| 200/32 | 4 | 170.560 | 162.146 | 174.040 |
+| 330/64 | 0 | 314.904 | 314.497 | 328.154 |
+| 330/64 | 1 | 316.016 | 305.641 | 337.118 |
+| 330/64 | 2 | 306.973 | 306.837 | 323.212 |
+| 330/64 | 3 | 313.001 | 317.722 | 335.263 |
+| 330/64 | 4 | 313.181 | 317.702 | 328.173 |
+
+Median paired native gain over ordinary Align was `-4.298`, `+2.766` and
+`+0.136 ms`, with 1/5, 4/5 and 3/5 wins. Median gain over pinned llama.cpp
+was `+10.132`, `+9.562` and `+16.375 ms`, with 3/5, 5/5 and 5/5 wins. The
+56/16 series has large outliers, and the other two ordinary gains are small;
+this does not establish a general win over either reference. Full stdout is
+`q6-nonduplicate-measure.stdout` outside Git.
+
+To isolate the change from the first connected native version, two resident
+sessions used the preserved checkpoint binary/shim and the new binary/shim,
+both with mode `1`. Each condition had two matching-output warmups, then five
+alternating-order pairs. The paired native gain medians were `+9.357 ms`
+(3/5) at 56/16, `+14.351 ms` (5/5) at 200/32 and `+74.555 ms` (5/5) at
+330/64. The short series includes a `-25.185 ms` outlier, so its median is
+less certain. The longer cases show a useful connected improvement over our
+own prior implementation. All 15 pair values are retained in
+`q6-duplicate-vs-nonduplicate.stdout` outside Git:
+
+| Prompt/output | Pair | Duplicated native | Nonduplicated native |
+| --- | ---: | ---: | ---: |
+| 56/16 | 0 | 96.717 | 101.123 |
+| 56/16 | 1 | 88.780 | 79.423 |
+| 56/16 | 2 | 88.798 | 73.484 |
+| 56/16 | 3 | 89.382 | 73.663 |
+| 56/16 | 4 | 91.476 | 116.662 |
+| 200/32 | 0 | 201.361 | 167.175 |
+| 200/32 | 1 | 191.365 | 175.547 |
+| 200/32 | 2 | 190.436 | 176.085 |
+| 200/32 | 3 | 198.503 | 192.180 |
+| 200/32 | 4 | 192.056 | 186.984 |
+| 330/64 | 0 | 377.311 | 307.784 |
+| 330/64 | 1 | 398.159 | 316.163 |
+| 330/64 | 2 | 388.193 | 307.116 |
+| 330/64 | 3 | 389.838 | 315.283 |
+| 330/64 | 4 | 381.278 | 311.031 |
+
+NVIDIA's current [CUDA Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+prioritizes coalesced global reads and warns that more occupancy does not
+automatically improve throughput. Its
+[stream synchronization guide](https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/advanced-host-programming.html)
+recommends explicit event dependencies when work crosses streams. These guide
+the next hypotheses; neither proves a bottleneck here without device counters.
+The next trial should measure the now nonduplicated request's Q4_0 and Q6_K
+cost, then test one bounded kernel or scheduling change at a time against
+this native baseline, ordinary Align and the pinned reference. Keep failed
+experiments and generated-binary comparisons in this log.

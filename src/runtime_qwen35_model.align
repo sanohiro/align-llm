@@ -217,14 +217,21 @@ fn build_tokens_rows(
       return Err(Error.Invalid)
     }
   } else {
-    ggml_ffi.slot_mark_output(slots, OUTPUT, "q35_logits") else {
-      return Err(Error.Invalid)
-    }
-    ggml_ffi.graph_expand(graph, slots, OUTPUT, "q35_logits") else {
-      return Err(Error.Invalid)
-    }
     if ggml_ffi.gpu_native_q6_head_enabled(owner) {
+      ggml_ffi.slot_mark_output(slots, 91, "q35_native_head_input") else {
+        return Err(Error.Invalid)
+      }
+      ggml_ffi.graph_expand(graph, slots, 91, "q35_native_head_input") else {
+        return Err(Error.Invalid)
+      }
       ggml_ffi.gpu_native_q6_head_register(owner, kind, slots, 0, 91, OUTPUT) else {
+        return Err(Error.Invalid)
+      }
+    } else {
+      ggml_ffi.slot_mark_output(slots, OUTPUT, "q35_logits") else {
+        return Err(Error.Invalid)
+      }
+      ggml_ffi.graph_expand(graph, slots, OUTPUT, "q35_logits") else {
         return Err(Error.Invalid)
       }
     }

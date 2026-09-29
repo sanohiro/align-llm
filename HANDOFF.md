@@ -5,32 +5,34 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 ## Active connected CUDA Q6_K output-head trial (2026-09-29)
 
 Branch `agent/native-cuda-q6-connected` starts from merged `main` `f4f05c1`
-(PR #327). The authoritative contract is in
-`docs/specs/gpu-runtime-performance.md`. The default-off independent Q8_1/DP4A
-one-column Q6_K path now runs real Qwen3.5 requests over borrowed resident
-buffers while ggml remains the control. Three complete logits rows and 252
-resident-state planes per 31/200/330-token case, exact greedy/rendered output,
-retained short/wider/short requests, malformed selection and forced
-submit/completion failures passed. `make check` passed 169 Align units,
-`make build` built the real CUDA shim, and the Python boundary guard/mutation
-suite passed. The first connected step deliberately duplicates ggml's
-projection. Five-pair 56/16, 200/32 and 330/64 requests lost to ordinary
-Align by 16.317/26.797/68.096 ms paired median; the latter two also lost to
-pinned llama.cpp. A three-token Nsight trace counted three ggml plus three
-native Q6_K projections, each roughly 0.887 ms median GPU interval. All 15
-paired samples, sources, reproducibility and limits are in
-`docs/cuda-native-optimization-log.md`; no speed adoption is claimed.
+(PR #327); checkpoint `8d0828f` connected the default-off independent
+Q8_1/DP4A one-column Q6_K path to actual requests but duplicated ggml's
+projection. The current uncommitted candidate removes that duplicate in mode
+`1` while preserving mode `0`. The authoritative contract is in
+`docs/specs/gpu-runtime-performance.md`. Full logits (maximum difference
+`1.90734863e-6`), 252 resident-state planes at each 31/200/330-token case,
+exact greedy/rendered output, retained short/wider/short requests, malformed
+selection and forced submit/completion failures passed. `make fmt`, `make
+build` with real CUDA shim and `make check` (169 Align units) passed. Nsight
+counted three native projections and zero ggml Q6_K output projections for
+three output tokens. Against the duplicated checkpoint, five paired requests
+gained 9.357/14.351/74.555 ms median at 56/16, 200/32 and 330/64 (3/5,
+5/5, 5/5 wins). Against unchanged Align, native medians were -4.298/+2.766/
++0.136 ms (1/5, 4/5, 3/5 wins); against pinned llama.cpp they were +10.132/
++9.562/+16.375 ms (3/5, 5/5, 5/5 wins). These are scoped warm-request
+measurements, not a general speed claim. All 30 native comparison pairs,
+sources, failures and limits are in `docs/cuda-native-optimization-log.md`.
 
-Next actions, in order: (1) remove the duplicated ggml output projection in
-mode `1` while preserving the mode-`0` graph, then rerun full logits/state,
-failure and retained-request owners; (2) profile and compare the nonduplicated
-native request against this connected version, ordinary Align and pinned
-llama.cpp; (3) optimize against the preceding native revision, comparing
-generated SASS when source inspection is insufficient, and investigate Q4_0
-and larger fused execution units. The local one-column screen had ambiguous
-host timing (+0.014 and -0.007 ms paired medians) and Nsight Systems medians
-893.088 us native, 886.848 us ggml. Nsight Compute counters remain denied
-(`ERR_NVGPUCTRPERM`).
+Next actions, in order: (1) finish stub shim and Python boundary verification,
+check the candidate diff and complete one comprehensive review; (2) run exact
+head publication preflight, publish an English PR, record review/integration
+evidence and merge after required checks; (3) refresh `main`, profile the
+nonduplicated request's Q4_0 and Q6_K cost, and test one bounded improvement
+at a time against the current native baseline, ordinary Align and pinned
+llama.cpp. Compare SASS when source inspection is insufficient. The local
+one-column screen had ambiguous host timing (+0.014 and -0.007 ms paired
+medians) and Nsight Systems medians 893.088 us native, 886.848 us ggml.
+Nsight Compute counters remain denied (`ERR_NVGPUCTRPERM`).
 Other CUDA GPUs, Qwen sizes and Gemma are unmeasured and deferred until the
 corresponding hardware/model owner is available. No fixed percentage or
 win-count floor governs a useful measured improvement.

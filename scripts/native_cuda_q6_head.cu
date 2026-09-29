@@ -35,6 +35,7 @@ static_assert(sizeof(Q8Block) == 36, "Q8_1 block layout changed");
 struct Context {
     cudaStream_t stream = nullptr;
     Q8Block *quantized = nullptr;
+    float *output = nullptr;
     int device = -1;
 };
 
@@ -112,7 +113,8 @@ extern "C" void *align_native_cuda_q6_head_open(int device_ordinal) {
     if (ctx == nullptr) return nullptr;
     ctx->device = device_ordinal;
     if (cudaStreamCreateWithFlags(&ctx->stream, cudaStreamNonBlocking) != cudaSuccess
-        || cudaMalloc(&ctx->quantized, WIDTH / 32 * sizeof(Q8Block)) != cudaSuccess) {
+        || cudaMalloc(&ctx->quantized, WIDTH / 32 * sizeof(Q8Block)) != cudaSuccess
+        || cudaMalloc(&ctx->output, ROWS * sizeof(float)) != cudaSuccess) {
         align_native_cuda_q6_head_close(ctx);
         return nullptr;
     }
@@ -120,12 +122,12 @@ extern "C" void *align_native_cuda_q6_head_open(int device_ordinal) {
 }
 
 extern "C" int align_native_cuda_q6_head_run(void *opaque, const void *weight,
-        const void *input, void *output) {
+        const void *input) {
     auto *ctx = static_cast<Context *>(opaque);
     if (ctx == nullptr || ctx->stream == nullptr || ctx->quantized == nullptr
+        || ctx->output == nullptr
         || cudaSetDevice(ctx->device) != cudaSuccess
-        || !device_pointer(weight, ctx->device) || !device_pointer(input, ctx->device)
-        || !device_pointer(output, ctx->device)) return 0;
+        || !device_pointer(weight, ctx->device) || !device_pointer(input, ctx->device)) return 0;
 #if defined(ALIGN_NATIVE_CUDA_Q6_FORCE_SUBMIT_FAILURE)
     fprintf(stderr, "native_q6_head forced submit failure\n");
     return 0;
@@ -134,7 +136,7 @@ extern "C" int align_native_cuda_q6_head_run(void *opaque, const void *weight,
         static_cast<const float *>(input), ctx->quantized);
     if (cudaGetLastError() != cudaSuccess) return 0;
     project<<<(ROWS + 7) / 8, 256, 0, ctx->stream>>>(
-        static_cast<const Q6Block *>(weight), ctx->quantized, static_cast<float *>(output));
+        static_cast<const Q6Block *>(weight), ctx->quantized, ctx->output);
     if (cudaGetLastError() != cudaSuccess) {
         cudaStreamSynchronize(ctx->stream);
         return 0;
@@ -145,6 +147,13 @@ extern "C" int align_native_cuda_q6_head_run(void *opaque, const void *weight,
     return 0;
 #endif
     return 1;
+}
+
+extern "C" int align_native_cuda_q6_head_read(void *opaque, void *output, size_t bytes) {
+    auto *ctx = static_cast<Context *>(opaque);
+    return ctx != nullptr && ctx->output != nullptr && output != nullptr
+        && bytes == ROWS * sizeof(float) && cudaSetDevice(ctx->device) == cudaSuccess
+        && cudaMemcpy(output, ctx->output, bytes, cudaMemcpyDeviceToHost) == cudaSuccess;
 }
 
 extern "C" int align_native_cuda_q6_head_wait(void *opaque) {
@@ -158,6 +167,7 @@ extern "C" void align_native_cuda_q6_head_close(void *opaque) {
     if (ctx == nullptr) return;
     cudaSetDevice(ctx->device);
     if (ctx->stream != nullptr) cudaStreamSynchronize(ctx->stream);
+    if (ctx->output != nullptr) cudaFree(ctx->output);
     if (ctx->quantized != nullptr) cudaFree(ctx->quantized);
     if (ctx->stream != nullptr) cudaStreamDestroy(ctx->stream);
     delete ctx;
