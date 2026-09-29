@@ -31,6 +31,9 @@ struct Q6Block { uint8_t ql[128], qh[64]; int8_t scales[16]; __half d; };
 struct Q8Block { int8_t q[32]; __half d, sum; };
 static_assert(sizeof(Q6Block) == 210, "Q6_K block layout changed");
 static_assert(sizeof(Q8Block) == 36, "Q8_1 block layout changed");
+static_assert(ROWS * sizeof(float) + WIDTH / 32 * sizeof(Q8Block)
+              == ALIGN_NATIVE_CUDA_Q6_HEAD_DEVICE_BYTES,
+              "native Q6_K allocation reservation changed");
 
 struct Context {
     cudaStream_t stream = nullptr;

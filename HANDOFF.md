@@ -7,7 +7,7 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 Branch `agent/native-cuda-q6-connected` starts from merged `main` `f4f05c1`
 (PR #327); checkpoint `8d0828f` connected the default-off independent
 Q8_1/DP4A one-column Q6_K path to actual requests but duplicated ggml's
-projection. The current uncommitted candidate removes that duplicate in mode
+projection. Commit `51f67aa` removes that duplicate in mode
 `1` while preserving mode `0`. The authoritative contract is in
 `docs/specs/gpu-runtime-performance.md`. Full logits (maximum difference
 `1.90734863e-6`), 252 resident-state planes at each 31/200/330-token case,
@@ -15,18 +15,29 @@ exact greedy/rendered output, retained short/wider/short requests, malformed
 selection and forced submit/completion failures passed. `make fmt`, `make
 build` with real CUDA shim and `make check` (169 Align units) passed. Nsight
 counted three native projections and zero ggml Q6_K output projections for
-three output tokens. Against the duplicated checkpoint, five paired requests
-gained 9.357/14.351/74.555 ms median at 56/16, 200/32 and 330/64 (3/5,
-5/5, 5/5 wins). Against unchanged Align, native medians were -4.298/+2.766/
-+0.136 ms (1/5, 4/5, 3/5 wins); against pinned llama.cpp they were +10.132/
-+9.562/+16.375 ms (3/5, 5/5, 5/5 wins). These are scoped warm-request
-measurements, not a general speed claim. All 30 native comparison pairs,
-sources, failures and limits are in `docs/cuda-native-optimization-log.md`.
+three output tokens. On the repaired binary, five paired requests per case
+beat the duplicated checkpoint by 14.453/33.427/68.092 ms median at 56/16,
+200/32 and 330/64 (all 15 wins). Against unchanged Align, native lost by
+0.705/2.260/1.957 ms (0/5, 1/5, 2/5 native wins); against pinned llama.cpp
+it gained 15.506/10.259/10.121 ms (all 15 wins). These are scoped warm-request
+measurements, not a general speed claim. Complete pairs, sources, failures
+and limits are in `docs/cuda-native-optimization-log.md`.
 
-Next actions, in order: (1) finish stub shim and Python boundary verification,
-check the candidate diff and complete one comprehensive review; (2) run exact
-head publication preflight, publish an English PR, record review/integration
-evidence and merge after required checks; (3) refresh `main`, profile the
+One comprehensive `codex review --base origin/main` of `51f67aa` found two
+valid P2 accounting issues. The active repair adds the native model operation
+to the observation, reserves/counts 995,584 helper device bytes, and delays
+allocation until after budget admission. The extended real-model owner passed
+equal ordinary/native model-work totals (`2058` after three graphs), budget
+and device-peak checks, complete logits/state and retained requests. A local
+near-admission probe passed ordinary mode and refused selected mode at
+1,809,499,739 bytes; forced submit/completion faults passed again. The
+Python boundary guard and mutation suite passed. `make check` passed 169 Align
+units after repair. The repair delta was inspected for unrelated behavior.
+
+Next actions, in order: (1) commit the consolidated review repair and run
+exact-head publication preflight; (2) publish an English PR, record
+review/integration evidence and merge after required checks; (3) refresh
+`main`, profile the
 nonduplicated request's Q4_0 and Q6_K cost, and test one bounded improvement
 at a time against the current native baseline, ordinary Align and pinned
 llama.cpp. Compare SASS when source inspection is insufficient. The local

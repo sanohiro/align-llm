@@ -529,3 +529,76 @@ The next trial should measure the now nonduplicated request's Q4_0 and Q6_K
 cost, then test one bounded kernel or scheduling change at a time against
 this native baseline, ordinary Align and the pinned reference. Keep failed
 experiments and generated-binary comparisons in this log.
+
+The comprehensive review of `51f67aa` found two connected-accounting defects:
+removing the ggml output node also removed one counted model operation, and
+the helper's 995,584 device bytes were missing from admission and the reported
+peak. The repair counts the off-graph projection, reserves the helper bytes in
+Align before admission, includes them in shim budget/observation totals, and
+allocates the helper only after a successful admission. The CUDA source
+statically checks the actual scratch/output sizes against the reservation.
+The extended real-model diagnostic found equal ordinary/native cumulative
+model-operation totals (`2058` after three graph executions in each case).
+At the 8,000,000,000-byte configured budget, selected-mode planned/allocated/
+peak bytes were respectively `8,000,000,000/1,281,449,088/1,281,449,088`
+for 31 tokens, `8,000,000,000/1,296,387,200/1,296,387,200` for 200, and
+`8,000,000,000/1,308,101,760/1,308,101,760` for 330. A separate local
+near-admission probe found ordinary mode succeeded at a 1,809,499,739-byte
+budget while selected mode refused before generation; this threshold is
+specific to the pinned fixture, current ggml allocator and host, not a
+portable constant. The full-logit/state/retained owner and forced
+submit/completion faults passed again after the repair. The measured speed
+pairs above precede this accounting-only repair. Fresh uninstrumented pairs
+on the repaired binary provide the final local speed evidence below.
+
+The repaired binary beat the preserved duplicated native checkpoint in all
+15 alternating warm-request pairs, with median gains of `14.453`, `33.427`
+and `68.092 ms` at 56/16, 200/32 and 330/64. Both arms stayed resident and
+outputs matched; the previous binary and shim were preserved from checkpoint
+`8d0828f`. The complete `q6-repair-vs-duplicate.stdout` receipt is outside Git:
+
+| Prompt/output | Pair | Duplicated native | Repaired nonduplicated native |
+| --- | ---: | ---: | ---: |
+| 56/16 | 0 | 97.262 | 80.508 |
+| 56/16 | 1 | 89.330 | 74.877 |
+| 56/16 | 2 | 89.287 | 73.505 |
+| 56/16 | 3 | 88.898 | 88.713 |
+| 56/16 | 4 | 89.955 | 84.748 |
+| 200/32 | 0 | 197.197 | 163.770 |
+| 200/32 | 1 | 196.153 | 159.239 |
+| 200/32 | 2 | 192.037 | 158.277 |
+| 200/32 | 3 | 200.333 | 167.179 |
+| 200/32 | 4 | 190.117 | 175.900 |
+| 330/64 | 0 | 372.283 | 310.167 |
+| 330/64 | 1 | 379.947 | 309.502 |
+| 330/64 | 2 | 368.114 | 318.861 |
+| 330/64 | 3 | 375.125 | 307.032 |
+| 330/64 | 4 | 377.074 | 307.342 |
+
+The fresh ordinary Align and pinned llama.cpp campaign used the same
+digest-bound model, backend, executable and exact prompts/output counts as
+the preceding campaign. Repaired native lost to ordinary Align by `0.705`,
+`2.260` and `1.957 ms` paired median (0/5, 1/5, 2/5 native wins), but beat
+the pinned llama.cpp warm generation interval by `15.506`, `10.259` and
+`10.121 ms` (5/5 wins each). The comparison is scoped to this RTX 4070 Ti,
+Qwen3.5-2B Q4_0, three workloads and warm retained requests; it does not
+establish startup, other-model or general llama.cpp superiority. The
+complete `q6-repair-ordinary-llama.stdout` receipt is outside Git:
+
+| Prompt/output | Pair | Ordinary Align | Repaired native | Pinned llama.cpp |
+| --- | ---: | ---: | ---: | ---: |
+| 56/16 | 0 | 82.534 | 83.211 | 90.931 |
+| 56/16 | 1 | 73.016 | 73.720 | 89.226 |
+| 56/16 | 2 | 71.774 | 72.462 | 88.660 |
+| 56/16 | 3 | 73.362 | 86.509 | 89.771 |
+| 56/16 | 4 | 72.888 | 77.560 | 123.131 |
+| 200/32 | 0 | 164.673 | 166.933 | 172.994 |
+| 200/32 | 1 | 156.766 | 162.356 | 166.364 |
+| 200/32 | 2 | 155.991 | 157.812 | 171.367 |
+| 200/32 | 3 | 167.049 | 158.444 | 168.704 |
+| 200/32 | 4 | 156.644 | 172.948 | 185.763 |
+| 330/64 | 0 | 316.680 | 322.624 | 332.746 |
+| 330/64 | 1 | 315.171 | 310.886 | 327.984 |
+| 330/64 | 2 | 304.047 | 320.422 | 320.712 |
+| 330/64 | 3 | 312.624 | 314.581 | 337.740 |
+| 330/64 | 4 | 322.261 | 319.660 | 321.456 |

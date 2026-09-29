@@ -24,6 +24,7 @@ import std.time
 MAX_PROMPT := 2048
 MAX_GENERATED := 4096
 MAX_LOOKUP_DRAFTS := 3
+NATIVE_Q6_HEAD_DEVICE_BYTES := 995584
 SLOT_BYTES := 1040
 MASKED := 4286578688
 
@@ -426,7 +427,12 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
     || plan.kv_bytes > options.device_budget_bytes - storage_bytes {
     return Err(Error.Invalid)
   }
+  native_head_bytes := if config.native_q6_head { NATIVE_Q6_HEAD_DEVICE_BYTES } else { 0 }
+  if native_head_bytes > options.device_budget_bytes - storage_bytes - plan.kv_bytes {
+    return Err(Error.Invalid)
+  }
   workspace := options.device_budget_bytes - storage_bytes - plan.kv_bytes
+    - native_head_bytes
   if workspace < 536870912 || options.host_budget_bytes < 134217728 {
     return Err(Error.Invalid)
   }

@@ -3,6 +3,9 @@
 
 #include <stddef.h>
 
+/* One 248,320-F32 output and 64 Q8_1 blocks; included in device admission. */
+#define ALIGN_NATIVE_CUDA_Q6_HEAD_DEVICE_BYTES 995584LL
+
 #ifdef __cplusplus
 extern "C" {
 #endif

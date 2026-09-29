@@ -38,7 +38,7 @@ def run(binary: Path, model: Path, pack: Path, geometry: Path, options: Path,
     if process.returncode:
         raise RuntimeError(f"{name} mode {mode} failed: {process.stderr[-1500:]!r}")
     result = json.loads(result_path.read_text(encoding="utf-8"))
-    states, complete, logits = [], [], []
+    states, complete, logits, accounts = [], [], [], []
     for line in process.stderr.decode("utf-8", "replace").splitlines():
         if line.startswith("Q35_STATE "):
             row = json.loads(line[len("Q35_STATE "):])
@@ -51,9 +51,17 @@ def run(binary: Path, model: Path, pack: Path, geometry: Path, options: Path,
         elif line.startswith("Q35_LOGIT "):
             row = json.loads(line[len("Q35_LOGIT "):])
             logits.append((row["ordinal"], row["sha256"]))
+        elif line.startswith("Q35_ACCOUNT "):
+            accounts.append(json.loads(line[len("Q35_ACCOUNT "):]))
     if complete != [0, 1, 2] or len(states) != 252 or len(logits) != 3 \
-            or [entry[0] for entry in logits] != [0, 1, 2]:
+            or [entry[0] for entry in logits] != [0, 1, 2] \
+            or [entry["ordinal"] for entry in accounts] != [0, 1, 2]:
         raise RuntimeError(f"{name} mode {mode}: incomplete real-model trace")
+    budget = json.loads(options.read_text(encoding="utf-8"))["device_budget_bytes"]
+    for entry in accounts:
+        if entry["planned_device"] != budget or not (0 < entry["allocated_device"]
+               <= entry["device_peak"] <= budget) or entry["model_ops"] < 1:
+            raise RuntimeError(f"{name} mode {mode}: device or model-work accounting failed")
     vectors = []
     for ordinal, digest in logits:
         data = (dump / f"{ordinal}.bin").read_bytes()
@@ -62,7 +70,7 @@ def run(binary: Path, model: Path, pack: Path, geometry: Path, options: Path,
         vector = array("f")
         vector.frombytes(data)
         vectors.append(vector)
-    return result, states, vectors
+    return result, states, vectors, accounts
 
 
 def compare_logits(control: array, candidate: array) -> float:
@@ -151,9 +159,17 @@ def main() -> None:
                     raise RuntimeError(f"{name} mode {mode}: unexpected result {result}")
             if ordinary[0]["output"] != native[0]["output"] or ordinary[1] != native[1]:
                 raise RuntimeError(f"{name}: output or resident state changed")
+            if [entry["model_ops"] for entry in ordinary[3]] != \
+                    [entry["model_ops"] for entry in native[3]]:
+                raise RuntimeError(f"{name}: native model-work count differs from ordinary")
             maximum = max(compare_logits(a, b) for a, b in zip(ordinary[2], native[2], strict=True))
             print(f"{name}: {token_count} prompt tokens, 3 full logits and 252 state planes pass; "
-                  f"maximum absolute logit difference {maximum:.9g}")
+                  f"maximum absolute logit difference {maximum:.9g}; "
+                  f"model operations {native[3][-1]['model_ops']}, "
+                  f"planned/allocated/peak device bytes "
+                  f"{native[3][-1]['planned_device']}/"
+                  f"{native[3][-1]['allocated_device']}/"
+                  f"{native[3][-1]['device_peak']}")
         command = [str(binary), "--runtime-session", str(model), str(pack),
                    str(geometry), str(options), "0"]
         retained = {}

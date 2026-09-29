@@ -1557,12 +1557,22 @@ int32_t align_gpu_memory_admit(
     }
     if (!align_gpu_add_bytes(weights_bytes, kv_bytes, &device_total)
         || !align_gpu_add_bytes(device_total, workspace_bytes, &device_total)
+#if defined(ALIGN_LLM_NATIVE_CUDA)
+        || (state->native_q6_head && !align_gpu_add_bytes(device_total,
+            ALIGN_NATIVE_CUDA_Q6_HEAD_DEVICE_BYTES, &device_total))
+#endif
         || !align_gpu_add_bytes(metadata_bytes, staging_bytes, &host_total)
         || !align_gpu_add_bytes(host_total, legacy_cache_bytes, &host_total)
         || !align_gpu_add_bytes(host_total, state->application_host_reserved_bytes, &host_total)
         || device_total > state->device_budget_bytes || host_total > state->host_budget_bytes) {
         return ALIGN_GPU_MEMORY_BUDGET;
     }
+#if defined(ALIGN_LLM_NATIVE_CUDA)
+    if (state->native_q6_head) {
+        state->native_q6_head_context = align_native_cuda_q6_head_open(0);
+        if (state->native_q6_head_context == NULL) return ALIGN_GPU_ALLOCATION;
+    }
+#endif
     state->weights_bytes = weights_bytes;
     state->kv_bytes = kv_bytes;
     state->workspace_bytes = workspace_bytes;
@@ -1896,6 +1906,11 @@ int64_t align_gpu_memory_allocated_bytes(void *owner, int32_t field) {
     if (state->workspace_allocator != NULL) {
         workspace = (int64_t) ggml_gallocr_get_buffer_size(state->workspace_allocator, 0);
     }
+#if defined(ALIGN_LLM_NATIVE_CUDA)
+    if (state->native_q6_head) {
+        workspace += ALIGN_NATIVE_CUDA_Q6_HEAD_DEVICE_BYTES;
+    }
+#endif
     switch (field) {
     case 0: return state->metadata_bytes + (state->shape_planning ? 0 : state->staging_bytes);
     case 1: return weights + kv + inputs + workspace;
@@ -2631,8 +2646,6 @@ int32_t align_gpu_native_q6_head_mode(void *owner, int32_t mode) {
         || registry == NULL || ggml_backend_reg_dev_count(registry) != 1
         || strcmp(ggml_backend_dev_name(state->device), "CUDA0") != 0)
         return ALIGN_GPU_UNSUPPORTED;
-    state->native_q6_head_context = align_native_cuda_q6_head_open(0);
-    if (state->native_q6_head_context == NULL) return ALIGN_GPU_UNSUPPORTED;
     state->native_q6_head = 1;
     return ALIGN_GPU_OK;
 #else
@@ -3511,6 +3524,13 @@ int32_t align_gpu_graph_prepare(
             state->observation_failed = 1;
             return ALIGN_GPU_CONFIG;
         }
+    }
+    if (state->native_q6_head_weights[kind] != NULL) {
+        if (observed_ops == INT64_MAX) {
+            state->observation_failed = 1;
+            return ALIGN_GPU_CONFIG;
+        }
+        observed_ops += 1; /* The native Q6_K projection is outside the ggml graph. */
     }
     state->graph_cached_nodes[kind] = observed_nodes;
     state->graph_cached_ops[kind] = observed_ops;

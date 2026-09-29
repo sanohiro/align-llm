@@ -67,7 +67,8 @@ Align product; its tracing and decisions never enter product inference.
 `scripts/run-qwen35-native-q6-head-smoke` is `INDEPENDENT_ORACLE`: it launches
 the recorded real 2B CUDA product in default and explicit native-head modes,
 compares every diagnostic F32 logit, chosen token and resident-state digest,
-and checks refusal/failure envelopes. It never computes a model value or
+compares model-work counts and device-budget observations, and checks
+refusal/failure envelopes. It never computes a model value or
 selects an inference operation for production.
 `scripts/measure-native-swiglu` remains `BENCHMARK_OR_MEASUREMENT`; its explicit
 copy and native-greedy arms are independent workload selectors and cannot choose a model

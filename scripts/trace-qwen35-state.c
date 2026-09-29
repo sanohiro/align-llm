@@ -37,6 +37,9 @@ extern int32_t align_gpu_graph_compute(void *, int32_t, const void *, int64_t, v
 extern int32_t align_gpu_native_state_copy_finish(void *);
 extern int32_t align_gpu_kv_slot(void *, int64_t, void *, int64_t);
 extern int32_t align_ggml_slots_init(void *, int64_t);
+extern int64_t align_gpu_memory_bytes(void *, int32_t);
+extern int64_t align_gpu_memory_allocated_bytes(void *, int32_t);
+extern int64_t align_gpu_observation_state(void *, int32_t);
 
 static void require(int condition, const char *message) {
     if (!condition) {
@@ -206,6 +209,16 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
             "\"SET\":%d,\"SET_ROWS\":%d,\"SSM_CONV\":%d,\"GATED_DELTA_NET\":%d,"
             "\"FLASH_ATTN_EXT\":%d,\"GLU\":%d}}\n", ordinal, kind, nodes, count,
             mul_mat, cpy, set, set_rows, ssm_conv, delta, flash, glu);
+    int64_t planned = align_gpu_memory_bytes(owner, 1);
+    int64_t allocated = align_gpu_memory_allocated_bytes(owner, 1);
+    int64_t peak = align_gpu_observation_state(owner, 5);
+    int64_t model_ops = align_gpu_observation_state(owner, 8);
+    require(planned > 0 && allocated > 0 && peak >= allocated && model_ops > 0,
+            "invalid device or model-work observation");
+    fprintf(stderr, "Q35_ACCOUNT {\"ordinal\":%" PRIu64 ",\"planned_device\":%" PRId64
+            ",\"allocated_device\":%" PRId64 ",\"device_peak\":%" PRId64
+            ",\"model_ops\":%" PRId64 "}\n",
+            ordinal, planned, allocated, peak, model_ops);
 
     const size_t chunk = 1024 * 1024;
     void *scratch = malloc(chunk);

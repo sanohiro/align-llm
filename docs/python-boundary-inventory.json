@@ -3333,7 +3333,7 @@
     {
       "path": "scripts/run-qwen35-native-q6-head-smoke",
       "classification": "INDEPENDENT_ORACLE",
-      "behavior": "Compare every diagnostic F32 output logit, exact greedy choice, rendered output and resident-state digest between ordinary and opt-in native Q6_K CUDA head sessions on the recorded real 2B model.",
+      "behavior": "Compare every diagnostic F32 output logit, exact greedy choice, rendered output, resident-state digest, model-work count and device-budget observation between ordinary and opt-in native Q6_K CUDA head sessions on the recorded real 2B model.",
       "reachability": "Focused developer qualification only; never part of normal product execution.",
       "substitution": "Drives external Align workers and a diagnostic interposer; it neither computes model values nor selects a production inference operation.",
       "python_reason": "Independent full-vector numerical and state comparison remains outside Align product execution.",
