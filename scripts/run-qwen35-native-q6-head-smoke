@@ -1,0 +1,207 @@
+#!/usr/bin/env python3
+"""Compare complete real-model CUDA logits and state with the native Q6_K head."""
+
+from __future__ import annotations
+
+from array import array
+import hashlib
+import json
+import math
+import os
+from pathlib import Path
+import subprocess
+import struct
+import tempfile
+import time
+
+from gpu_session_client import Session
+
+
+CASES = (("short", "Hello", 31), ("chunked", "hello " * 170, 200),
+         ("wider-attention", "hello " * 300, 330))
+ROWS = 248320
+
+
+def run(binary: Path, model: Path, pack: Path, geometry: Path, options: Path,
+        trace: Path, work: Path, name: str, user: str, mode: str) -> tuple:
+    dump = work / f"{name}-{mode}-logits"
+    dump.mkdir()
+    result_path = work / f"{name}-{mode}.json"
+    environment = dict(os.environ, LD_PRELOAD=str(trace), ALIGN_STATE_COUNT="84",
+                       ALIGN_GRAPH_LOGIT_BYTES=str(ROWS * 4),
+                       ALIGN_LOGIT_DUMP_DIR=str(dump), ALIGN_LLM_NATIVE_Q6_HEAD=mode,
+                       ALIGN_LLM_NATIVE_STATE_COPY="0", ALIGN_LLM_PREFILL_CHUNK="512")
+    command = [str(binary), "--provider", "align-runtime", str(model), str(pack),
+               str(geometry), user, str(result_path), "3", "--runtime-options", str(options)]
+    process = subprocess.run(command, env=environment, capture_output=True,
+                             timeout=180, check=False)
+    if process.returncode:
+        raise RuntimeError(f"{name} mode {mode} failed: {process.stderr[-1500:]!r}")
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    states, complete, logits, accounts = [], [], [], []
+    for line in process.stderr.decode("utf-8", "replace").splitlines():
+        if line.startswith("Q35_STATE "):
+            row = json.loads(line[len("Q35_STATE "):])
+            if row["event"] in ("error", "graph_failed"):
+                raise RuntimeError(f"{name} mode {mode}: {row}")
+            if row["event"] == "plane":
+                states.append((row["ordinal"], row["index"], row["sha256"]))
+            elif row["event"] == "graph_complete":
+                complete.append(row["ordinal"])
+        elif line.startswith("Q35_LOGIT "):
+            row = json.loads(line[len("Q35_LOGIT "):])
+            logits.append((row["ordinal"], row["sha256"]))
+        elif line.startswith("Q35_ACCOUNT "):
+            accounts.append(json.loads(line[len("Q35_ACCOUNT "):]))
+    if complete != [0, 1, 2] or len(states) != 252 or len(logits) != 3 \
+            or [entry[0] for entry in logits] != [0, 1, 2] \
+            or [entry["ordinal"] for entry in accounts] != [0, 1, 2]:
+        raise RuntimeError(f"{name} mode {mode}: incomplete real-model trace")
+    budget = json.loads(options.read_text(encoding="utf-8"))["device_budget_bytes"]
+    for entry in accounts:
+        if entry["planned_device"] != budget or not (0 < entry["allocated_device"]
+               <= entry["device_peak"] <= budget) or entry["model_ops"] < 1:
+            raise RuntimeError(f"{name} mode {mode}: device or model-work accounting failed")
+    vectors = []
+    for ordinal, digest in logits:
+        data = (dump / f"{ordinal}.bin").read_bytes()
+        if len(data) != ROWS * 4 or hashlib.sha256(data).hexdigest() != digest:
+            raise RuntimeError(f"{name} mode {mode}: logit dump identity mismatch")
+        vector = array("f")
+        vector.frombytes(data)
+        vectors.append(vector)
+    return result, states, vectors, accounts
+
+
+def compare_logits(control: array, candidate: array) -> float:
+    worst = 0.0
+    control_choice = candidate_choice = 0
+    for index, (expected, observed) in enumerate(zip(control, candidate, strict=True)):
+        if not math.isfinite(expected) or not math.isfinite(observed):
+            raise RuntimeError(f"nonfinite logit at {index}")
+        difference = abs(expected - observed)
+        if difference > 0.01:
+            raise RuntimeError(f"logit {index}: expected {expected}, observed {observed}")
+        worst = max(worst, difference)
+        if expected > control[control_choice]:
+            control_choice = index
+        if observed > candidate[candidate_choice]:
+            candidate_choice = index
+    if control_choice != candidate_choice:
+        raise RuntimeError(f"greedy choice differs: {control_choice} vs {candidate_choice}")
+    return worst
+
+
+def forced_failure(binary: Path, model: Path, pack: Path, geometry: Path,
+                   options: Path, failure: str) -> None:
+    command = [str(binary), "--runtime-session", str(model), str(pack),
+               str(geometry), str(options), "0"]
+    request = dict(schema_version=1,
+                   system="You are a coding assistant. Return a concise patch-oriented answer.",
+                   user="Hello", max_tokens=2, temperature=0.0, seed=None)
+    environment = dict(os.environ, ALIGN_LLM_NATIVE_Q6_HEAD="0",
+                       ALIGN_LLM_NATIVE_STATE_COPY="0")
+    with Session(command, timeout=180, env=environment) as session:
+        result = session.generate(request)
+        if result["completion_tokens"] != 2 or result["prompt_tokens"] != 31:
+            raise RuntimeError("ordinary graph control failed under native fault build")
+    environment["ALIGN_LLM_NATIVE_Q6_HEAD"] = "1"
+    session = Session(command, timeout=180, env=environment)
+    try:
+        raw = json.dumps(request, separators=(",", ":")).encode("utf-8")
+        frame = struct.pack("<I", len(raw)) + raw
+        if os.write(session.process.stdin.fileno(), frame) != len(frame):
+            raise RuntimeError("short failure-request write")
+        response = session._read(time.monotonic() + 180)
+        if response != {"schema_version": 1, "status": "failed"}:
+            raise RuntimeError(f"native Q6 failure published a result: {response!r}")
+        code = session.process.wait(timeout=180)
+        if code != 2:
+            raise RuntimeError(f"native Q6 worker exit {code}, expected 2")
+        session.log.seek(0)
+        diagnostic = session.log.read().decode("utf-8", "replace")
+        if f"native_q6_head forced {'completion' if failure == 'complete' else 'submit'} failure" \
+                not in diagnostic or "native_q6_head projection failure" not in diagnostic:
+            raise RuntimeError(f"native Q6 fault not reached: {diagnostic[-1800:]}")
+        print(f"native Q6 {failure}: ordinary control passed; selected request failed "
+              "without output, worker exit 2")
+    finally:
+        session.close(check=False)
+
+
+def main() -> None:
+    model = Path(os.environ["QWEN35_GGUF"]).resolve()
+    pack = Path(os.environ["QWEN35_ALIGNPACK"]).resolve()
+    geometry = Path(os.environ["QWEN35_MODEL_IR"]).resolve()
+    options = Path(os.environ["QWEN35_RUNTIME_OPTIONS"]).resolve()
+    binary = Path(os.environ["QWEN35_NATIVE_Q6_BINARY"]).resolve()
+    trace = Path(os.environ["QWEN35_STATE_TRACE"]).resolve()
+    expected = os.environ["QWEN35_EXPECTED_SHA256"]
+    with model.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != expected:
+            raise RuntimeError("GGUF differs from the recorded real-model source")
+    if not binary.is_file() or not trace.is_file():
+        raise RuntimeError("real CUDA binary or state tracer is missing")
+    failure = os.environ.get("QWEN35_NATIVE_Q6_FAILURE")
+    if failure is not None:
+        if failure not in ("submit", "complete"):
+            raise RuntimeError("QWEN35_NATIVE_Q6_FAILURE must be submit or complete")
+        forced_failure(binary, model, pack, geometry, options, failure)
+        return
+    with tempfile.TemporaryDirectory(prefix="qwen35-native-q6-head-") as temporary:
+        work = Path(temporary)
+        for name, user, token_count in CASES:
+            ordinary = run(binary, model, pack, geometry, options, trace, work, name, user, "0")
+            native = run(binary, model, pack, geometry, options, trace, work, name, user, "1")
+            for mode, result in (("0", ordinary[0]), ("1", native[0])):
+                if result["status"] != "ok" or result["prompt_tokens"] != token_count \
+                        or result["completion_tokens"] != 3:
+                    raise RuntimeError(f"{name} mode {mode}: unexpected result {result}")
+            if ordinary[0]["output"] != native[0]["output"] or ordinary[1] != native[1]:
+                raise RuntimeError(f"{name}: output or resident state changed")
+            if [entry["model_ops"] for entry in ordinary[3]] != \
+                    [entry["model_ops"] for entry in native[3]]:
+                raise RuntimeError(f"{name}: native model-work count differs from ordinary")
+            maximum = max(compare_logits(a, b) for a, b in zip(ordinary[2], native[2], strict=True))
+            print(f"{name}: {token_count} prompt tokens, 3 full logits and 252 state planes pass; "
+                  f"maximum absolute logit difference {maximum:.9g}; "
+                  f"model operations {native[3][-1]['model_ops']}, "
+                  f"planned/allocated/peak device bytes "
+                  f"{native[3][-1]['planned_device']}/"
+                  f"{native[3][-1]['allocated_device']}/"
+                  f"{native[3][-1]['device_peak']}")
+        command = [str(binary), "--runtime-session", str(model), str(pack),
+                   str(geometry), str(options), "0"]
+        retained = {}
+        for mode in ("0", "1"):
+            environment = dict(os.environ, ALIGN_LLM_NATIVE_Q6_HEAD=mode,
+                               ALIGN_LLM_NATIVE_STATE_COPY="0")
+            with Session(command, timeout=180, env=environment) as session:
+                retained[mode] = []
+                for label in ("short", "wider-attention", "short"):
+                    user = next(value for name, value, _ in CASES if name == label)
+                    request = dict(schema_version=1,
+                                   system="You are a coding assistant. Return a concise patch-oriented answer.",
+                                   user=user, max_tokens=3, temperature=0.0, seed=None)
+                    result = session.generate(request)
+                    if result["completion_tokens"] != 3:
+                        raise RuntimeError(f"retained {label} mode {mode}: incomplete response")
+                    retained[mode].append((result["output"], result["prompt_tokens"],
+                                           result["completion_tokens"], result["total_tokens"]))
+        if retained["0"] != retained["1"]:
+            raise RuntimeError("retained ordinary/native responses differ")
+        print("retained short/wider/short: three ordinary/native requests match")
+        invalid_path = work / "invalid-mode.json"
+        invalid_env = dict(os.environ, ALIGN_LLM_NATIVE_Q6_HEAD="2")
+        invalid = subprocess.run([str(binary), "--provider", "align-runtime", str(model),
+                                  str(pack), str(geometry), "Hello", str(invalid_path), "1",
+                                  "--runtime-options", str(options)], env=invalid_env,
+                                 capture_output=True, timeout=180, check=False)
+        refused = json.loads(invalid_path.read_text(encoding="utf-8"))
+        if invalid.returncode != 2 or refused["status"] != "error" or refused["output"] != "":
+            raise RuntimeError("malformed native Q6 mode was not refused before output")
+        print("malformed mode: refused without generated output")
+
+
+if __name__ == "__main__":
+    main()

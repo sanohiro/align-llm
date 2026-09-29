@@ -191,6 +191,16 @@ PY_HASH
                  native_flags+=("-DALIGN_NATIVE_CUDA_FORCE_COMPLETION_FAILURE=1")
                fi
                flavour="real+force-native-copy-complete" ;;
+    native-q6-submit)
+               [ "${native_cuda}" = 1 ] || {
+                 printf '%s\n' 'native Q6 head failure requires native CUDA' >&2; exit 1; }
+               native_flags+=("-DALIGN_NATIVE_CUDA_Q6_FORCE_SUBMIT_FAILURE=1")
+               flavour="real+force-native-q6-submit" ;;
+    native-q6-complete)
+               [ "${native_cuda}" = 1 ] || {
+                 printf '%s\n' 'native Q6 head failure requires native CUDA' >&2; exit 1; }
+               native_flags+=("-DALIGN_NATIVE_CUDA_Q6_FORCE_COMPLETION_FAILURE=1")
+               flavour="real+force-native-q6-complete" ;;
     *)
       printf '%s\n' "build-ggml-shim: unknown ALIGN_LLM_GGML_FORCE=${ALIGN_LLM_GGML_FORCE}" >&2
       exit 1
@@ -445,6 +455,11 @@ if [[ "${flavour}" = real* ]] && [ "${native_cuda}" = 1 ]; then
     "${native_flags[@]+"${native_flags[@]}"}" \
     -c "${root_dir}/scripts/native_cuda_state_copy.cu" -o "${native_object}"
   native_objects+=("${native_object}")
+  q6_object="${out_dir}/align_native_cuda_q6_head.o"
+  "${cuda_compiler}" -O2 -std=c++17 -Xcompiler -fPIC \
+    "${native_flags[@]+"${native_flags[@]}"}" \
+    -c "${root_dir}/scripts/native_cuda_q6_head.cu" -o "${q6_object}"
+  native_objects+=("${q6_object}")
   include_flags+=("-DALIGN_LLM_NATIVE_CUDA=1")
   link_flags+=("-L${cuda_root}/lib64" "-lcudart" "-lstdc++")
 fi

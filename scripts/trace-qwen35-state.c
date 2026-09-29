@@ -13,10 +13,10 @@
  */
 #include "ggml.h"
 #include "ggml-backend.h"
+#include <dlfcn.h>
 #if defined(__APPLE__)
 #include <CommonCrypto/CommonDigest.h>
 #else
-#include <dlfcn.h>
 #include <openssl/sha.h>
 #define CC_SHA256_DIGEST_LENGTH SHA256_DIGEST_LENGTH
 #define CC_SHA256_CTX SHA256_CTX
@@ -37,6 +37,9 @@ extern int32_t align_gpu_graph_compute(void *, int32_t, const void *, int64_t, v
 extern int32_t align_gpu_native_state_copy_finish(void *);
 extern int32_t align_gpu_kv_slot(void *, int64_t, void *, int64_t);
 extern int32_t align_ggml_slots_init(void *, int64_t);
+extern int64_t align_gpu_memory_bytes(void *, int32_t);
+extern int64_t align_gpu_memory_allocated_bytes(void *, int32_t);
+extern int64_t align_gpu_observation_state(void *, int32_t);
 
 static void require(int condition, const char *message) {
     if (!condition) {
@@ -88,6 +91,25 @@ static int64_t graph_logit_bytes(void) {
     require(errno != ERANGE && value >= 4 && value <= INT32_MAX && value % 4 == 0,
             "graph logit bytes outside diagnostic bound");
     return (int64_t)value;
+}
+
+static int native_q6_read_if_ready(void *owner, void *bytes, int64_t length) {
+    typedef int32_t (*enabled_fn)(void *);
+    typedef int32_t (*read_fn)(void *, void *, int64_t);
+    static int initialized;
+    static enabled_fn enabled;
+    static read_fn read;
+    if (!initialized) {
+        void *enabled_symbol = dlsym(RTLD_DEFAULT, "align_gpu_native_q6_head_enabled");
+        void *read_symbol = dlsym(RTLD_DEFAULT, "align_gpu_native_q6_head_read");
+        if (enabled_symbol != NULL && read_symbol != NULL) {
+            memcpy(&enabled, &enabled_symbol, sizeof(enabled));
+            memcpy(&read, &read_symbol, sizeof(read));
+        }
+        initialized = 1;
+    }
+    return enabled != NULL && read != NULL && enabled(owner) == 1
+        && read(owner, bytes, length) == 0;
 }
 
 static int32_t traced_compute(void *owner, int32_t kind, const void *key,
@@ -145,16 +167,33 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
                 logits = t;
             }
         }
+        unsigned char *bytes = malloc((size_t)logit_bytes);
+        require(bytes != NULL, "logit diagnostic allocation failed");
+        int have_logits = 0;
         if (logits != NULL) {
-            static uint64_t logit_ordinal;
-            unsigned char *bytes = malloc((size_t)logit_bytes);
-            require(bytes != NULL && logits->buffer != NULL, "graph logit storage unavailable");
+            require(logits->buffer != NULL, "graph logit storage unavailable");
             ggml_backend_tensor_get(logits, bytes, 0, (size_t)logit_bytes);
+            have_logits = 1;
+        } else {
+            have_logits = native_q6_read_if_ready(owner, bytes, logit_bytes);
+        }
+        if (have_logits) {
+            static uint64_t logit_ordinal;
+            const char *logit_dump = getenv("ALIGN_LOGIT_DUMP_DIR");
+            if (logit_dump != NULL) {
+                char path[4096];
+                int length = snprintf(path, sizeof(path), "%s/%" PRIu64 ".bin",
+                                      logit_dump, logit_ordinal);
+                require(length > 0 && (size_t)length < sizeof(path), "logit dump path too long");
+                FILE *file = fopen(path, "wb");
+                require(file != NULL && fwrite(bytes, 1, (size_t)logit_bytes, file)
+                        == (size_t)logit_bytes && fclose(file) == 0,
+                        "logit dump write failed");
+            }
             unsigned char digest[CC_SHA256_DIGEST_LENGTH];
             char hex[2 * CC_SHA256_DIGEST_LENGTH + 1];
             static const char digits[] = "0123456789abcdef";
             CC_SHA256(bytes, (CC_LONG)logit_bytes, digest);
-            free(bytes);
             for (size_t i = 0; i < sizeof(digest); ++i) {
                 hex[2*i] = digits[digest[i] >> 4];
                 hex[2*i+1] = digits[digest[i] & 15];
@@ -163,12 +202,23 @@ static int32_t traced_compute(void *owner, int32_t kind, const void *key,
             fprintf(stderr, "Q35_LOGIT {\"ordinal\":%" PRIu64 ",\"bytes\":%" PRId64
                     ",\"sha256\":\"%s\"}\n", logit_ordinal++, logit_bytes, hex);
         }
+        free(bytes);
     }
     fprintf(stderr, "Q35_STATE {\"event\":\"graph\",\"ordinal\":%" PRIu64 ",\"kind\":%d,"
             "\"nodes\":%d,\"state_count\":%" PRId64 ",\"ops\":{\"MUL_MAT\":%d,\"CPY\":%d,"
             "\"SET\":%d,\"SET_ROWS\":%d,\"SSM_CONV\":%d,\"GATED_DELTA_NET\":%d,"
             "\"FLASH_ATTN_EXT\":%d,\"GLU\":%d}}\n", ordinal, kind, nodes, count,
             mul_mat, cpy, set, set_rows, ssm_conv, delta, flash, glu);
+    int64_t planned = align_gpu_memory_bytes(owner, 1);
+    int64_t allocated = align_gpu_memory_allocated_bytes(owner, 1);
+    int64_t peak = align_gpu_observation_state(owner, 5);
+    int64_t model_ops = align_gpu_observation_state(owner, 8);
+    require(planned > 0 && allocated > 0 && peak >= allocated && model_ops > 0,
+            "invalid device or model-work observation");
+    fprintf(stderr, "Q35_ACCOUNT {\"ordinal\":%" PRIu64 ",\"planned_device\":%" PRId64
+            ",\"allocated_device\":%" PRId64 ",\"device_peak\":%" PRId64
+            ",\"model_ops\":%" PRId64 "}\n",
+            ordinal, planned, allocated, peak, model_ops);
 
     const size_t chunk = 1024 * 1024;
     void *scratch = malloc(chunk);

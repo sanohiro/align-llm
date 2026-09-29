@@ -2,38 +2,66 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active CUDA Q6_K four-column screen (2026-09-29)
+## Active connected CUDA Q6_K output-head trial (2026-09-29)
 
-Branch `agent/native-cuda-q6-head` starts at merged `main` `5f03606`
-(PR #326). It ports the actual-weight Q6_K capture to Linux and adds an
-independent CUDA four-column output-head developer probe. The Q6_K weight
-digest matches Metal's capture. A 200/32 ordinary Align Nsight trace contains
-one final-prefill and 31 decode Q6_K projections; Q4_0 matvec and Q6_K
-projection account for about 78% of summed decode kernel intervals. The first
-F32-direct native mapping failed its predeclared numeric bound; a Q8_1/DP4A
-mapping passed all four full output columns and greedy choices with maximum
-absolute error `1.91e-6`, but its first five-pair complete-operation comparison
-against pinned ggml yielded only 2/5 native wins and `-0.004725 ms` median
-paired gain. The final owner repeat lost 5/5 with `-0.033346 ms` median.
-A two-row-per-warp mapping, 32-register cap and fast-math build
-also lost. Keep the screen outside product inference. Nsight Compute counters
-were denied (`ERR_NVGPUCTRPERM`); Nsight Systems GPU intervals remain usable.
-Details, adverse measurements, NVIDIA and ggml source references are in
-`docs/cuda-native-optimization-log.md`; capture weights, binaries and traces
-remain outside Git.
+Branch `agent/native-cuda-q6-connected` starts from merged `main` `f4f05c1`
+(PR #327); checkpoint `8d0828f` connected the default-off independent
+Q8_1/DP4A one-column Q6_K path to actual requests but duplicated ggml's
+projection. Commit `51f67aa` removes that duplicate in mode
+`1` while preserving mode `0`. The authoritative contract is in
+`docs/specs/gpu-runtime-performance.md`. Full logits (maximum difference
+`1.90734863e-6`), 252 resident-state planes at each 31/200/330-token case,
+exact greedy/rendered output, retained short/wider/short requests, malformed
+selection and forced submit/completion failures passed. `make fmt`, `make
+build` with real CUDA shim and `make check` (169 Align units) passed. Nsight
+counted three native projections and zero ggml Q6_K output projections for
+three output tokens. On the repaired binary, five paired requests per case
+beat the duplicated checkpoint by 14.453/33.427/68.092 ms median at 56/16,
+200/32 and 330/64 (all 15 wins). Against unchanged Align, native lost by
+0.705/2.260/1.957 ms (0/5, 1/5, 2/5 native wins); against pinned llama.cpp
+it gained 15.506/10.259/10.121 ms (all 15 wins). These are scoped warm-request
+measurements, not a general speed claim. Complete pairs, sources, failures
+and limits are in `docs/cuda-native-optimization-log.md`.
 
-Next actions, in order: (1) publish this numeric/profiling baseline after
-exact-head verification; (2) connect the independent Q6_K projection as a
-guarded opt-in real-model CUDA path while retaining ggml as control; (3)
-profile and improve the native connected path, comparing each revision with
-its previous native result, ordinary Align and pinned llama.cpp. Compare
-generated SASS when source-level inspection is insufficient, and then
-investigate larger Q4_0/normalization/activation execution units. Metal's
-failed split-FFN connection is evidence to check boundary overhead, not a
-reason to stop the independent backend.
+One comprehensive `codex review --base origin/main` of `51f67aa` found two
+valid P2 accounting issues. The active repair adds the native model operation
+to the observation, reserves/counts 995,584 helper device bytes, and delays
+allocation until after budget admission. The extended real-model owner passed
+equal ordinary/native model-work totals (`2058` after three graphs), budget
+and device-peak checks, complete logits/state and retained requests. A local
+near-admission probe passed ordinary mode and refused selected mode at
+1,809,499,739 bytes; forced submit/completion faults passed again. The
+Python boundary guard and mutation suite passed. `make check` passed 169 Align
+units after repair. The repair delta was inspected for unrelated behavior.
+
+Next actions, in order: (1) commit the consolidated review repair and run
+exact-head publication preflight; (2) publish an English PR, record
+review/integration evidence and merge after required checks; (3) refresh
+`main`, profile the
+nonduplicated request's Q4_0 and Q6_K cost, and test one bounded improvement
+at a time against the current native baseline, ordinary Align and pinned
+llama.cpp. Compare SASS when source inspection is insufficient. The local
+one-column screen had ambiguous host timing (+0.014 and -0.007 ms paired
+medians) and Nsight Systems medians 893.088 us native, 886.848 us ggml.
+Nsight Compute counters remain denied (`ERR_NVGPUCTRPERM`).
 Other CUDA GPUs, Qwen sizes and Gemma are unmeasured and deferred until the
-corresponding hardware/model owner is available. There is no fixed percentage
-or win-count floor for a useful measured improvement.
+corresponding hardware/model owner is available. No fixed percentage or
+win-count floor governs a useful measured improvement.
+
+## Completed CUDA Q6_K four-column screen (2026-09-29)
+
+PR #327 merged at `f4f05c1`. Linux capture recovered the Metal-matching
+417,177,600-byte Q6_K weight and three real activations. A Q8_1/DP4A native
+kernel passed all four complete logits rows and greedy choices with maximum
+absolute error `1.91e-6`. Five-pair completed-operation comparisons lost to
+pinned ggml by `0.004725` and `0.033346 ms` median; two-row/warp, register-cap,
+fast-math, read-only and aligned-load variants did not establish a gain. The
+200/32 trace attributed about 78% of summed decode kernel intervals to Q4_0
+matvec and Q6_K projection. The exact-head owner/preflight, one comprehensive
+review with a corrected Linux preload recipe, and all three CI checks passed.
+Raw captures, traces and binaries remain outside Git; reproducible details,
+failed attempts and NVIDIA/ggml references are in
+`docs/cuda-native-optimization-log.md`.
 
 ## Completed native CUDA Qwen3.5 capability (2026-09-29)
 

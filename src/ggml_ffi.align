@@ -374,6 +374,11 @@ extern "C" link("align_ggml_shim") {
   ) -> i32
   fn align_gpu_native_state_copy_mode(owner: raw, mode: i32) -> i32
   fn align_gpu_native_state_copy_enabled(owner: raw) -> i32
+  fn align_gpu_native_q6_head_mode(owner: raw, mode: i32) -> i32
+  fn align_gpu_native_q6_head_enabled(owner: raw) -> i32
+  fn align_gpu_native_q6_head_read(owner: raw, bytes: slice<u8>, n: i64) -> i32
+  fn align_gpu_native_q6_head_register(owner: raw, kind: i32, slots: slice<u8>,
+    weight: i64, input: i64, output: i64) -> i32
   fn align_gpu_native_state_copy_finish(owner: raw) -> i32
   fn align_gpu_native_state_copy_register(
     owner: raw, kind: i32, slots: slice<u8>, source: i64, destination: i64,
@@ -1170,6 +1175,53 @@ pub fn gpu_native_state_copy_select(borrow owner: GpuDevice, enabled: bool) -> R
 pub fn gpu_native_state_copy_enabled(borrow owner: GpuDevice) -> bool {
   unsafe {
     return align_gpu_native_state_copy_enabled(resource.raw(resource.borrow(owner))) == 1
+  }
+}
+
+pub fn gpu_native_q6_head_select(borrow owner: GpuDevice, enabled: bool) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_native_q6_head_mode(
+      resource.raw(resource.borrow(owner)), if enabled { 1 } else { 0 },
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_native_q6_head_enabled(borrow owner: GpuDevice) -> bool {
+  unsafe {
+    return align_gpu_native_q6_head_enabled(resource.raw(resource.borrow(owner))) == 1
+  }
+}
+
+pub fn gpu_native_q6_head_read(borrow owner: GpuDevice,
+  borrow bytes: slice<u8>, label: str,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_READBACK)
+  if bytes.len() != 993280 { return Err(fault("CONFIG", label)) }
+  unsafe {
+    status := align_gpu_native_q6_head_read(
+      resource.raw(resource.borrow(owner)), bytes, bytes.len(),
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_native_q6_head_register(borrow owner: GpuDevice, kind: i64,
+  borrow slots: slice<u8>, weight: i64, input: i64, output: i64,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE && kind != GPU_GRAPH_DECODE_ALT {
+    return Err(fault("CONFIG", "graph_kind"))
+  }
+  unsafe {
+    status := align_gpu_native_q6_head_register(
+      resource.raw(resource.borrow(owner)), kind as i32, slots, weight, input, output,
+    ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
   }
 }
 

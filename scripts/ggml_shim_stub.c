@@ -2896,6 +2896,27 @@ int32_t align_gpu_native_state_copy_enabled(void *owner) {
     return 0;
 }
 
+int32_t align_gpu_native_q6_head_mode(void *owner, int32_t mode) {
+    return owner != NULL && mode == 0 ? ALIGN_GPU_OK : ALIGN_GPU_UNSUPPORTED;
+}
+
+int32_t align_gpu_native_q6_head_enabled(void *owner) {
+    (void) owner;
+    return 0;
+}
+
+int32_t align_gpu_native_q6_head_read(void *owner, void *bytes, int64_t n) {
+    (void) owner; (void) bytes; (void) n;
+    return ALIGN_GPU_UNSUPPORTED;
+}
+
+int32_t align_gpu_native_q6_head_register(void *owner, int32_t kind,
+        void *slots, int64_t weight_slot, int64_t input_slot, int64_t output_slot) {
+    (void) owner; (void) kind; (void) slots;
+    (void) weight_slot; (void) input_slot; (void) output_slot;
+    return ALIGN_GPU_UNSUPPORTED;
+}
+
 int32_t align_gpu_native_conv_copy_mode(void *owner, int32_t mode) {
     return owner != NULL && mode == 0 ? ALIGN_GPU_OK : ALIGN_GPU_UNSUPPORTED;
 }

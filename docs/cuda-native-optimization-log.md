@@ -342,3 +342,263 @@ ggml does not block that trial connection. Keep measured incremental native
 gains even before the native route overtakes ggml; there is no percentage or
 win-count floor. Broader Q4_0/normalization/activation fusion remains a
 follow-up, informed by the connected profile and the Metal split-FFN loss.
+
+## Connected one-column Q6_K trial: correctness and duplicate cost (2026-09-29)
+
+Branch `agent/native-cuda-q6-connected` selects the independent Q8_1/DP4A
+kernel through Align's default-off `ALIGN_LLM_NATIVE_Q6_HEAD=1` mode. The
+kernel borrows the real resident Q6_K weight, the normalized F32 activation
+and the ggml output buffer. For this first connection it runs after the
+synchronized ggml graph and overwrites the F32 logits. Thus the graph still
+performs the same Q6_K projection. This intentional duplicate establishes a
+real-request correctness, ownership and failure baseline; it is not a speed
+candidate for default routing.
+
+Before connection, replacing four columns with one in the same actual-weight
+screen produced maximum absolute logit difference `1.91e-6` and identical
+greedy choice. Two uninstrumented five-pair repeats had median paired native
+gains of `+0.013978 ms` (3/5 wins) and `-0.007316 ms` (2/5 wins).
+Nsight Systems reported 113 instances of each one-column projection:
+median native `893.088 us`, ggml `886.848 us`; native and ggml Q8_1
+conversion medians were `1.408` and `1.568 us`. This small GPU interval
+loss and sign-changing completed-operation result do not establish a local win.
+
+On the authenticated 2B model, three final-prefill/decode graphs at each of
+31-, 200- and 330-token prompts passed all 248,320 F32 logits under the
+predeclared `0.01` bound, with maximum absolute difference `1.91e-6` in every
+case. Greedy output and all 252 valid resident-state hashes per case matched
+mode `0`. A short/wider/short retained session also returned the same output
+and token counts. Invalid mode `2` returned an error with empty output.
+Forced CUDA submit and completion faults left the ordinary ggml control
+usable but made the selected session return only a failed envelope and exit 2.
+The standalone C/CUDA module owns one stream and 2,304 bytes of Q8_1 scratch;
+no second model weight or full-logit device buffer is allocated.
+
+Five alternating warm request pairs per condition used the same 2B GGUF,
+prompt IDs, output counts and digest-bound pinned llama.cpp executable
+`0aabc02758cf34b086d253d6b164cb6027a2aa2188b17fd66c42f483e608ae29`
+from source `bb4caa7540188872173c44d161602d9271386413`. Both Align
+sessions stayed resident; each llama.cpp sample was its third warmed
+iteration in a fresh process. The timed interval excludes startup and model
+load. Every generated output matched. Times are milliseconds:
+
+| Prompt/output | Pair | Ordinary Align | Native Q6_K | Pinned llama.cpp |
+| --- | ---: | ---: | ---: | ---: |
+| 56/16 | 0 | 78.506 | 94.983 | 89.619 |
+| 56/16 | 1 | 72.494 | 90.082 | 93.494 |
+| 56/16 | 2 | 72.042 | 88.319 | 92.876 |
+| 56/16 | 3 | 72.619 | 88.647 | 89.952 |
+| 56/16 | 4 | 72.182 | 88.500 | 104.056 |
+| 200/32 | 0 | 157.556 | 189.085 | 168.373 |
+| 200/32 | 1 | 167.882 | 188.266 | 171.192 |
+| 200/32 | 2 | 160.982 | 187.779 | 174.700 |
+| 200/32 | 3 | 170.292 | 191.027 | 168.334 |
+| 200/32 | 4 | 164.936 | 208.372 | 167.003 |
+| 330/64 | 0 | 330.331 | 366.819 | 328.225 |
+| 330/64 | 1 | 317.890 | 386.848 | 330.505 |
+| 330/64 | 2 | 305.276 | 373.372 | 325.204 |
+| 330/64 | 3 | 312.270 | 379.543 | 318.696 |
+| 330/64 | 4 | 304.875 | 382.355 | 332.610 |
+
+Median paired native gain versus ordinary Align was `-16.317`, `-26.797`
+and `-68.096 ms`, with 0/5 native wins in each condition. Median paired gain
+versus pinned llama.cpp was `+3.412`, `-20.712` and `-49.745 ms`, with
+4/5, 0/5 and 0/5 wins. This is expected for a duplicated roughly 0.9 ms
+projection per output token, but the request measurements are the evidence;
+the isolated kernel interval alone does not predict request wall time.
+The retained raw stdout is `q6-connected-measure.stdout` outside Git.
+
+A three-token Nsight Systems node trace counted exactly three pinned ggml
+Q6_K output launches and three native `project` launches. Their median GPU
+intervals were `886.940 us` and `887.484 us`; native Q8_1 quantization
+added three `1.440 us` intervals. The profile establishes the duplicated
+device work; it does not attribute all host/request overhead. Nsight Compute
+counters remained inaccessible (`ERR_NVGPUCTRPERM`), so there is no claim about
+executed memory transactions. The pinned ggml source
+`ggml/src/ggml-backend.cpp` confirms that `ggml_backend_graph_compute`
+synchronizes before returning; NVIDIA's
+[asynchronous execution guide](https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/asynchronous-execution.html)
+defines the stream boundary, and its
+[best practices guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+distinguishes useful payload bandwidth from measured DRAM traffic.
+
+Reproduce the numeric owner with `QWEN35_GGUF`, `QWEN35_ALIGNPACK`,
+`QWEN35_MODEL_IR`, `QWEN35_RUNTIME_OPTIONS`, `QWEN35_NATIVE_Q6_BINARY`,
+`QWEN35_STATE_TRACE` and `QWEN35_EXPECTED_SHA256` set, then run
+`scripts/run-qwen35-native-q6-head-smoke`. The trace interposer's optional
+`ALIGN_LOGIT_DUMP_DIR` writes full F32 vectors only in this diagnostic.
+For request timing, set `QWEN35_CUDA_MEASURE_MODE=q6-head` and the existing
+digest-bound pinned llama.cpp inputs, then run
+`scripts/measure-qwen35-native-cuda`.
+
+## Connected Q6_K without duplicate projection (2026-09-29)
+
+The second connected step makes mode `1` expand the normalized activation as
+the ggml graph output. The Q6_K output tensor remains checked metadata but is
+not graph-expanded. After synchronized upstream graph completion, the same
+native Q8_1/DP4A kernel writes its own 993,280-byte device output, which Align
+reads through a checked native ABI. Mode `0` still executes and reads ggml's
+Q6_K projection. The helper adds only that output allocation; weights remain
+borrowed and compressed. This removes the previous redundant compute without
+changing the independent kernel's arithmetic.
+
+The real-model owner again passed three complete 248,320-element F32 logits
+rows at each of 31, 200 and 330 prompt tokens, with maximum absolute error
+`1.90734863e-6` against mode `0`, exact greedy/rendered output and all 252
+state-plane hashes per case. The short/wider/short retained session matched.
+Mode `2` was refused with empty output. Forced submit and completion failures
+left ordinary requests working and made selected requests fail without output
+or token publication, worker exit 2. `make build` passed with the real CUDA
+shim, and `make fmt` passed.
+
+An Nsight Systems three-token node trace counted three native `project`
+launches and **zero ggml Q6_K output projection launches** in mode `1`;
+the native project's median device interval was `890.491 us` and native Q8_1
+conversion was `1.280 us`. A separate three-count Q6_K row-gather operation
+still occurs elsewhere in the graph; it is not the removed output projection.
+The GPU interval is close to the duplicated trial's `887.484 us`, consistent
+with the unchanged kernel. Nsight Compute counters are still denied by
+`ERR_NVGPUCTRPERM`, so memory-transaction and occupancy causes remain
+unmeasured. The profile is `q6-nonduplicate-trace.nsys-rep` outside Git.
+
+The same five alternating warm request pairs used the digest-bound model,
+backend and pinned llama.cpp described above. All outputs matched. The
+ordinary/native pair executes in retained sessions; each llama.cpp sample is
+its third warmed iteration in a fresh process. Times are milliseconds:
+
+| Prompt/output | Pair | Ordinary Align | Native Q6_K | Pinned llama.cpp |
+| --- | ---: | ---: | ---: | ---: |
+| 56/16 | 0 | 87.101 | 103.029 | 95.927 |
+| 56/16 | 1 | 76.056 | 80.354 | 90.486 |
+| 56/16 | 2 | 74.495 | 73.825 | 87.671 |
+| 56/16 | 3 | 73.138 | 73.942 | 86.540 |
+| 56/16 | 4 | 72.151 | 99.736 | 88.357 |
+| 200/32 | 0 | 163.332 | 159.320 | 178.903 |
+| 200/32 | 1 | 158.209 | 168.646 | 171.565 |
+| 200/32 | 2 | 162.083 | 159.317 | 168.879 |
+| 200/32 | 3 | 164.269 | 161.927 | 169.249 |
+| 200/32 | 4 | 170.560 | 162.146 | 174.040 |
+| 330/64 | 0 | 314.904 | 314.497 | 328.154 |
+| 330/64 | 1 | 316.016 | 305.641 | 337.118 |
+| 330/64 | 2 | 306.973 | 306.837 | 323.212 |
+| 330/64 | 3 | 313.001 | 317.722 | 335.263 |
+| 330/64 | 4 | 313.181 | 317.702 | 328.173 |
+
+Median paired native gain over ordinary Align was `-4.298`, `+2.766` and
+`+0.136 ms`, with 1/5, 4/5 and 3/5 wins. Median gain over pinned llama.cpp
+was `+10.132`, `+9.562` and `+16.375 ms`, with 3/5, 5/5 and 5/5 wins. The
+56/16 series has large outliers, and the other two ordinary gains are small;
+this does not establish a general win over either reference. Full stdout is
+`q6-nonduplicate-measure.stdout` outside Git.
+
+To isolate the change from the first connected native version, two resident
+sessions used the preserved checkpoint binary/shim and the new binary/shim,
+both with mode `1`. Each condition had two matching-output warmups, then five
+alternating-order pairs. The paired native gain medians were `+9.357 ms`
+(3/5) at 56/16, `+14.351 ms` (5/5) at 200/32 and `+74.555 ms` (5/5) at
+330/64. The short series includes a `-25.185 ms` outlier, so its median is
+less certain. The longer cases show a useful connected improvement over our
+own prior implementation. All 15 pair values are retained in
+`q6-duplicate-vs-nonduplicate.stdout` outside Git:
+
+| Prompt/output | Pair | Duplicated native | Nonduplicated native |
+| --- | ---: | ---: | ---: |
+| 56/16 | 0 | 96.717 | 101.123 |
+| 56/16 | 1 | 88.780 | 79.423 |
+| 56/16 | 2 | 88.798 | 73.484 |
+| 56/16 | 3 | 89.382 | 73.663 |
+| 56/16 | 4 | 91.476 | 116.662 |
+| 200/32 | 0 | 201.361 | 167.175 |
+| 200/32 | 1 | 191.365 | 175.547 |
+| 200/32 | 2 | 190.436 | 176.085 |
+| 200/32 | 3 | 198.503 | 192.180 |
+| 200/32 | 4 | 192.056 | 186.984 |
+| 330/64 | 0 | 377.311 | 307.784 |
+| 330/64 | 1 | 398.159 | 316.163 |
+| 330/64 | 2 | 388.193 | 307.116 |
+| 330/64 | 3 | 389.838 | 315.283 |
+| 330/64 | 4 | 381.278 | 311.031 |
+
+NVIDIA's current [CUDA Best Practices Guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/)
+prioritizes coalesced global reads and warns that more occupancy does not
+automatically improve throughput. Its
+[stream synchronization guide](https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/advanced-host-programming.html)
+recommends explicit event dependencies when work crosses streams. These guide
+the next hypotheses; neither proves a bottleneck here without device counters.
+The next trial should measure the now nonduplicated request's Q4_0 and Q6_K
+cost, then test one bounded kernel or scheduling change at a time against
+this native baseline, ordinary Align and the pinned reference. Keep failed
+experiments and generated-binary comparisons in this log.
+
+The comprehensive review of `51f67aa` found two connected-accounting defects:
+removing the ggml output node also removed one counted model operation, and
+the helper's 995,584 device bytes were missing from admission and the reported
+peak. The repair counts the off-graph projection, reserves the helper bytes in
+Align before admission, includes them in shim budget/observation totals, and
+allocates the helper only after a successful admission. The CUDA source
+statically checks the actual scratch/output sizes against the reservation.
+The extended real-model diagnostic found equal ordinary/native cumulative
+model-operation totals (`2058` after three graph executions in each case).
+At the 8,000,000,000-byte configured budget, selected-mode planned/allocated/
+peak bytes were respectively `8,000,000,000/1,281,449,088/1,281,449,088`
+for 31 tokens, `8,000,000,000/1,296,387,200/1,296,387,200` for 200, and
+`8,000,000,000/1,308,101,760/1,308,101,760` for 330. A separate local
+near-admission probe found ordinary mode succeeded at a 1,809,499,739-byte
+budget while selected mode refused before generation; this threshold is
+specific to the pinned fixture, current ggml allocator and host, not a
+portable constant. The full-logit/state/retained owner and forced
+submit/completion faults passed again after the repair. The measured speed
+pairs above precede this accounting-only repair. Fresh uninstrumented pairs
+on the repaired binary provide the final local speed evidence below.
+
+The repaired binary beat the preserved duplicated native checkpoint in all
+15 alternating warm-request pairs, with median gains of `14.453`, `33.427`
+and `68.092 ms` at 56/16, 200/32 and 330/64. Both arms stayed resident and
+outputs matched; the previous binary and shim were preserved from checkpoint
+`8d0828f`. The complete `q6-repair-vs-duplicate.stdout` receipt is outside Git:
+
+| Prompt/output | Pair | Duplicated native | Repaired nonduplicated native |
+| --- | ---: | ---: | ---: |
+| 56/16 | 0 | 97.262 | 80.508 |
+| 56/16 | 1 | 89.330 | 74.877 |
+| 56/16 | 2 | 89.287 | 73.505 |
+| 56/16 | 3 | 88.898 | 88.713 |
+| 56/16 | 4 | 89.955 | 84.748 |
+| 200/32 | 0 | 197.197 | 163.770 |
+| 200/32 | 1 | 196.153 | 159.239 |
+| 200/32 | 2 | 192.037 | 158.277 |
+| 200/32 | 3 | 200.333 | 167.179 |
+| 200/32 | 4 | 190.117 | 175.900 |
+| 330/64 | 0 | 372.283 | 310.167 |
+| 330/64 | 1 | 379.947 | 309.502 |
+| 330/64 | 2 | 368.114 | 318.861 |
+| 330/64 | 3 | 375.125 | 307.032 |
+| 330/64 | 4 | 377.074 | 307.342 |
+
+The fresh ordinary Align and pinned llama.cpp campaign used the same
+digest-bound model, backend, executable and exact prompts/output counts as
+the preceding campaign. Repaired native lost to ordinary Align by `0.705`,
+`2.260` and `1.957 ms` paired median (0/5, 1/5, 2/5 native wins), but beat
+the pinned llama.cpp warm generation interval by `15.506`, `10.259` and
+`10.121 ms` (5/5 wins each). The comparison is scoped to this RTX 4070 Ti,
+Qwen3.5-2B Q4_0, three workloads and warm retained requests; it does not
+establish startup, other-model or general llama.cpp superiority. The
+complete `q6-repair-ordinary-llama.stdout` receipt is outside Git:
+
+| Prompt/output | Pair | Ordinary Align | Repaired native | Pinned llama.cpp |
+| --- | ---: | ---: | ---: | ---: |
+| 56/16 | 0 | 82.534 | 83.211 | 90.931 |
+| 56/16 | 1 | 73.016 | 73.720 | 89.226 |
+| 56/16 | 2 | 71.774 | 72.462 | 88.660 |
+| 56/16 | 3 | 73.362 | 86.509 | 89.771 |
+| 56/16 | 4 | 72.888 | 77.560 | 123.131 |
+| 200/32 | 0 | 164.673 | 166.933 | 172.994 |
+| 200/32 | 1 | 156.766 | 162.356 | 166.364 |
+| 200/32 | 2 | 155.991 | 157.812 | 171.367 |
+| 200/32 | 3 | 167.049 | 158.444 | 168.704 |
+| 200/32 | 4 | 156.644 | 172.948 | 185.763 |
+| 330/64 | 0 | 316.680 | 322.624 | 332.746 |
+| 330/64 | 1 | 315.171 | 310.886 | 327.984 |
+| 330/64 | 2 | 304.047 | 320.422 | 320.712 |
+| 330/64 | 3 | 312.624 | 314.581 | 337.740 |
+| 330/64 | 4 | 322.261 | 319.660 | 321.456 |
