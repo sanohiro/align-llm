@@ -18,8 +18,9 @@ owners, exact ordinary/native full-logit and valid-state hashes, graph-copy
 removal and forced submit/completion failures. It batches 18 large decode state
 planes into one CUDA kernel. A 200/32 Nsight trace found 558 fewer async copies
 than the initial native helper, but two real-model three-condition campaigns
-won only 12/30 paired requests against ordinary Align. It won 28/30 against
-pinned llama.cpp for those retained warm requests. Keep `0` as default; this is
+won only 12/30 paired requests against ordinary Align. A subsequent
+reference-executable-digest-bound campaign won 5/15 against ordinary Align
+and 13/15 against pinned llama.cpp. Keep `0` as default; this is
 no broad llama.cpp or incremental native speed claim. Source references,
 conditions, adverse samples and local receipt names are in
 `docs/cuda-native-optimization-log.md`; weights, binaries and traces stay out
@@ -37,7 +38,10 @@ logit/state comparison, direct CUDA copy smoke, forced failures and the paired
 campaigns. One comprehensive `codex review --uncommitted` found a CUDA lookup
 trial admission bug; the shared entrypoint now rejects CUDA before mutation,
 and the repaired Align owner and direct CUDA refusal/normal-arm check passed.
-Final preflight remains open.
+The committed-head review found that the measurement caller did not bind the
+pinned reference executable. It now verifies its expected SHA-256 and source
+commit; the digest-bound paired campaign and a wrong-digest refusal passed.
+Final preflight remains open for this repair.
 
 ## Completed current Metal speed and bottleneck qualification (2026-09-28)
 

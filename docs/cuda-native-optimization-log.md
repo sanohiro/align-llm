@@ -122,6 +122,12 @@ reference process. Every arm used the same model, prompt IDs and requested
 output count; both Align outputs and the rendered pinned-reference output
 matched in each pair. The timing interval is one warm retained request for
 Align and one warmed eval for llama.cpp, excluding startup and model load.
+Campaigns 1 and 2 predate an explicit reference-executable digest in the
+receipt. Campaign 3 verified the benchmark executable SHA-256
+`0aabc02758cf34b086d253d6b164cb6027a2aa2188b17fd66c42f483e608ae29`
+before loading the model and verified the pinned source commit above. Its
+linked same-source `libllama.so` had SHA-256
+`9bcc0ecb30914d0d4cf297044ec561367cae55d37a4734683533e16d8f3ceb22`.
 The result is specific to this host, model and these three workloads:
 
 | Campaign | Prompt/output tokens | Native minus ordinary: paired median gain, wins | Native minus llama.cpp: paired median gain, wins |
@@ -132,16 +138,21 @@ The result is specific to this host, model and these three workloads:
 | 2 | 56/16 | -0.507 ms, 2/5 | +15.194 ms, 5/5 |
 | 2 | 200/32 | -1.315 ms, 2/5 | +7.429 ms, 5/5 |
 | 2 | 330/64 | -1.562 ms, 2/5 | +16.165 ms, 4/5 |
+| 3, digest-bound | 56/16 | -0.443 ms, 2/5 | +14.514 ms, 5/5 |
+| 3, digest-bound | 200/32 | -2.704 ms, 0/5 | +2.709 ms, 3/5 |
+| 3, digest-bound | 330/64 | +0.118 ms, 3/5 | +14.903 ms, 5/5 |
 
-Thus batched native won 28/30 paired samples against this pinned llama.cpp,
-but only 12/30 against ordinary Align in those two campaigns. Ordinary Align
+Thus the digest-bound campaign won 13/15 paired samples against the specified
+pinned llama.cpp executable but only 5/15 against ordinary Align. The two
+earlier preliminary campaigns had 28/30 and 12/30 respectively. Ordinary Align
 is already competitive on these cases; the independent copy has no reliable
 incremental advantage. Keep `ALIGN_LLM_NATIVE_STATE_COPY=0` as default and
 `1` as an explicitly selected experiment. Do not infer a general llama.cpp
 victory, a startup gain, or a copy-kernel gain outside these conditions. The
 raw local receipts are `native-copy-measure.stdout`,
 `native-copy-kernel-measure.stdout`, `native-copy-kernel-repeat.stdout`,
-`native-copy-vs-llama.stdout`, `native-copy-vs-llama-repeat.stdout` and the
+`native-copy-vs-llama.stdout`, `native-copy-vs-llama-repeat.stdout`,
+`native-copy-vs-llama-identity.stdout` and the
 corresponding Nsight reports under the disposable measurement directory;
 they are not committed because they include host-specific artifacts.
 
@@ -152,14 +163,17 @@ the pinned model pack and the local binary is:
 QWEN35_GGUF=GGUF QWEN35_ALIGNPACK=PACK QWEN35_MODEL_IR=MODEL_IR \
 QWEN35_RUNTIME_OPTIONS=OPTIONS QWEN35_NATIVE_COPY_BINARY=BINARY \
 QWEN35_EXPECTED_SHA256=cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1 \
-QWEN35_LLAMA_BENCH=PINNED_BENCH scripts/measure-qwen35-native-cuda
+QWEN35_LLAMA_BENCH=PINNED_BENCH \
+QWEN35_LLAMA_BENCH_SHA256=0aabc02758cf34b086d253d6b164cb6027a2aa2188b17fd66c42f483e608ae29 \
+QWEN35_LLAMA_SOURCE=PINNED_SOURCE scripts/measure-qwen35-native-cuda
 ```
 
 The remaining real decode target is the quantized matrix work and its graph
 scheduling. Batch-copy kernel work alone did not remove the 1,622 recorded
 synchronizations. A follow-up should separate prefill and decode Q4_0/Q6_K
-device intervals and test a larger independent execution unit or a better Q6_K output projection under
-the same real-model correctness and paired request gates. A new local kernel
+device intervals and test a larger independent execution unit or a better Q6_K
+output projection under the same real-model correctness and paired request
+gates. A new local kernel
 must beat the complete operation, including its scheduling boundary, before
 product selection.
 
@@ -172,12 +186,12 @@ accounted for 34.8% of captured kernel time, Q4_0 unfused matvec for 13.9%,
 and the Q6_K output projection for 25.3% (128 instances, 0.886 ms median).
 The two Q4_0 groups and the output projection together account for 74.0% of
 this reference's instrumented kernel time. This is one llama.cpp profile,
-not an Align attribution or an uninstrumented request result. It motivates
-profiling Align's corresponding real graph before choosing the next CUDA
-kernel. The 0.886 ms projection is a larger per-step target than a single
+not an uninstrumented request result. The ordinary Align profile above also
+finds Q4_0 and Q6_K dominant, but prefill/decode attribution needs separation.
+The 0.886 ms projection is a larger per-step target than a single
 roughly 0.05 ms FFN, but its 248,320 output rows require a different
 partition and reduction design.
 
 The CUDA admission, real copy trial and paired measurements above completed
-this cycle. The pinned reference's Q4_0/Q6_K attribution remains a hypothesis
-about Align until its own kernel timeline is measured.
+this cycle. The exact per-step Q4_0/Q6_K profile and a competitive independent
+matrix operation remain the next CUDA performance hypothesis.

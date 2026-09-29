@@ -44,9 +44,9 @@ elsewhere in this repository. Historical receipts must not be rewritten.
 
 ### Native CUDA Q4_0 FFN screen (2026-09-29)
 
-The CUDA host has an RTX 4070 Ti, while the available Qwen3.5 session and its
-real-model correctness owner currently admit Metal only. Test the independent
-Q4_0 gate/up/SwiGLU/down kernel on CUDA before changing Qwen3.5 admission.
+The CUDA host has an RTX 4070 Ti. At the start of this capability the Qwen3.5
+session and its real-model correctness owner admitted Metal only. Test the
+independent Q4_0 gate/up/SwiGLU/down kernel on CUDA before changing admission.
 The pinned ggml CUDA graph remains the control and the product default.
 
 | Contract | Definition |
@@ -55,7 +55,7 @@ The pinned ggml CUDA graph remains the control and the product default.
 | Inputs and outputs | Q4_0 matrices with dimensions 2048×6144, 2048×6144 and 6144×2048, plus one F32 input row. The owner generates deterministic packed Q4_0 weights and an F32 activation, uploads one quantized copy per matrix, and compares every intermediate and final F32 result with the same-source ggml CUDA graph. Shape and format are checked before launch. The result prints host/device identity, maximum absolute error, and five alternating per-arm pairs. |
 | Ownership and errors | The native CUDA helper owns its stream and scratch/output buffers; the caller owns weights and input. The ggml backend owns its separate graph and buffers. On CUDA allocation, launch, synchronization, numerical or ggml failure the screen exits nonzero and emits no performance verdict. All allocations and the stream are released on exit. No pointer is retained by the helper after its call. |
 | Numerical and measurement gate | Require finite native values and each element to satisfy `abs(native - ggml) <= 0.005 + 0.0005 * abs(ggml)` before timing. Warm both arms 12 times, then run five alternating pairs of 20 complete FFNs, including device completion in both timings. Record all pairs; report a local result, never a request or llama.cpp speed claim. Preparation <=900 s, measurement <=120 s, and device scratch <=32 KiB beyond its F32 intermediate and final outputs. |
-| Later consumer | A real Qwen3.5 CUDA session needs model artifact admission, exact logits/state parity, failure and cleanup owners, then paired complete requests against unchanged Align and pinned llama.cpp before enabling this specialization. A local loss or gain alone cannot decide product adoption. |
+| Later consumer | The real Qwen3.5 CUDA session is admitted separately below. This FFN screen lost complete local comparisons and has no product selection. A future FFN specialization needs real weights, exact logits/state parity, failure and cleanup owners, then paired complete requests against unchanged Align and pinned llama.cpp before enabling it. A local loss or gain alone cannot decide product adoption. |
 
 | Closure case | Owner |
 | --- | --- |
@@ -90,8 +90,10 @@ screen's speed result.
 full-logit and valid-state hashes at all three prompt lengths, repeated exact
 generated IDs against pinned llama.cpp, default and native generation/serving,
 and injected submission/completion failures. A batched CUDA copy reduced traced
-copy submissions, but two five-pair campaigns at each of 56/16, 200/32 and
-330/64 won only 12/30 native versus ordinary Align pairs. Keep the selection
+copy submissions, but two preliminary five-pair campaigns at each of 56/16,
+200/32 and 330/64 won only 12/30 native versus ordinary Align pairs. The
+reference-executable-digest-bound repeat won 5/15 against ordinary Align and
+13/15 against pinned llama.cpp. Keep the selection
 default-off. Conditions and failed variants are in
 `docs/cuda-native-optimization-log.md`; other CUDA hosts and models remain
 unmeasured.

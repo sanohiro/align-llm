@@ -121,7 +121,9 @@ paired changes and wins instead of a percentage-based adoption verdict.
 `scripts/measure-qwen35-native-cuda` is `BENCHMARK_OR_MEASUREMENT`: it holds
 explicit ordinary and native CUDA Align sessions, checks the same actual
 request work and output, and records five alternating warm request pairs at
-three fixed prompts. It neither computes logits nor chooses product tokens.
+three fixed prompts. Its optional pinned comparison validates the supplied
+benchmark executable digest and source revision before timing. It neither
+computes logits nor chooses product tokens.
 
 `scripts/measure-native-swiglu` is `BENCHMARK_OR_MEASUREMENT`: it launches
 native products/reference executables, captures timing and checks output/counts.

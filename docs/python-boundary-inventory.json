@@ -3879,13 +3879,13 @@
     {
       "path": "scripts/measure-qwen35-native-cuda",
       "classification": "BENCHMARK_OR_MEASUREMENT",
-      "behavior": "Measure five alternating ordinary and native CUDA retained Qwen3.5 requests at each fixed prompt and optionally compare pinned llama.cpp on identical prompt IDs and output counts.",
+      "behavior": "Measure five alternating ordinary and native CUDA retained Qwen3.5 requests at each fixed prompt and optionally compare a digest-bound pinned llama.cpp executable on identical prompt IDs and output counts.",
       "reachability": "Focused developer measurement only; launches external workers and never participates in normal product execution.",
       "substitution": "Checks workload and rendered output parity and reduces timings; model graph, logits and token decisions remain in Align or pinned llama.cpp.",
       "python_reason": "Independent three-arm paired timing belongs outside Align product execution.",
       "target": "Retain as a reproducible real-model CUDA request measurement caller.",
       "migration": "N/A",
-      "acceptance": "QWEN35_GGUF=... QWEN35_ALIGNPACK=... QWEN35_MODEL_IR=... QWEN35_RUNTIME_OPTIONS=... QWEN35_NATIVE_COPY_BINARY=... QWEN35_LLAMA_BENCH=... QWEN35_EXPECTED_SHA256=... python3 scripts/measure-qwen35-native-cuda; python3 scripts/check-python-boundary",
+      "acceptance": "QWEN35_GGUF=... QWEN35_ALIGNPACK=... QWEN35_MODEL_IR=... QWEN35_RUNTIME_OPTIONS=... QWEN35_NATIVE_COPY_BINARY=... QWEN35_LLAMA_BENCH=... QWEN35_LLAMA_BENCH_SHA256=... QWEN35_LLAMA_SOURCE=... QWEN35_EXPECTED_SHA256=... python3 scripts/measure-qwen35-native-cuda; python3 scripts/check-python-boundary",
       "frozen_sha256": null,
       "bootstrap": null
     },

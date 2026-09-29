@@ -82,6 +82,19 @@ def main() -> None:
     binary = Path(os.environ["QWEN35_NATIVE_COPY_BINARY"]).resolve()
     reference_value = os.environ.get("QWEN35_LLAMA_BENCH")
     reference = Path(reference_value).resolve() if reference_value else None
+    reference_digest = None
+    reference_revision = None
+    if reference is not None:
+        with reference.open("rb") as stream:
+            reference_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if reference_digest != os.environ["QWEN35_LLAMA_BENCH_SHA256"]:
+            raise RuntimeError("llama.cpp benchmark binary differs from the recorded reference")
+        source = Path(os.environ["QWEN35_LLAMA_SOURCE"]).resolve()
+        reference_revision = subprocess.check_output(
+            ["git", "-C", str(source), "rev-parse", "HEAD"],
+            timeout=30).decode("ascii").strip()
+        if reference_revision != "bb4caa7540188872173c44d161602d9271386413":
+            raise RuntimeError("llama.cpp source is not the pinned revision")
     with model.open("rb") as stream:
         digest = hashlib.file_digest(stream, "sha256").hexdigest()
     if digest != os.environ["QWEN35_EXPECTED_SHA256"]:
@@ -89,7 +102,9 @@ def main() -> None:
     bundle = Path(json.loads(options.read_text(encoding="utf-8"))["backend_bundle"])
     with (bundle / "libggml-cuda.so").open("rb") as stream:
         plugin_hash = hashlib.file_digest(stream, "sha256").hexdigest()
-    print(f"model_sha256={digest} plugin_sha256={plugin_hash}", flush=True)
+    print(f"model_sha256={digest} plugin_sha256={plugin_hash} "
+          f"llama_bench_sha256={reference_digest or 'none'} "
+          f"llama_source_commit={reference_revision or 'none'}", flush=True)
     command = [str(binary), "--runtime-session", str(model), str(pack),
                str(geometry), str(options), "0"]
     environment = os.environ.copy()
