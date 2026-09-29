@@ -13,6 +13,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -21,6 +23,7 @@ static constexpr int HIDDEN = 6144;
 static constexpr int WARMUPS = 12;
 static constexpr int PAIRS = 5;
 static constexpr int ITERATIONS = 20;
+static constexpr size_t WEIGHT_BYTES = 7077888;
 
 [[noreturn]] static void fail(const char *message) {
     std::fprintf(stderr, "native CUDA FFN screen: %s\n", message);
@@ -43,6 +46,47 @@ static std::vector<uint8_t> make_weights(size_t bytes, unsigned seed) {
     return data;
 }
 
+static std::vector<uint8_t> read_exact(const char *directory, const char *name,
+                                       size_t expected) {
+    const std::string path = std::string(directory) + "/" + name;
+    FILE *file = std::fopen(path.c_str(), "rb");
+    if (!file) fail("capture file missing");
+    std::vector<uint8_t> bytes(expected);
+    const size_t count = std::fread(bytes.data(), 1, expected, file);
+    const int trailing = std::fgetc(file);
+    const int io_error = std::ferror(file);
+    const int close_status = std::fclose(file);
+    if (count != expected || trailing != EOF || io_error || close_status != 0)
+        fail("capture file size or read mismatch");
+    return bytes;
+}
+
+static std::vector<float> read_f32(const char *directory, const char *name,
+                                   size_t count) {
+    auto bytes = read_exact(directory, name, count * sizeof(float));
+    std::vector<float> values(count);
+    std::memcpy(values.data(), bytes.data(), bytes.size());
+    for (float value : values) if (!std::isfinite(value)) fail("nonfinite F32 capture");
+    return values;
+}
+
+static float compare(const std::vector<float> &expected,
+                     const std::vector<float> &actual, const char *label) {
+    if (expected.size() != actual.size()) fail("comparison shape mismatch");
+    float worst = 0.0f;
+    for (size_t i = 0; i < actual.size(); ++i) {
+        const float diff = std::fabs(expected[i] - actual[i]);
+        if (!std::isfinite(actual[i]) || !std::isfinite(expected[i]) ||
+            diff > 0.005f + 0.0005f * std::fabs(expected[i])) {
+            std::fprintf(stderr, "%s mismatch at %zu: expected=%g actual=%g diff=%g\n",
+                         label, i, expected[i], actual[i], diff);
+            std::exit(1);
+        }
+        worst = std::max(worst, diff);
+    }
+    return worst;
+}
+
 static double elapsed_ms(std::chrono::steady_clock::time_point start) {
     return std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - start).count();
@@ -57,22 +101,30 @@ static float check_row(ggml_tensor *tensor, const std::vector<float> &actual,
         const char *label) {
     std::vector<float> expected(actual.size());
     ggml_backend_tensor_get(tensor, expected.data(), 0, expected.size() * sizeof(float));
-    float worst = 0.0f;
-    for (size_t i = 0; i < actual.size(); ++i) {
-        const float diff = std::fabs(expected[i] - actual[i]);
-        if (!std::isfinite(actual[i]) || !std::isfinite(expected[i])
-            || diff > 0.005f + 0.0005f * std::fabs(expected[i])) {
-            std::fprintf(stderr, "%s mismatch at %zu: ggml=%g native=%g diff=%g\n",
-                label, i, expected[i], actual[i], diff);
-            std::exit(1);
-        }
-        worst = std::max(worst, diff);
-    }
-    return worst;
+    return compare(expected, actual, label);
 }
 
 int main(int argc, char **argv) {
-    if (argc != 2) fail("usage: bench-native-cuda-q4-ffn LIBGGML_CUDA_SO");
+    if (argc != 2 && argc != 3)
+        fail("usage: bench-native-cuda-q4-ffn LIBGGML_CUDA_SO [CAPTURE_DIR]");
+    const char *capture = argc == 3 ? argv[2] : nullptr;
+    std::vector<uint8_t> gate_weights, up_weights, down_weights;
+    std::vector<float> input(WIDTH), captured_gated, captured_down;
+    if (capture) {
+        const char expected[] = "q4-ffn-capture-v1 2048 6144 18\n";
+        auto geometry = read_exact(capture, "geometry.txt", sizeof(expected) - 1);
+        if (geometry.size() != sizeof(expected) - 1 ||
+            std::memcmp(geometry.data(), expected, sizeof(expected) - 1) != 0)
+            fail("capture schema or geometry mismatch");
+        auto complete = read_exact(capture, "complete.txt", 2);
+        if (complete[0] != '1' || complete[1] != '\n') fail("capture incomplete");
+        gate_weights = read_exact(capture, "gate.bin", WEIGHT_BYTES);
+        up_weights = read_exact(capture, "up.bin", WEIGHT_BYTES);
+        down_weights = read_exact(capture, "down.bin", WEIGHT_BYTES);
+        input = read_f32(capture, "input.bin", WIDTH);
+        captured_gated = read_f32(capture, "gated.bin", HIDDEN);
+        captured_down = read_f32(capture, "output.bin", WIDTH);
+    }
     ggml_backend_reg_t registry = ggml_backend_load(argv[1]);
     if (registry == nullptr || ggml_backend_reg_dev_count(registry) != 1)
         fail("pinned ggml CUDA plugin must have exactly one device");
@@ -105,11 +157,15 @@ int main(int argc, char **argv) {
     ggml_backend_buffer_t ggml_buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
     if (ggml_buffer == nullptr) fail("ggml CUDA tensor allocation failed");
 
-    auto gate_weights = make_weights(ggml_nbytes(wg), 1);
-    auto up_weights = make_weights(ggml_nbytes(wu), 2);
-    auto down_weights = make_weights(ggml_nbytes(wd), 3);
-    std::vector<float> input(WIDTH);
-    for (int i = 0; i < WIDTH; ++i) input[i] = std::sin(i * 0.013f);
+    if (!capture) {
+        gate_weights = make_weights(ggml_nbytes(wg), 1);
+        up_weights = make_weights(ggml_nbytes(wu), 2);
+        down_weights = make_weights(ggml_nbytes(wd), 3);
+        for (int i = 0; i < WIDTH; ++i) input[i] = std::sin(i * 0.013f);
+    }
+    if (ggml_nbytes(wg) != gate_weights.size() ||
+        ggml_nbytes(wu) != up_weights.size() ||
+        ggml_nbytes(wd) != down_weights.size()) fail("ggml Q4_0 geometry mismatch");
     ggml_backend_tensor_set(wg, gate_weights.data(), 0, gate_weights.size());
     ggml_backend_tensor_set(wu, up_weights.data(), 0, up_weights.size());
     ggml_backend_tensor_set(wd, down_weights.data(), 0, down_weights.size());
@@ -155,7 +211,17 @@ int main(int argc, char **argv) {
         if (!align_native_cuda_q40_ffn_read(native, native_gated.data(), native_gated.size(),
                 native_down.data(), native_down.size())) fail("native CUDA output read failed");
         const float gated_error = check_row(gated, native_gated, "gated");
-        return {gated_error, check_row(down, native_down, "down")};
+        const float down_error = check_row(down, native_down, "down");
+        if (capture) {
+            std::vector<float> ggml_gated(HIDDEN), ggml_down(WIDTH);
+            ggml_backend_tensor_get(gated, ggml_gated.data(), 0, HIDDEN * sizeof(float));
+            ggml_backend_tensor_get(down, ggml_down.data(), 0, WIDTH * sizeof(float));
+            compare(captured_gated, ggml_gated, "captured ggml gated");
+            compare(captured_down, ggml_down, "captured ggml down");
+            compare(captured_gated, native_gated, "captured native gated");
+            compare(captured_down, native_down, "captured native down");
+        }
+        return {gated_error, down_error};
     };
     for (int i = 0; i < WARMUPS; ++i) {
         run_ggml();
