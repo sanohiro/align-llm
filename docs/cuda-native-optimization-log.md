@@ -327,7 +327,7 @@ normal mode-0 CUDA binary, an empty capture directory, and the pinned headers:
 ```sh
 cc -O2 -Wall -Wextra -Werror -shared -fPIC -I GGML_SOURCE/ggml/include \
   scripts/capture-q6-projection.c -o CAPTURE_HELPER.so -ldl
-ALIGN_Q6_CAPTURE=CAPTURE_DIR LD_PRELOAD=CAPTURE_HELPER.so \
+ALIGN_Q6_CAPTURE=CAPTURE_DIR LD_PRELOAD=./CAPTURE_HELPER.so \
   ALIGN_LLM_NATIVE_STATE_COPY=0 BINARY --provider align-runtime GGUF PACK MODEL_IR \
   Hello RESULT.json 3 --runtime-options OPTIONS.json
 scripts/run-native-cuda-q6-batch4-screen GGML_SOURCE GGML_BUNDLE CAPTURE_DIR
