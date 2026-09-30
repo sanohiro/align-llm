@@ -120,8 +120,10 @@ def forced_failure(binary: Path, model: Path, pack: Path, geometry: Path,
             raise RuntimeError(f"native Q6 worker exit {code}, expected 2")
         session.log.seek(0)
         diagnostic = session.log.read().decode("utf-8", "replace")
-        if f"native_q6_head forced {'completion' if failure == 'complete' else 'submit'} failure" \
-                not in diagnostic or "native_q6_head projection failure" not in diagnostic:
+        forced = "completion" if failure == "complete" else failure
+        boundary = "greedy" if failure == "greedy" else "projection"
+        if f"native_q6_head forced {forced} failure" not in diagnostic \
+                or f"native_q6_head {boundary} failure" not in diagnostic:
             raise RuntimeError(f"native Q6 fault not reached: {diagnostic[-1800:]}")
         print(f"native Q6 {failure}: ordinary control passed; selected request failed "
               "without output, worker exit 2")
@@ -144,8 +146,8 @@ def main() -> None:
         raise RuntimeError("real CUDA binary or state tracer is missing")
     failure = os.environ.get("QWEN35_NATIVE_Q6_FAILURE")
     if failure is not None:
-        if failure not in ("submit", "complete"):
-            raise RuntimeError("QWEN35_NATIVE_Q6_FAILURE must be submit or complete")
+        if failure not in ("submit", "complete", "greedy"):
+            raise RuntimeError("QWEN35_NATIVE_Q6_FAILURE must be submit, complete or greedy")
         forced_failure(binary, model, pack, geometry, options, failure)
         return
     with tempfile.TemporaryDirectory(prefix="qwen35-native-q6-head-") as temporary:

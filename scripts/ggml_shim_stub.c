@@ -2905,6 +2905,11 @@ int32_t align_gpu_native_q6_head_enabled(void *owner) {
     return 0;
 }
 
+int64_t align_gpu_native_q6_head_greedy(void *owner) {
+    (void) owner;
+    return -1;
+}
+
 int32_t align_gpu_native_q6_head_read(void *owner, void *bytes, int64_t n) {
     (void) owner; (void) bytes; (void) n;
     return ALIGN_GPU_UNSUPPORTED;

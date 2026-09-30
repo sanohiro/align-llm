@@ -68,7 +68,7 @@ Align product; its tracing and decisions never enter product inference.
 the recorded real 2B CUDA product in default and explicit native-head modes,
 compares every diagnostic F32 logit, chosen token and resident-state digest,
 compares model-work counts and device-budget observations, and checks
-refusal/failure envelopes. It never computes a model value or
+refusal/failure envelopes, including CUDA greedy-read failure. It never computes a model value or
 selects an inference operation for production.
 `scripts/measure-native-swiglu` remains `BENCHMARK_OR_MEASUREMENT`; its explicit
 copy and native-greedy arms are independent workload selectors and cannot choose a model
@@ -128,7 +128,8 @@ paired changes and wins instead of a percentage-based adoption verdict.
 explicit ordinary and native CUDA Align sessions, checks the same actual
 request work and output, and records five alternating warm request pairs at
 three fixed prompts. Its optional pinned comparison validates the supplied
-benchmark executable digest and source revision before timing. It neither
+benchmark executable digest and source revision before timing. An optional
+digest-bound previous native binary adds a third retained comparison arm. It neither
 computes logits nor chooses product tokens. Its explicit
 `QWEN35_CUDA_MEASURE_MODE=q6-head` arm compares the default graph with the
 opt-in independent CUDA head while keeping native state copy disabled in both.
