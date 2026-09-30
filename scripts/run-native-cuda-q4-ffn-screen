@@ -5,6 +5,10 @@ if [ "$#" -ne 3 ] && [ "$#" -ne 4 ] && [ "$#" -ne 5 ]; then
   echo 'usage: run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN [CAPTURE_DIR [BASELINE_SOURCE]]' >&2
   exit 2
 fi
+case "${ALIGN_CUDA_Q4_CACHE_PRESSURE-0}" in
+  0|1) ;;
+  *) echo 'ALIGN_CUDA_Q4_CACHE_PRESSURE must be 0 or 1' >&2; exit 2 ;;
+esac
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
 source_dir=$(realpath -- "$1")
 lib_dir=$(realpath -- "$2")

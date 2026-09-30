@@ -69,6 +69,22 @@ The pinned ggml CUDA graph remains the control and the product default.
 | Failure / early exit | Every CUDA and ggml status is checked; failed execution stops before a speed verdict. |
 | Cleanup | Helper releases stream/scratch on every return; screen frees its separate CUDA and ggml allocations. |
 
+#### Q4_0 cache-pressure screen (2026-09-30)
+
+The connected 200/32 decode trace's 6144-row fused gate/up kernels average
+34.229 microseconds, while the isolated repeatedly cached native FFN averages
+about 8.64 microseconds for gate/up. Before another product integration,
+screen whether the independent kernel or bounded mapping/load variants retain
+a complete-operation gain with pressure beyond this device's L2 capacity.
+
+| Contract | Definition |
+| --- | --- |
+| Consumer and selection | Existing `scripts/run-native-cuda-q4-ffn-screen` with optional developer-only `ALIGN_CUDA_Q4_CACHE_PRESSURE=0|1`, default `0`. Reject every other spelling before device initialization. No inference API, persisted schema or product flag (`N/A`). |
+| Ownership and execution | Benchmark owns one 128 MiB device pressure buffer and a nonblocking stream. Before each warmup/timed arm, an explicit uint4 global-store kernel touches the entire buffer and drains its stream. Pressure work is excluded from the FFN timer; both arms receive the same pressure. Require the buffer to exceed twice the reported device L2 size. Helper and ggml graphs, weight copies and arithmetic remain unchanged. This is a cache-pressure diagnostic, not proof of every weight's residency or a replica of a complete model. |
+| Validation and closure | Existing synthetic/actual complete gated/down F32 owner and captured-row bound remain authoritative. Run unset/default and pressure owners, malformed selector refusal before CUDA, and paired preceding/current helper when screening variants. Failures produce no final timing verdict; drain/free the pressure stream/buffer on normal exit and process teardown on fatal failure. No pressure allocation or graph creation within timed work. |
+| Cost and hypotheses | Preparation <=900 s; each five-pair 20-operation campaign <=120 s; additional device memory exactly 128 MiB, no additional weight copies. Retain every pair. Bounded standalone variants may try streaming-load hints, one warp per gate/up row (four rows per 128-thread block), or whole Q4 blocks with two rows/two warps per row for down instead of split half-blocks. Preserve the finite-row numeric bound. Any winning kernel needs separate connected request/state/failure qualification before product adoption. |
+| Metric and limits | Completed local FFN latency against unchanged pinned ggml and/or a digest-identified preceding helper. Report pressure bytes and L2 bytes, all pairs, numerical errors and cache limitations. No whole-request, llama.cpp or other-host claim; withdrawal is valid when gains are thin or regress. |
+
 #### Actual-weight Q4_0 FFN screen after the connected Q6_K head
 
 The merged nonduplicated CUDA Q6_K route still leaves pinned ggml Q4_0 decode
