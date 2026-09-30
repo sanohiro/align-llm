@@ -31,6 +31,13 @@ static constexpr int WARMUPS = 12;
 static constexpr int PAIRS = 5;
 static constexpr int ITERATIONS = 20;
 static constexpr size_t WEIGHT_BYTES = 7077888;
+static constexpr size_t PRESSURE_BYTES = 128 * 1024 * 1024;
+
+__global__ static void pressure_store(uint4 *storage, size_t count) {
+    for (size_t i = blockIdx.x * blockDim.x + threadIdx.x; i < count;
+            i += size_t(gridDim.x) * blockDim.x)
+        storage[i] = make_uint4(unsigned(i), unsigned(i + 1), unsigned(i + 2), unsigned(i + 3));
+}
 
 [[noreturn]] static void fail(const char *message) {
     std::fprintf(stderr, "native CUDA FFN screen: %s\n", message);
@@ -115,6 +122,11 @@ int main(int argc, char **argv) {
     if (argc != 2 && argc != 3)
         fail("usage: bench-native-cuda-q4-ffn LIBGGML_CUDA_SO [CAPTURE_DIR]");
     const char *capture = argc == 3 ? argv[2] : nullptr;
+    const char *pressure_mode = std::getenv("ALIGN_CUDA_Q4_CACHE_PRESSURE");
+    if (pressure_mode && std::strcmp(pressure_mode, "0") != 0
+            && std::strcmp(pressure_mode, "1") != 0)
+        fail("ALIGN_CUDA_Q4_CACHE_PRESSURE must be 0 or 1");
+    const bool pressure = pressure_mode && std::strcmp(pressure_mode, "1") == 0;
     std::vector<uint8_t> gate_weights, up_weights, down_weights;
     std::vector<float> input(WIDTH), captured_gated, captured_down;
     if (capture) {
@@ -144,6 +156,26 @@ int main(int argc, char **argv) {
         fail("CUDA device query failed");
     std::printf("device=%s ggml_device=%s\n", properties.name,
         ggml_backend_dev_description(device));
+    uint4 *pressure_buffer = nullptr;
+    cudaStream_t pressure_stream = nullptr;
+    if (pressure) {
+        if (properties.l2CacheSize <= 0 || PRESSURE_BYTES <= 2ULL * properties.l2CacheSize)
+            fail("pressure buffer must exceed twice device L2 capacity");
+        if (cudaStreamCreateWithFlags(&pressure_stream, cudaStreamNonBlocking) != cudaSuccess
+                || cudaMalloc(&pressure_buffer, PRESSURE_BYTES) != cudaSuccess)
+            fail("cache pressure allocation failed");
+    }
+    std::printf("cache_pressure_bytes=%zu device_l2_bytes=%d pressure_excluded_from_timer=1\n",
+        pressure ? PRESSURE_BYTES : 0, properties.l2CacheSize);
+    auto apply_pressure = [&]() {
+        if (!pressure) return;
+        pressure_store<<<1024, 256, 0, pressure_stream>>>(
+            pressure_buffer, PRESSURE_BYTES / sizeof(uint4));
+        const cudaError_t submitted = cudaGetLastError();
+        const cudaError_t completed = cudaStreamSynchronize(pressure_stream);
+        if (submitted != cudaSuccess || completed != cudaSuccess)
+            fail("cache pressure execution failed");
+    };
 
     ggml_init_params params = {
         ggml_tensor_overhead() * 32 + ggml_graph_overhead_custom(32, false),
@@ -204,6 +236,7 @@ int main(int argc, char **argv) {
     void *baseline = baseline_open(WIDTH, HIDDEN);
     if (baseline == nullptr) fail("baseline CUDA FFN init failed");
     auto run_baseline = [&]() -> double {
+        apply_pressure();
         const auto start = std::chrono::steady_clock::now();
         if (!baseline_run(baseline, dg, du, dd, dx)) fail("baseline CUDA FFN compute failed");
         return elapsed_ms(start);
@@ -213,6 +246,7 @@ int main(int argc, char **argv) {
     const char *control_label = "ggml";
 #endif
     auto run_ggml = [&]() -> double {
+        apply_pressure();
         const auto start = std::chrono::steady_clock::now();
         if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS)
             fail("ggml CUDA graph compute failed");
@@ -220,6 +254,7 @@ int main(int argc, char **argv) {
         return elapsed_ms(start);
     };
     auto run_native = [&]() -> double {
+        apply_pressure();
         const auto start = std::chrono::steady_clock::now();
         if (!align_native_cuda_q40_ffn_run(native, dg, du, dd, dx))
             fail("native CUDA FFN compute failed");
@@ -304,5 +339,9 @@ int main(int argc, char **argv) {
     ggml_backend_buffer_free(ggml_buffer);
     ggml_free(ctx);
     ggml_backend_free(backend);
+    if (pressure_buffer != nullptr && cudaFree(pressure_buffer) != cudaSuccess)
+        fail("cache pressure release failed");
+    if (pressure_stream != nullptr && cudaStreamDestroy(pressure_stream) != cudaSuccess)
+        fail("cache pressure stream release failed");
     return 0;
 }

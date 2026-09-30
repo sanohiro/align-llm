@@ -2,47 +2,59 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active CUDA native-head greedy readback trial (2026-09-30)
+## Bounded CUDA optimization checkpoint (2026-09-30)
 
-Branch `agent/native-cuda-q6-greedy`, base `5387269`. The user resumed CUDA
-optimization and requested continuing useful experiments until remaining
-gains no longer justify their cost. Implement device greedy selection
-for the existing native Q6_K route, preserving full diagnostic/sampling
-logits, first-index ties, nonfinite failure and memory accounting. The
-authoritative contract/cost/closure ledger is in
-`docs/specs/gpu-runtime-performance.md`. Checkpoint `69abd87` implemented
-selection; checkpoint `5fd7cbf` submits selection/readback before the
-projection wait and adds bounded repeated-request measurement. The current
-repair binds the previous-native binary to its actually loaded shim.
+Branch `agent/native-cuda-q4-cache-pressure`, integrated base `3592791`;
+implementation `8d18538`, comprehensively reviewed Q4 candidate `4c0cfc4`.
+The user's request was to continue useful small speed experiments until
+remaining gains became thin. Q6 greedy/scheduling is merged below. The Q4
+capability makes cache-pressure comparison repeatable: one 128 MiB global-
+store buffer, excluded from both FFN timers, versus the reported 48 MiB L2.
+Default/pressure synthetic and actual full-row owners, invalid-selector
+refusals, shell syntax and diff checks pass. One fresh host-native review
+is CLEAN; its two compile modes pass, with GPU qualification supplied by
+the author-native owners. Integration changes only continuity documentation;
+the reviewed Q4 source and contract are unchanged.
 
-First greedy-readback checkpoint passes kernel/full-model/state/retained/
-malformed owners, forced submit/completion/greedy faults, build, formatter
-and Python guard/mutations. Two campaigns win 21/30 pairs against preserved
-native full-row but have a middle-workload reversal and large outliers;
-no general gain is established. Nsight observes exactly three eight-byte
-D2H copies and no full-row read. The scheduling batch passes the same
-kernel/full-model/state/retained owners and all three forced failures.
-Five alternating pairs of twenty actual requests per Align arm (900 total)
-give previous-native gains of 1.795/1.277/9.277 ms and ordinary-Align gains
-of 0.794/2.047/7.306 ms at 56/16, 200/32 and 330/64. The widest workload
-wins all five pairs against both controls; short/middle remain variable.
-All request counts/output match. The separate 200/32 trace has exactly
-32 eight-byte D2H copies, median projection-to-reduction gap 1.184 us.
-Full receipts, outliers and limits are in `docs/cuda-native-optimization-log.md`.
+Three bounded kernel variants are withdrawn. Pressure paired gains are
++1.030/-6.214/-7.484 us for one-warp gate/up, streaming payload loads and
+whole-block down (3/5, 2/5, 1/5 wins). The trace shows native gate/up near
+ggml but down slower (31.898 versus 21.484 us). The helper remains byte-
+identical to the merged aligned-load kernel. Full receipts and limits are
+in `docs/cuda-native-optimization-log.md`; raw artifacts stay outside Git.
 
-One comprehensive host-native review found missing baseline shim identity;
-the repair checks its digest plus loaded path/device/inode. Wrong hash/path
-refusals and another 900-request campaign pass. Repeated previous-native
-gains are 3.630/2.584/8.462 ms (5/5, 4/5, 5/5 wins), ordinary-Align gains
-1.404/1.317/3.734 ms (5/5, 4/5, 4/5); CUDA code is unchanged.
+If this branch is not integrated yet, finish exact-head preflight and
+publication, then merge after required checks pass. After integration this
+bounded CUDA pass has no active implementation work. Small mapping/cache-
+hint gains do not justify product integration. The next larger CUDA
+hypothesis is weight repacking or a native FFN/residual/norm/head execution
+unit, explicitly deferred pending its own cost/ownership and complete
+request/state/failure owner. Do not multiply a final-layer gain by all 24
+layers. Other GPUs/models and hardware counters remain deferred until
+available. No new Align gap was found.
 
-Next: commit the consolidated repair, exact-head preflight, publish and
-merge when required checks pass. The separate Q4 cache-pressure worktree
-tests the Q4
-kernel with a weight working set beyond L2 before connecting another
-native FFN boundary. Real decode gate/up averages 34.229 us versus the
-small cached screen's 8.64 us; that cache difference must not be treated
-as a whole-request speed claim. No new Align gap was found.
+## Completed CUDA native-head greedy readback and scheduling (2026-09-30)
+
+PR #332 merged at `3592791`, final candidate `d44b7ce`. The default-off
+native Q6_K route reduces all logits on device, preserves first-index ties
+and nonfinite failure, and reads eight bytes before one projection completion
+wait. Full diagnostic logits remain. Device admission rises by exactly
+7,768 bytes to 1,003,352; Align, shim and kernel accounting agree.
+
+Kernel/full-model/state/retained/malformed owners, forced submit/completion/
+greedy faults, build, formatter and Python boundary guard/mutations pass.
+Two twenty-request-per-arm campaigns retain 1,800 timed Align requests,
+all counts/output matching. At 330/64, previous-native gains are
+9.277/8.462 ms (5/5 wins both), ordinary-Align gains 7.306/3.734 ms (5/5,
+4/5). Short/middle remain variable. A separate 200/32 trace contains
+32 eight-byte D2H copies and median projection-to-reduction gap 1.184 us.
+
+One comprehensive review's baseline-library identity finding is repaired:
+executable plus shim hashes and actual loaded path/device/inode are checked.
+Wrong hash/path refusals and the second full campaign pass. Exact-head
+preflight and all three required hosted contexts pass; tested synthetic-merge
+tree equals the final candidate tree. Review/disposition/integration evidence
+belongs to PR #332. No other CUDA host/model or cold-load/TTFT claim.
 
 ## Completed native CUDA Q4_0 aligned-load screen (2026-09-30)
 
