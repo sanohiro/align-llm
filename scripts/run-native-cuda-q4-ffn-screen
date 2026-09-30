@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -ne 3 ] && [ "$#" -ne 4 ]; then
-  echo 'usage: run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN [CAPTURE_DIR]' >&2
+if [ "$#" -ne 3 ] && [ "$#" -ne 4 ] && [ "$#" -ne 5 ]; then
+  echo 'usage: run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN [CAPTURE_DIR [BASELINE_SOURCE]]' >&2
   exit 2
 fi
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
@@ -10,7 +10,7 @@ source_dir=$(realpath -- "$1")
 lib_dir=$(realpath -- "$2")
 plugin=$(realpath -- "$3")
 capture_dir=
-if [ "$#" -eq 4 ]; then
+if [ "$#" -ge 4 ]; then
   capture_dir=$(realpath -- "$4")
   if [ ! -d "$capture_dir" ]; then
     echo 'actual-weight capture directory missing' >&2
@@ -26,10 +26,31 @@ if [ ! -f "$source_dir/ggml/include/ggml.h" ] \
 fi
 screen_dir=$(mktemp -d)
 trap 'rm -rf -- "$screen_dir"' EXIT
+paired_flags=()
+paired_objects=()
+if [ "$#" -eq 5 ]; then
+  baseline_source=$(realpath -- "$5")
+  if [ ! -f "$baseline_source" ]; then
+    echo 'baseline CUDA helper source missing' >&2
+    exit 2
+  fi
+  sha256sum "$baseline_source"
+  nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 \
+    -I"$root_dir/scripts" \
+    -Dalign_native_cuda_q40_ffn_open=baseline_open \
+    -Dalign_native_cuda_q40_ffn_run=baseline_run \
+    -Dalign_native_cuda_q40_ffn_read=baseline_read \
+    -Dalign_native_cuda_q40_ffn_close=baseline_close \
+    -c "$baseline_source" -o "$screen_dir/baseline.o"
+  paired_flags=(-DALIGN_CUDA_Q4_BASELINE=1)
+  paired_objects=("$screen_dir/baseline.o")
+fi
 nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 \
+  "${paired_flags[@]}" \
   -I"$source_dir/ggml/include" \
   "$root_dir/scripts/native_cuda_q40_ffn.cu" \
   "$root_dir/scripts/bench-native-cuda-q4-ffn.cu" \
+  "${paired_objects[@]}" \
   -L"$lib_dir" -Xlinker "-rpath=$lib_dir" -lggml -lggml-base \
   -o "$screen_dir/bench-native-cuda-q4-ffn"
 if [ -n "$capture_dir" ]; then

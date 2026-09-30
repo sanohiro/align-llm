@@ -108,6 +108,43 @@ graph, ggml control and product route unchanged.
 | Measurement and cost ceiling | Use the same pinned ggml source/plugin, RTX 4070 Ti, 12 warmups and five alternating 20-operation pairs. Compare a preserved preceding binary to the candidate, then attribute down and gate/up with Nsight Systems node traces if the complete result is close. Preparation <=900 s, each local campaign <=120 s, and device scratch <=32 KiB beyond existing outputs. No new weights, persisted format or product selection. |
 | Adoption | Retain a repeatable useful kernel or complete-FFN improvement without a fixed percentage floor. A numerical failure or repeatable slowdown is logged and reverted. A local screen does not establish request latency. |
 
+#### Q4_0 aligned packed-load screen
+
+The half-block baseline still constructs every four-byte packed word from
+four byte loads. Q4_0 blocks have an 18-byte stride and two-byte alignment;
+four-byte loads cannot assume natural alignment. Test two aligned 16-bit
+loads per word in both independent dots, retaining the serialized layout,
+arithmetic, lane mapping, four-node graph and existing scratch allocation.
+
+| Contract | Definition |
+| --- | --- |
+| Owner and baseline | Preserve the helper from merged PR #330 (`14c05d9`) and build both arms with identical pinned ggml inputs and sm_89 flags. Run the existing synthetic and actual-weight complete-row owners with the unchanged numerical bound. The kernel changes no product API, format, allocation or selection. |
+| Measurement and cost ceiling | Preparation <=900 s; each existing five-pair, 20-operation campaign <=120 s. Alternate preceding/candidate Nsight Systems node traces to attribute gate/up and down separately, then compare complete synchronized FFNs. Device scratch remains <=32 KiB beyond existing outputs. Retain all pairs and failed trials; a local interval gain is distinct from complete-FFN or request latency. |
+| Decision | Keep a repeatable useful independent improvement. Revert a numerically incorrect or slower mapping. A graph-fusion follow-up must first record its own cost and numerical owner here. No connected-request or default-route adoption is implied. |
+
+The paired benchmark repair adds a developer-only fifth runner argument:
+`run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN CAPTURE_DIR BASELINE_SOURCE`.
+All operands are explicit existing paths. Validate arity, resolve input paths,
+check the capture directory and pinned inputs, then check the baseline source
+file before compilation. The runner
+compiles that caller-supplied helper with four renamed C ABI symbols, using the
+current checked-in header and identical sm_89 flags, and links both helpers
+into the checked-in benchmark. Print the baseline source digest. In this mode
+ggml is an untimed numerical reference and `baseline_ms` is the timed control;
+the original three/four-argument ggml comparison keeps its output labels.
+The format/cache/schema fields are N/A: no artifact is persisted by the runner.
+The runner owns and removes its temporary build; each helper owns its separate
+stream/graph/scratch, sharing only immutable caller-owned weights/input.
+Paired mode adds one copy of the existing native output/scratch allocation,
+not another model weight copy. Launch/read/numerical failures exit nonzero
+before a verdict. No product code consumes this diagnostic.
+
+| Repair closure | Implementation and owner |
+| --- | --- |
+| Construction / malformed input | Runner rejects a missing baseline file before compilation; original arity/pinned-input/capture guards remain. Compile/link failure removes the temporary directory and returns nonzero. |
+| Success / repeat execution | `bench-native-cuda-q4-ffn.cu` paired mode checks both complete native rows against ggml, captured rows and each other after warmup and each pair; the five-argument command is its owner. |
+| Early exit / failure / cleanup | CUDA/ggml statuses remain checked; both helper contexts are closed on success, and process exit releases their allocations on the existing fail-fast diagnostic paths. Runner EXIT trap removes both compiled arms. |
+
 ### Native CUDA recurrent-state copy trial (2026-09-29)
 
 Once the ordinary CUDA Qwen3.5 session passes the real-model owner, reuse its

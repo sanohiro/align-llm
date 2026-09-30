@@ -20,9 +20,12 @@ constexpr int Q40_BLOCK = 32;
 
 struct Q40Block {
     __half scale;
-    uint8_t packed[16];
+    // The 18-byte block stride guarantees two-byte, not four-byte, alignment.
+    uint16_t packed[8];
 };
 static_assert(sizeof(Q40Block) == 18, "Q4_0 block layout changed");
+static_assert(alignof(Q40Block) == 2, "Q4_0 packed loads require two-byte alignment");
+static_assert(offsetof(Q40Block, packed) == 2, "Q4_0 packed payload offset changed");
 struct Q81Block {
     __half2 scale_sum;
     int8_t values[32];
@@ -62,10 +65,8 @@ __device__ float dot_full(const Q40Block &block, const Q81Block &input) {
     int sum = 0;
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
-        const uint32_t packed = uint32_t(block.packed[j * 4])
-            | (uint32_t(block.packed[j * 4 + 1]) << 8)
-            | (uint32_t(block.packed[j * 4 + 2]) << 16)
-            | (uint32_t(block.packed[j * 4 + 3]) << 24);
+        const uint32_t packed = uint32_t(block.packed[j * 2])
+            | (uint32_t(block.packed[j * 2 + 1]) << 16);
         const int low = int(packed & 0x0f0f0f0fU);
         const int high = int((packed >> 4) & 0x0f0f0f0fU);
         const int qlow = int(reinterpret_cast<const uint32_t *>(input.values)[j]);
@@ -82,11 +83,9 @@ __device__ float dot_half(const Q40Block &block, const Q81Block &input, int half
     int sum = 0;
 #pragma unroll
     for (int j = 0; j < 2; ++j) {
-        const int offset = half * 8 + j * 4;
+        const int offset = half * 4 + j * 2;
         const uint32_t packed = uint32_t(block.packed[offset])
-            | (uint32_t(block.packed[offset + 1]) << 8)
-            | (uint32_t(block.packed[offset + 2]) << 16)
-            | (uint32_t(block.packed[offset + 3]) << 24);
+            | (uint32_t(block.packed[offset + 1]) << 16);
         const int low = int(packed & 0x0f0f0f0fU);
         const int high = int((packed >> 4) & 0x0f0f0f0fU);
         const int qlow = int(reinterpret_cast<const uint32_t *>(input.values + half * 8)[j]);

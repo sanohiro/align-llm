@@ -2,36 +2,46 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active native CUDA Q4_0 down mapping screen (2026-09-29)
+## Active native CUDA Q4_0 aligned-load screen (2026-09-30)
 
-PR #329 merged at `2bcb685`. Its exact actual-weight final-decode FFN capture,
-synthetic/real full-row owners, comprehensive review, exact-head preflight and
-all three hosted checks passed. The independent four-warp down kernel improved
-from 8.064 to 7.616 microseconds in the adjacent node trace, but complete FFN
-timing was noisy and still trailed ggml. The selected Q6_K product route keeps
-ggml Q4_0 and remains default-off. See `docs/cuda-native-optimization-log.md`.
+PR #330 merged at `14c05d9`. Its down-only half-block mapping, actual/synthetic
+full-row owners, comprehensive review, exact-head preflight and hosted checks
+passed. The local down interval improved to about 7.1 microseconds; complete
+FFN timing remained noisy. No Q4_0 request route changed.
 
-Branch `agent/native-cuda-q4-next` starts from pulled `main` `2bcb685`.
-The current trial distributes each Q4_0 down block across two neighboring
-lanes, leaving gate/up unchanged. The actual-weight and synthetic complete-row
-owners pass. Two alternating Nsight traces put the preceding down median at
-7.681/7.776 microseconds and the candidate at 7.168/7.104 microseconds;
-gate/up and quantize intervals stay near their previous values. Half-block
-gate/up lost 0.319 microseconds in the first adjacent trace and was reverted.
-Complete-FFN host timings fluctuate substantially with GPU clocks, so only a
-local down-kernel improvement is supported. No request route changed.
+Branch `agent/native-cuda-q4-packed-loads` starts from pulled `main` `14c05d9`.
+The candidate replaces four byte loads per packed word with two naturally
+aligned 16-bit loads, preserving the 18-byte format, DP4A arithmetic, mapping,
+four-node graph and allocations. Actual/synthetic full-row owners pass with
+unchanged maximum differences and bounds. Two alternating 112-instance
+Nsight traces reduce gate/up from 11.392/11.457 to 8.640/8.672 and down from
+7.104/7.136 to 5.760/5.760 microseconds. Three same-process five-pair complete
+FFN runs yield paired gains of 4.611/9.744/4.763 microseconds, 13/15 wins;
+separate process comparisons remain affected by host/clock variation.
+The full samples and generated-code evidence are in
+`docs/cuda-native-optimization-log.md`; raw artifacts stay outside Git.
+One fresh comprehensive host-native `codex review --uncommitted`, session
+`01a0f085-64e8-70a1-897f-9a50b1ea011c`, found one P2: the same-process
+comparison source/invocation was local-only. The consolidated repair adds
+an optional explicit fifth baseline-source operand to the existing runner
+and a shared paired mode to the checked-in benchmark. Both complete rows
+are checked against ggml/capture/each other; original owners remain intact.
+The repaired paired owner passes three five-pair runs, with gains of
+3.831/1.076/4.580 microseconds, 13/15 wins and substantial middle-run outliers.
+Original actual/synthetic owners, missing-baseline refusal, shell syntax
+and diff checks pass. The narrow repair delta was inspected.
 
-The source/evidence log and backend parity row are complete. One comprehensive
-host-native `codex review --uncommitted` (session
-`01a0ed3d-ac81-7d41-a9de-c0e1d3160ec3`) found no actionable defect.
-Next actions: (1) commit the reviewed source and run exact-head preflight;
-(2) publish an English PR, record review/integration evidence and merge after
-checks; (3) refresh `main`, profile a larger connected Q4_0 boundary and
-continue small measured CUDA improvements toward a native request path.
-Nsight Compute counters remain denied (`ERR_NVGPUCTRPERM`); NVIDIA documents
-that WSL counter access is controlled by the Windows host. Other CUDA GPUs,
-Qwen sizes and Gemma remain unmeasured until available. No fixed percentage
-floor governs a repeatable useful improvement.
+Next actions: (1) commit and run exact-head preflight, publish and merge
+after required checks; (2) refresh `main`. The user requested recording
+useful Claude CUDA advice for later on 2026-09-30; the deferred-hypothesis
+table in `docs/cuda-native-optimization-log.md` preserves applicable ideas,
+sm_89 limitations and evidence needs. Additional experiments are deferred
+at that request, including the larger connected Q4_0 boundary and its
+logit/state/failure owners and paired request timing. Native kernels may be
+retained while experimental; routing adoption uses complete-request evidence.
+Nsight Compute counters remain denied (`ERR_NVGPUCTRPERM`, Windows-host
+control). Other CUDA GPUs, Qwen sizes and Gemma remain unmeasured until
+available. No new Align gap or product-language boundary change was found.
 
 ## Completed CUDA Q6_K four-column screen (2026-09-29)
 
