@@ -11,7 +11,7 @@ static void require(bool condition, const char *message) {
     if (!condition) { fprintf(stderr, "%s\n", message); std::exit(1); }
 }
 
-static void check(Context *ctx, const std::vector<float> &values) {
+static void check(Context *ctx, const std::vector<float> &values, bool prefetched = false) {
     int expected = 0;
     bool finite = true;
     for (int index = 0; index < ROWS; ++index) {
@@ -22,6 +22,12 @@ static void check(Context *ctx, const std::vector<float> &values) {
         cudaMemcpyHostToDevice, ctx->stream) == cudaSuccess
         && cudaStreamSynchronize(ctx->stream) == cudaSuccess, "fixture upload failed");
     ctx->ready = true;  // Test-only injection into the exact helper's private output.
+    ctx->choice_ready = false;
+    if (prefetched) {
+        require(enqueue_choice(ctx) && cudaStreamSynchronize(ctx->stream) == cudaSuccess,
+            "prefetched fixture selection failed");
+        ctx->choice_ready = true;
+    }
     int64_t token = 99;
     const int status = align_native_cuda_q6_head_greedy(ctx, &token);
     if (!(finite ? status == 1 && token == expected : status == 0 && token == -1))
@@ -37,6 +43,7 @@ static void check(Context *ctx, const std::vector<float> &values) {
         require(align_native_cuda_q6_head_greedy(ctx, &token) == 0 && token == -1,
             "failed reduction left a readable stale token");
     }
+    if (!prefetched) check(ctx, values, true);
 }
 
 int main() {
@@ -87,6 +94,24 @@ int main() {
         token = 99;
         require(align_native_cuda_q6_head_greedy(ctx, &token) == 0 && token == -1,
             "failed projection left a readable stale token");
+        Q6Block *weights = nullptr;
+        float *input = nullptr;
+        const size_t weight_bytes = size_t(ROWS) * (WIDTH / 256) * sizeof(Q6Block);
+        require(cudaMalloc(&weights, weight_bytes) == cudaSuccess
+            && cudaMalloc(&input, WIDTH * sizeof(float)) == cudaSuccess,
+            "projection fixture allocation failed");
+        require(cudaMemsetAsync(weights, 0, weight_bytes, ctx->stream) == cudaSuccess
+            && cudaMemsetAsync(input, 0, WIDTH * sizeof(float), ctx->stream) == cudaSuccess
+            && cudaStreamSynchronize(ctx->stream) == cudaSuccess,
+            "projection fixture initialization failed");
+        require(align_native_cuda_q6_head_run_greedy(ctx, weights, input) == 1
+            && align_native_cuda_q6_head_greedy(ctx, &token) == 1 && token == 0,
+            "prefetched projection changed all-zero first-index choice");
+        require(align_native_cuda_q6_head_run_greedy(ctx, nullptr, nullptr) == 0
+            && align_native_cuda_q6_head_greedy(ctx, &token) == 0 && token == -1,
+            "failed prefetched projection retained stale choice");
+        require(cudaFree(input) == cudaSuccess && cudaFree(weights) == cudaSuccess,
+            "projection fixture release failed");
         align_native_cuda_q6_head_close(ctx);
     }
     align_native_cuda_q6_head_close(nullptr);

@@ -53,6 +53,22 @@ def prepare_reference(binary: Path, model: Path, work: Path, label: str,
     return rendered_path, ids_path
 
 
+def timed_many(session: Session, request: dict, prompt: int, completion: int,
+               repetitions: int, label: str) -> tuple[int, dict]:
+    samples = []
+    first_output = None
+    result = None
+    for _ in range(repetitions):
+        elapsed, result = timed(session, request, prompt, completion)
+        if first_output is not None and result["output"] != first_output:
+            raise RuntimeError(f"{label}: repeated request output changed")
+        first_output = result["output"]
+        samples.append(elapsed)
+    if repetitions > 1:
+        print(f"{label} samples_ns={json.dumps(samples, separators=(',', ':'))}", flush=True)
+    return sum(samples) // len(samples), result
+
+
 def llama_request(reference: Path, binary: Path, model: Path, work: Path,
                   label: str, rendered: Path, ids: Path,
                   prompt: int, completion: int) -> tuple[int, str]:
@@ -76,6 +92,10 @@ def llama_request(reference: Path, binary: Path, model: Path, work: Path,
 
 
 def main() -> None:
+    repeat_text = os.environ.get("QWEN35_CUDA_PAIR_REQUESTS", "1")
+    if not repeat_text.isascii() or not repeat_text.isdecimal() or not 1 <= int(repeat_text) <= 20:
+        raise RuntimeError("QWEN35_CUDA_PAIR_REQUESTS must be an integer from 1 to 20")
+    repetitions = int(repeat_text)
     measure_mode = os.environ.get("QWEN35_CUDA_MEASURE_MODE", "state-copy")
     if measure_mode not in ("state-copy", "q6-head"):
         raise RuntimeError("QWEN35_CUDA_MEASURE_MODE must be state-copy or q6-head")
@@ -119,7 +139,8 @@ def main() -> None:
     print(f"measure_mode={measure_mode} model_sha256={digest} plugin_sha256={plugin_hash} "
           f"llama_bench_sha256={reference_digest or 'none'} "
           f"llama_source_commit={reference_revision or 'none'} "
-          f"previous_native_sha256={baseline_digest or 'none'}", flush=True)
+          f"previous_native_sha256={baseline_digest or 'none'} "
+          f"align_requests_per_arm={repetitions} llama_warm_intervals_per_pair=1", flush=True)
     command = [str(binary), "--runtime-session", str(model), str(pack),
                str(geometry), str(options), "0"]
     environment = os.environ.copy()
@@ -153,21 +174,27 @@ def main() -> None:
             pairs = []
             previous_pairs = []
             for at in range(5):
-                old = (timed(previous, request, prompt, completion)
+                old = (timed_many(previous, request, prompt, completion, repetitions,
+                                  f"{label} pair={at} previous")
                        if previous is not None and at % 2 == 0 else None)
                 llama = (llama_request(reference, binary, model, work, label,
                                        prepared[0], prepared[1], prompt, completion)
                          if reference and at % 2 else None)
                 if at % 2 == 0:
-                    control, expected = timed(ordinary, request, prompt, completion)
-                    selected, actual = timed(native, request, prompt, completion)
+                    control, expected = timed_many(ordinary, request, prompt, completion,
+                                                   repetitions, f"{label} pair={at} ordinary")
+                    selected, actual = timed_many(native, request, prompt, completion,
+                                                  repetitions, f"{label} pair={at} native")
                 else:
-                    selected, actual = timed(native, request, prompt, completion)
-                    control, expected = timed(ordinary, request, prompt, completion)
+                    selected, actual = timed_many(native, request, prompt, completion,
+                                                  repetitions, f"{label} pair={at} native")
+                    control, expected = timed_many(ordinary, request, prompt, completion,
+                                                   repetitions, f"{label} pair={at} ordinary")
                 if actual["output"] != expected["output"]:
                     raise RuntimeError(f"{label} pair {at}: output differs")
                 if previous is not None and old is None:
-                    old = timed(previous, request, prompt, completion)
+                    old = timed_many(previous, request, prompt, completion, repetitions,
+                                     f"{label} pair={at} previous")
                 if old is not None:
                     if old[1]["output"] != actual["output"]:
                         raise RuntimeError(f"{label} pair {at}: previous native output differs")

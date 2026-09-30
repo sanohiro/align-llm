@@ -46,6 +46,8 @@ struct Context {
     Choice *partials = nullptr, *choice = nullptr;
     int device = -1;
     bool ready = false;
+    bool choice_ready = false;
+    Choice host_choice{0.0f, -1};
 };
 
 __device__ Choice merge_choice(Choice left, Choice right) {
@@ -156,6 +158,15 @@ bool device_pointer(const void *pointer, int device) {
     return pointer != nullptr && cudaPointerGetAttributes(&attribute, pointer) == cudaSuccess
         && attribute.type == cudaMemoryTypeDevice && attribute.device == device;
 }
+
+bool enqueue_choice(Context *ctx) {
+    greedy_parts<<<GREEDY_BLOCKS, 256, 0, ctx->stream>>>(ctx->output, ctx->partials);
+    if (cudaGetLastError() != cudaSuccess) return false;
+    greedy_finish<<<1, 256, 0, ctx->stream>>>(ctx->partials, ctx->choice);
+    if (cudaGetLastError() != cudaSuccess) return false;
+    return cudaMemcpyAsync(&ctx->host_choice, ctx->choice, sizeof(Choice),
+        cudaMemcpyDeviceToHost, ctx->stream) == cudaSuccess;
+}
 }  // namespace
 
 extern "C" void *align_native_cuda_q6_head_open(int device_ordinal) {
@@ -176,10 +187,10 @@ extern "C" void *align_native_cuda_q6_head_open(int device_ordinal) {
     return ctx;
 }
 
-extern "C" int align_native_cuda_q6_head_run(void *opaque, const void *weight,
-        const void *input) {
+static int run_projection(void *opaque, const void *weight,
+        const void *input, bool with_choice) {
     auto *ctx = static_cast<Context *>(opaque);
-    if (ctx != nullptr) ctx->ready = false;
+    if (ctx != nullptr) { ctx->ready = false; ctx->choice_ready = false; }
     if (ctx == nullptr || ctx->stream == nullptr || ctx->quantized == nullptr
         || ctx->output == nullptr
         || cudaSetDevice(ctx->device) != cudaSuccess
@@ -197,13 +208,26 @@ extern "C" int align_native_cuda_q6_head_run(void *opaque, const void *weight,
         cudaStreamSynchronize(ctx->stream);
         return 0;
     }
-    if (cudaStreamSynchronize(ctx->stream) != cudaSuccess) return 0;
+    const bool submitted = !with_choice || enqueue_choice(ctx);
+    const cudaError_t completed = cudaStreamSynchronize(ctx->stream);
+    if (!submitted || completed != cudaSuccess) return 0;
 #if defined(ALIGN_NATIVE_CUDA_Q6_FORCE_COMPLETION_FAILURE)
     fprintf(stderr, "native_q6_head forced completion failure\n");
     return 0;
 #endif
     ctx->ready = true;
+    ctx->choice_ready = with_choice;
     return 1;
+}
+
+extern "C" int align_native_cuda_q6_head_run(void *opaque, const void *weight,
+        const void *input) {
+    return run_projection(opaque, weight, input, false);
+}
+
+extern "C" int align_native_cuda_q6_head_run_greedy(void *opaque, const void *weight,
+        const void *input) {
+    return run_projection(opaque, weight, input, true);
 }
 
 extern "C" int align_native_cuda_q6_head_read(void *opaque, void *output, size_t bytes) {
@@ -217,26 +241,22 @@ extern "C" int align_native_cuda_q6_head_greedy(void *opaque, int64_t *token) {
     if (token == nullptr) return 0;
     *token = -1;
     auto *ctx = static_cast<Context *>(opaque);
-    if (ctx == nullptr || !ctx->ready || ctx->partials == nullptr || ctx->choice == nullptr
-        || cudaSetDevice(ctx->device) != cudaSuccess) return 0;
+    if (ctx == nullptr || !ctx->ready || ctx->partials == nullptr || ctx->choice == nullptr)
+        return 0;
     ctx->ready = false;
 #if defined(ALIGN_NATIVE_CUDA_Q6_FORCE_GREEDY_FAILURE)
     fprintf(stderr, "native_q6_head forced greedy failure\n");
     return 0;
 #endif
-    greedy_parts<<<GREEDY_BLOCKS, 256, 0, ctx->stream>>>(ctx->output, ctx->partials);
-    if (cudaGetLastError() != cudaSuccess) return 0;
-    greedy_finish<<<1, 256, 0, ctx->stream>>>(ctx->partials, ctx->choice);
-    if (cudaGetLastError() != cudaSuccess) {
-        cudaStreamSynchronize(ctx->stream);
-        return 0;
+    if (!ctx->choice_ready) {
+        if (cudaSetDevice(ctx->device) != cudaSuccess) return 0;
+        const bool submitted = enqueue_choice(ctx);
+        const cudaError_t completed = cudaStreamSynchronize(ctx->stream);
+        if (!submitted || completed != cudaSuccess) return 0;
+        ctx->choice_ready = true;
     }
-    Choice result{0.0f, -1};
-    const cudaError_t copied = cudaMemcpyAsync(&result, ctx->choice, sizeof(result),
-        cudaMemcpyDeviceToHost, ctx->stream);
-    const cudaError_t completed = cudaStreamSynchronize(ctx->stream);
-    if (copied != cudaSuccess || completed != cudaSuccess
-        || result.index < 0 || result.index >= ROWS || !isfinite(result.value)) return 0;
+    const Choice result = ctx->host_choice;
+    if (result.index < 0 || result.index >= ROWS || !isfinite(result.value)) return 0;
     ctx->ready = true;
     *token = result.index;
     return 1;

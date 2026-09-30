@@ -129,7 +129,8 @@ explicit ordinary and native CUDA Align sessions, checks the same actual
 request work and output, and records five alternating warm request pairs at
 three fixed prompts. Its optional pinned comparison validates the supplied
 benchmark executable digest and source revision before timing. An optional
-digest-bound previous native binary adds a third retained comparison arm. It neither
+digest-bound previous native binary adds a third retained comparison arm;
+bounded request repetitions report every sample to assess timing uncertainty. It neither
 computes logits nor chooses product tokens. Its explicit
 `QWEN35_CUDA_MEASURE_MODE=q6-head` arm compares the default graph with the
 opt-in independent CUDA head while keeping native state copy disabled in both.

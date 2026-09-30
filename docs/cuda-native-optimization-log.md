@@ -364,6 +364,81 @@ variant: submit reduction/readback before the projection's existing wait,
 then let the token reader consume a completed host result. Instrumented
 intervals do not predict uninstrumented request gains.
 
+### Submit greedy selection before the native completion wait
+
+The next candidate submits projection, both reduction kernels and the
+eight-byte readback before one stream wait. The token getter consumes a
+completed host choice without another CUDA call. The shim accounts that
+transfer at graph commit. Plain standalone projection callers retain the
+on-demand getter. Device allocation and projection arithmetic are unchanged.
+The kernel owner also exercises prefetched fixtures, a complete synthetic
+zero-weight projection, repeated reads and failed-projection invalidation.
+Complete real-model logits/state, retained requests, malformed mode and all
+three forced failure boundaries pass again. The maximum logit error remains
+`1.90734863e-6`; admitted/allocated/peak totals rise by exactly 7,768 bytes
+from the preserved native control.
+
+A first single-request campaign gave previous-native paired median gains
+of +6.502/-4.044/+8.303 ms and ordinary-Align gains of
++0.480/+2.880/+7.171 ms at 56/16, 200/32 and 330/64. The middle-workload
+reversal justified a bounded repeat campaign rather than a general claim.
+`QWEN35_CUDA_PAIR_REQUESTS=20` averages twenty actual requests per Align arm
+within each of five alternating pairs and retains every individual sample.
+Pinned llama.cpp retains one warm generation interval per pair; its column
+has different repetition uncertainty. All 900 timed Align requests have the
+required counts and matching output text. No samples were excluded.
+
+| Prompt/output | Pair | Ordinary Align ms | Candidate ms | Previous native ms | Pinned llama.cpp ms |
+| --- | --- | --- | --- | --- | --- |
+| 56/16 | 0 | 73.965 | 74.926 | 74.893 | 89.357 |
+| 56/16 | 1 | 72.979 | 72.186 | 73.981 | 87.275 |
+| 56/16 | 2 | 73.833 | 71.474 | 74.097 | 118.022 |
+| 56/16 | 3 | 75.948 | 71.652 | 74.352 | 90.036 |
+| 56/16 | 4 | 73.286 | 72.888 | 74.576 | 90.801 |
+| 200/32 | 0 | 163.087 | 159.299 | 160.577 | 169.586 |
+| 200/32 | 1 | 166.022 | 160.696 | 163.749 | 167.491 |
+| 200/32 | 2 | 163.313 | 166.156 | 162.359 | 171.037 |
+| 200/32 | 3 | 164.842 | 166.602 | 163.523 | 174.253 |
+| 200/32 | 4 | 163.150 | 161.103 | 165.267 | 173.345 |
+| 330/64 | 0 | 311.843 | 305.101 | 312.967 | 334.707 |
+| 330/64 | 1 | 366.157 | 303.507 | 318.498 | 319.143 |
+| 330/64 | 2 | 312.066 | 310.025 | 319.301 | 327.312 |
+| 330/64 | 3 | 313.232 | 302.839 | 317.390 | 342.798 |
+| 330/64 | 4 | 318.484 | 311.178 | 317.800 | 322.075 |
+
+| Prompt/output | Previous native gain / wins | Ordinary Align gain / wins | Pinned llama.cpp gain / wins |
+| --- | --- | --- | --- |
+| 56/16 | +1.795 ms / 4/5 | +0.794 ms / 4/5 | +17.913 ms / 5/5 |
+| 200/32 | +1.277 ms / 3/5 | +2.047 ms / 3/5 | +7.652 ms / 5/5 |
+| 330/64 | +9.277 ms / 5/5 | +7.306 ms / 5/5 | +17.287 ms / 5/5 |
+
+These are medians of paired arithmetic means, not pooled token throughput.
+The ordinary 330/64 pair 1 retains a 1,449.975 ms request outlier. The
+short/middle differences remain small and variable. The strongest result
+is this retained 2B/RTX 4070 Ti 330/64 workload; the route stays default-off.
+No cold-load, TTFT, other-model or other-device improvement is established.
+The baseline shim SHA-256 is
+`e932b6ba478a8969c44dcfe903cea06459d44e55c21c892814deea389a19da89`;
+the completed candidate shim is
+`58bbf96330a59c362b8287ad81a4c4952e687c9c2790cae2d3da870f930560a4`.
+Raw `measure-prefetched-1.log`, `measure-prefetched-batch20.log`, owner/fault
+logs and profiler artifacts remain outside Git. Reproduce with the existing
+explicit model/binary/plugin/trace inputs and baseline digest above, then
+`QWEN35_CUDA_PAIR_REQUESTS=20 scripts/measure-qwen35-native-cuda` in
+`q6-head` mode. Invalid repeat counts refuse before sessions.
+
+The separate 200/32 Nsight Systems trace contains exactly 32 eight-byte D2H
+copies and no full-row copy. Native projection averages 894.782 microseconds;
+projection-to-partial-reduction gap median is 1.184 microseconds, range
+1.088..86.276. This demonstrates the intended scheduling change; the earlier
+three-token trace is a different instrumented workload, not a paired timing
+control. Q4_0 fused one-column kernels still sum to 38.358 ms, unfused
+one-column kernels to 15.633 ms, and native projections to 28.633 ms.
+The actual 6144-row fused gate/up instances average 34.229 microseconds,
+well above the small repeatedly cached FFN screen. The next hypothesis must
+test larger weight working sets before projecting local Q4 gains onto a
+whole request. Nsight Compute bandwidth counters remain unavailable.
+
 ## Deferred CUDA hypotheses from user-supplied advice (2026-09-30)
 
 The user supplied a Claude analysis and explicitly requested recording useful
@@ -379,7 +454,7 @@ workloads and controls in their own receipts.
 | First | Profile prefill and decode separately, including host submission, synchronization, copies and allocations. | Use the existing 200/32 and short/wider request controls. Q4_0 and Q6_K dominate the current decode trace; do not infer that attention or prefill is the same bottleneck. A wall-time-minus-summed-kernel value includes host work, transfers, idle intervals and possible overlap, so inspect the timestamped critical path before calling it launch overhead. |
 | First | Inspect SASS load widths, register count/spills and independent outstanding loads; try bounded unrolling or layout changes. | The aligned Q4_0 loads above already demonstrate the value of inspecting generated code. Keep direct sm_89 compilation and record `-Xptxas=-v` output. Existing Q4_0/Q6_K block strides do not permit unconditional `uint4` loads; any repack needs explicit initialization cost, resident-memory accounting, ownership and reuse measurements. |
 | First | Extend native fusion across residual/RMSNorm, Q8 activation quantization and the FFN/output-head boundary. | DP4A, fused gate/up/SiLU and local CUDA Graphs already exist. Measure a larger connected boundary that avoids another ggml/native wait; preserve full logits/state, failure containment and operation/device-memory accounting. Kernel fusion and graph replay address different costs. |
-| Next | Capture/replay the connected native tail and reduce full-logit D2H/host greedy work. | The ggml decode graph is already captured; the connected native Q6_K helper still submits two kernels and reads a full row. Measure incremental tail replay or a CUDA greedy reduction. Preserve first-index ties, nonfinite policy, exact output/EOG handling and request failure semantics before any device-fed next token. Existing Metal greedy results do not establish a CUDA gain. |
+| Next | Capture/replay the connected native tail beyond the completed greedy-readback trial. | The ggml decode graph is already captured; the selected native Q6_K route now reduces on device and reads eight bytes before one completion wait. Measure incremental tail replay only against that completed baseline. Preserve first-index ties, nonfinite policy, exact output/EOG handling and request failure semantics before any device-fed next token. Existing Metal greedy results do not establish a CUDA gain. |
 | Conditional | Test streaming-load/cache hints and compute a workload-specific bandwidth estimate. | A small repeatedly executed Q4_0 FFN can reuse L2; bypass/eviction hints may hurt it. The Q6_K head has a much larger weight footprint. Keep useful payload bandwidth distinct from actual DRAM traffic, and include KV/recurrent-state bytes when estimating a whole request. `ncu` DRAM/sectors/occupancy counters need Windows-host permission, currently denied; do not invent their values. |
 | Conditional | Split long-context decode attention, share GQA KV reads, or use optimized prefill matrix/attention primitives. | Start only if a length-dependent profile makes attention or prefill material. Qwen3.5 has both recurrent DeltaNet and full-attention layers; generic 32-head/H100 examples do not describe its entire graph. Tensor Core/dequant primitives must match sm_89, actual quantization and token count. KV quantization changes rounding/state representation and needs separate qualification. |
 | Later | Revisit small-batch target verification or bounded draft generation with weight reuse across rows. | Existing lookup/acceptance screens have both gains and rejection regressions; inspect their receipts first. CUDA M=2–8 weight reuse is a hypothesis, not an automatic speculative-decoding win. Preserve exact acceptance/replay and measure complete requests. |

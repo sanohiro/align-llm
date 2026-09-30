@@ -6,24 +6,35 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 Branch `agent/native-cuda-q6-greedy`, base `5387269`. The user resumed CUDA
 optimization and requested continuing useful experiments until remaining
-gains no longer justify their cost. First implement device greedy selection
+gains no longer justify their cost. Implement device greedy selection
 for the existing native Q6_K route, preserving full diagnostic/sampling
 logits, first-index ties, nonfinite failure and memory accounting. The
 authoritative contract/cost/closure ledger is in
-`docs/specs/gpu-runtime-performance.md`. Next: kernel owner, complete
-real-model logits/state/retained/failure owner, then alternating requests
-against preserved native full-row, ordinary Align and pinned llama.cpp.
-Follow with a connected Q4/fusion or scheduling hypothesis supported by
-the new measurements. Earlier uncommitted roundup notes belong here.
+`docs/specs/gpu-runtime-performance.md`. Checkpoint `69abd87` implemented
+selection; the current uncommitted batch submits selection/readback before
+the projection wait and adds bounded repeated-request measurement.
 
 First greedy-readback checkpoint passes kernel/full-model/state/retained/
 malformed owners, forced submit/completion/greedy faults, build, formatter
 and Python guard/mutations. Two campaigns win 21/30 pairs against preserved
 native full-row but have a middle-workload reversal and large outliers;
 no general gain is established. Nsight observes exactly three eight-byte
-D2H copies and no full-row read. Next, submit selection before the native
-projection completion wait to remove the traced decode handoff gap, then
-rerun affected owners and request comparisons. Review/publication pending.
+D2H copies and no full-row read. The scheduling batch passes the same
+kernel/full-model/state/retained owners and all three forced failures.
+Five alternating pairs of twenty actual requests per Align arm (900 total)
+give previous-native gains of 1.795/1.277/9.277 ms and ordinary-Align gains
+of 0.794/2.047/7.306 ms at 56/16, 200/32 and 330/64. The widest workload
+wins all five pairs against both controls; short/middle remain variable.
+All request counts/output match. The separate 200/32 trace has exactly
+32 eight-byte D2H copies, median projection-to-reduction gap 1.184 us.
+Full receipts, outliers and limits are in `docs/cuda-native-optimization-log.md`.
+
+Next: settle the scheduling batch, one comprehensive review, exact-head
+preflight, publish and merge when required checks pass. Then test the Q4
+kernel with a weight working set beyond L2 before connecting another
+native FFN boundary. Real decode gate/up averages 34.229 us versus the
+small cached screen's 8.64 us; that cache difference must not be treated
+as a whole-request speed claim. No new Align gap was found.
 
 ## Completed native CUDA Q4_0 aligned-load screen (2026-09-30)
 
