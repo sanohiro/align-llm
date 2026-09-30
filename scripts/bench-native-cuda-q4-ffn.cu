@@ -1,6 +1,13 @@
 // Independent CUDA Q4_0 FFN screen against the pinned ggml CUDA graph.
 #include "native_cuda_q40_ffn.h"
 
+#if defined(ALIGN_CUDA_Q4_BASELINE)
+extern "C" void *baseline_open(int, int);
+extern "C" int baseline_run(void *, const void *, const void *, const void *, const float *);
+extern "C" int baseline_read(void *, float *, size_t, float *, size_t);
+extern "C" void baseline_close(void *);
+#endif
+
 #include "ggml.h"
 #include "ggml-alloc.h"
 #include "ggml-backend.h"
@@ -193,6 +200,18 @@ int main(int argc, char **argv) {
         || align_native_cuda_q40_ffn_read(native, nullptr, HIDDEN,
             nullptr, WIDTH)) fail("native CUDA admission accepted invalid input");
 
+#if defined(ALIGN_CUDA_Q4_BASELINE)
+    void *baseline = baseline_open(WIDTH, HIDDEN);
+    if (baseline == nullptr) fail("baseline CUDA FFN init failed");
+    auto run_baseline = [&]() -> double {
+        const auto start = std::chrono::steady_clock::now();
+        if (!baseline_run(baseline, dg, du, dd, dx)) fail("baseline CUDA FFN compute failed");
+        return elapsed_ms(start);
+    };
+    const char *control_label = "baseline";
+#else
+    const char *control_label = "ggml";
+#endif
     auto run_ggml = [&]() -> double {
         const auto start = std::chrono::steady_clock::now();
         if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS)
@@ -212,6 +231,19 @@ int main(int argc, char **argv) {
                 native_down.data(), native_down.size())) fail("native CUDA output read failed");
         const float gated_error = check_row(gated, native_gated, "gated");
         const float down_error = check_row(down, native_down, "down");
+#if defined(ALIGN_CUDA_Q4_BASELINE)
+        std::vector<float> baseline_gated(HIDDEN), baseline_down(WIDTH);
+        if (!baseline_read(baseline, baseline_gated.data(), baseline_gated.size(),
+                baseline_down.data(), baseline_down.size())) fail("baseline CUDA output read failed");
+        check_row(gated, baseline_gated, "baseline gated");
+        check_row(down, baseline_down, "baseline down");
+        compare(baseline_gated, native_gated, "baseline/native gated");
+        compare(baseline_down, native_down, "baseline/native down");
+        if (capture) {
+            compare(captured_gated, baseline_gated, "captured baseline gated");
+            compare(captured_down, baseline_down, "captured baseline down");
+        }
+#endif
         if (capture) {
             std::vector<float> ggml_gated(HIDDEN), ggml_down(WIDTH);
             ggml_backend_tensor_get(gated, ggml_gated.data(), 0, HIDDEN * sizeof(float));
@@ -225,6 +257,9 @@ int main(int argc, char **argv) {
     };
     for (int i = 0; i < WARMUPS; ++i) {
         run_ggml();
+#if defined(ALIGN_CUDA_Q4_BASELINE)
+        run_baseline();
+#endif
         run_native();
     }
     auto errors = check_both();
@@ -233,26 +268,34 @@ int main(int argc, char **argv) {
     std::printf("gated_max_abs_diff=%g down_max_abs_diff=%g\n",
         errors.first, errors.second);
 
-    std::vector<double> ggml_times, native_times;
+#if defined(ALIGN_CUDA_Q4_BASELINE)
+    auto run_control = run_baseline;
+#else
+    auto run_control = run_ggml;
+#endif
+    std::vector<double> control_times, native_times;
     for (int pair = 0; pair < PAIRS; ++pair) {
-        double ggml_ms = 0.0, native_ms = 0.0;
+        double control_ms = 0.0, native_ms = 0.0;
         for (int i = 0; i < ITERATIONS; ++i) {
             if (pair % 2 == 0) {
-                ggml_ms += run_ggml();
+                control_ms += run_control();
                 native_ms += run_native();
             } else {
                 native_ms += run_native();
-                ggml_ms += run_ggml();
+                control_ms += run_control();
             }
         }
         check_both();
-        ggml_times.push_back(ggml_ms / ITERATIONS);
+        control_times.push_back(control_ms / ITERATIONS);
         native_times.push_back(native_ms / ITERATIONS);
-        std::printf("pair=%d ggml_ms=%.6f native_ms=%.6f\n",
-            pair, ggml_times.back(), native_times.back());
+        std::printf("pair=%d %s_ms=%.6f native_ms=%.6f\n",
+            pair, control_label, control_times.back(), native_times.back());
     }
-    std::printf("median_ggml_ms=%.6f median_native_ms=%.6f\n",
-        median(ggml_times), median(native_times));
+    std::printf("median_%s_ms=%.6f median_native_ms=%.6f\n",
+        control_label, median(control_times), median(native_times));
+#if defined(ALIGN_CUDA_Q4_BASELINE)
+    baseline_close(baseline);
+#endif
     align_native_cuda_q40_ffn_close(native);
     cudaFree(dx);
     cudaFree(dd);

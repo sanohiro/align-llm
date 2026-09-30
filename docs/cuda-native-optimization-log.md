@@ -167,6 +167,181 @@ preserves complete logits/state and paired whole-request evidence. NVIDIA's
 explains why both local arms capture their repeated work; graph capture does
 not eliminate the cost of additional product graph boundaries.
 
+## 2026-09-30: aligned Q4_0 packed loads
+
+The baseline is merged PR #330, `14c05d96e4d41ece4c2e8d0701284cb321da6f7d`.
+The independent helper assembled each four-byte packed weight word from four
+byte loads. An 18-byte Q4_0 block has only two-byte alignment. Representing
+its unchanged 16-byte payload as eight `uint16_t` values lets each dot use
+two naturally aligned loads per packed word. Size, alignment and payload
+offset are checked statically. Lane mapping, DP4A arithmetic, zero-point
+correction, Q8_1 conversion and four-node captured graph are unchanged.
+The pinned implementation's `vecdotq.cuh:get_int_b2` uses this same alignment
+principle. NVIDIA's [global-memory alignment rules](https://docs.nvidia.com/cuda/archive/12.9.1/cuda-c-programming-guide/index.html#device-memory-accesses)
+motivate the experiment; the measurements establish its effect here.
+
+Both arms use the pinned ggml source/plugin, RTX 4070 Ti, sm_89 compiler flags
+and exact actual-weight capture documented above. The actual owner passed
+every 6,144-element gated and 2,048-element final row before/after warmup and
+after each pair; native-versus-ggml maximum absolute differences remain
+`1.78814e-6` and `9.53674e-7`. The synthetic owner passed with `1.49012e-8`
+and zero. No numerical bound changed.
+
+Two alternating Nsight Systems node-trace comparisons counted 112 instances
+of each matvec per arm. Medians are microseconds:
+
+| Trace order | Baseline gate/up | Candidate gate/up | Baseline down | Candidate down |
+| --- | ---: | ---: | ---: | ---: |
+| Baseline, candidate | 11.392 | 8.640 | 7.104 | 5.760 |
+| Candidate, baseline | 11.457 | 8.672 | 7.136 | 5.760 |
+
+Within the same traces, pinned ggml gate/up medians were 11.168/11.200 and
+11.233/11.264 microseconds, and its down medians were 5.952/5.952 and
+5.984/5.984. Thus the native improvement is not explained by an equally
+large change in the control. Native quantization medians stayed near
+1.024–1.072 microseconds. `cuobjdump --dump-sass` found 40 static
+`LDG.E.U8` and 3 `LDG.E.U16` instructions in the preceding executable's
+device code versus zero and 23 in the candidate. This confirms the changed
+load width, not executed instruction or memory-transaction counts; Nsight
+Compute counters remain denied. Gate/up improves by about 24% and down by
+about 19% in these local instrumented intervals.
+
+Five alternating **process** pairs still had substantial timing variation.
+Every process performed the existing five ggml/native pairs. Its native
+complete-FFN medians were:
+
+| Process pair | Baseline ms | Candidate ms |
+| --- | ---: | ---: |
+| 0 | 0.052416 | 0.040112 |
+| 1 | 0.045996 | 0.042589 |
+| 2 | 0.046228 | 0.044180 |
+| 3 | 0.049139 | 0.057270 |
+| 4 | 0.046640 | 0.057760 |
+
+These process medians alone cannot resolve the complete-operation effect.
+An additional retained diagnostic links both helpers into one process,
+renaming the four baseline C ABI symbols. It shares immutable packed
+weights/input, gives each helper its own stream/graph/scratch, warms both 12
+times, then alternates 20 synchronized operations per pair. The unchanged
+ggml graph computes untimed reference rows. Both helpers' complete outputs
+are checked against ggml, the captured rows and each other after warmup and
+every pair. The three five-pair runs below include all samples (milliseconds):
+
+| Run | Pair | Baseline | Candidate |
+| --- | ---: | ---: | ---: |
+| 0 | 0 | 0.063013 | 0.058696 |
+| 0 | 1 | 0.065455 | 0.059227 |
+| 0 | 2 | 0.061937 | 0.056374 |
+| 0 | 3 | 0.059300 | 0.054689 |
+| 0 | 4 | 0.048887 | 0.044472 |
+| 1 | 0 | 0.091851 | 0.092553 |
+| 1 | 1 | 0.103019 | 0.093275 |
+| 1 | 2 | 0.099183 | 0.087763 |
+| 1 | 3 | 0.097894 | 0.084001 |
+| 1 | 4 | 0.091836 | 0.091980 |
+| 2 | 0 | 0.061882 | 0.058244 |
+| 2 | 1 | 0.061742 | 0.056169 |
+| 2 | 2 | 0.062430 | 0.058119 |
+| 2 | 3 | 0.080375 | 0.062788 |
+| 2 | 4 | 0.061840 | 0.057077 |
+
+Paired baseline-minus-candidate medians are 4.611, 9.744 and 4.763
+microseconds, with 5/5, 3/5 and 5/5 candidate wins. The middle run is much
+slower in both arms and includes two small losses; host/clock interference
+is unresolved. This supports a useful independent FFN improvement over
+the preceding native version together with the repeated device intervals,
+without establishing a precise portable percentage or a request speedup.
+Keep this implementation; product requests still use ggml Q4_0.
+
+Reproduce the checked-in numeric owner with the three explicit pinned
+operands, with and without `CAPTURE_DIR`, as above. The comprehensive review
+identified that the additional same-process diagnostic was available only
+locally. The repair puts that comparison into the existing checked-in
+benchmark and runner without duplicating the driver. To reproduce its
+baseline/candidate comparison from a fresh checkout, run:
+
+```sh
+git show 14c05d96e4d41ece4c2e8d0701284cb321da6f7d:scripts/native_cuda_q40_ffn.cu > "$BASELINE_SOURCE"
+scripts/run-native-cuda-q4-ffn-screen "$GGML_SOURCE" "$GGML_LIB" "$GGML_CUDA_PLUGIN" "$CAPTURE_DIR" "$BASELINE_SOURCE"
+```
+
+`BASELINE_SOURCE` is a caller-selected writable `.cu` file outside the
+repository. The runner prints its SHA-256, builds both helpers with identical
+sm_89 flags and four renamed baseline ABI symbols, then reports all five
+`baseline_ms`/`native_ms` pairs. The baseline source digest must match the
+one below. In paired mode ggml remains an untimed numeric reference. All
+original ggml/native owner modes remain available. Use the documented
+node-trace command in alternating orders for separate device attribution.
+Raw owner/process/trace/SASS receipts and the historical diagnostic source
+are retained outside Git as `q4-packed-loads-20260930`.
+The original `bench-paired.cu` SHA-256 is
+`cdd3a744b9ebbe6fe1d3bc3296c9f3276923cf3c4866e6c8fcf49e1526d22281`;
+the preceding helper source SHA-256 is
+`39edfecc974a84f1f3197ec7f208d5a57fea8fd1946e22c574c53772ab4d67e5`.
+The repaired checked-in paired runner passed all numeric checks in three
+fresh five-pair runs. All post-repair samples are milliseconds:
+
+| Run | Pair | Baseline | Candidate |
+| --- | ---: | ---: | ---: |
+| 0 | 0 | 0.047524 | 0.044361 |
+| 0 | 1 | 0.045402 | 0.041571 |
+| 0 | 2 | 0.044280 | 0.040522 |
+| 0 | 3 | 0.046134 | 0.041837 |
+| 0 | 4 | 0.046752 | 0.041925 |
+| 1 | 0 | 0.060434 | 0.099838 |
+| 1 | 1 | 0.094532 | 0.090722 |
+| 1 | 2 | 0.093819 | 0.092489 |
+| 1 | 3 | 0.093205 | 0.092129 |
+| 1 | 4 | 0.084362 | 0.101785 |
+| 2 | 0 | 0.046016 | 0.040972 |
+| 2 | 1 | 0.044229 | 0.040319 |
+| 2 | 2 | 0.052468 | 0.046480 |
+| 2 | 3 | 0.045868 | 0.042857 |
+| 2 | 4 | 0.045942 | 0.041362 |
+
+The repaired runner's paired gain medians are 3.831/1.076/4.580 microseconds,
+again 13/15 wins, with substantial outliers in the middle run. The repaired
+ordinary ggml/native actual-weight owner passed but its per-arm medians
+were 0.054690/0.059447 ms; the synthetic owner passed at
+0.043652/0.040967 ms. These retain the uncertainty about complete-FFN
+superiority over ggml. A missing baseline file was refused with exit 2
+before compilation/device initialization; shell syntax and diff checks pass.
+The bounded lesson is to inspect generated load widths before changing
+lane mapping again. A larger connected CUDA boundary and its request
+correctness/timing remain the next consumer; other GPUs, Qwen sizes and
+Gemma are unmeasured.
+
+## Deferred CUDA hypotheses from user-supplied advice (2026-09-30)
+
+The user supplied a Claude analysis and explicitly requested recording useful
+ideas for later work. These are hypotheses, not new adoption gates or an
+instruction to start additional experiments in this capability. Prioritize
+them against the actual RTX 4070 Ti (sm_89), Qwen3.5-2B Q4_0/Q6_K traces;
+H100/Blackwell figures and claimed universal bandwidth percentages are not
+measurements of this host. Metal and CUDA wins remain scoped to the routes,
+workloads and controls in their own receipts.
+
+| Priority | Later experiment | Applicability and evidence required |
+| --- | --- | --- |
+| First | Profile prefill and decode separately, including host submission, synchronization, copies and allocations. | Use the existing 200/32 and short/wider request controls. Q4_0 and Q6_K dominate the current decode trace; do not infer that attention or prefill is the same bottleneck. A wall-time-minus-summed-kernel value includes host work, transfers, idle intervals and possible overlap, so inspect the timestamped critical path before calling it launch overhead. |
+| First | Inspect SASS load widths, register count/spills and independent outstanding loads; try bounded unrolling or layout changes. | The aligned Q4_0 loads above already demonstrate the value of inspecting generated code. Keep direct sm_89 compilation and record `-Xptxas=-v` output. Existing Q4_0/Q6_K block strides do not permit unconditional `uint4` loads; any repack needs explicit initialization cost, resident-memory accounting, ownership and reuse measurements. |
+| First | Extend native fusion across residual/RMSNorm, Q8 activation quantization and the FFN/output-head boundary. | DP4A, fused gate/up/SiLU and local CUDA Graphs already exist. Measure a larger connected boundary that avoids another ggml/native wait; preserve full logits/state, failure containment and operation/device-memory accounting. Kernel fusion and graph replay address different costs. |
+| Next | Capture/replay the connected native tail and reduce full-logit D2H/host greedy work. | The ggml decode graph is already captured; the connected native Q6_K helper still submits two kernels and reads a full row. Measure incremental tail replay or a CUDA greedy reduction. Preserve first-index ties, nonfinite policy, exact output/EOG handling and request failure semantics before any device-fed next token. Existing Metal greedy results do not establish a CUDA gain. |
+| Conditional | Test streaming-load/cache hints and compute a workload-specific bandwidth estimate. | A small repeatedly executed Q4_0 FFN can reuse L2; bypass/eviction hints may hurt it. The Q6_K head has a much larger weight footprint. Keep useful payload bandwidth distinct from actual DRAM traffic, and include KV/recurrent-state bytes when estimating a whole request. `ncu` DRAM/sectors/occupancy counters need Windows-host permission, currently denied; do not invent their values. |
+| Conditional | Split long-context decode attention, share GQA KV reads, or use optimized prefill matrix/attention primitives. | Start only if a length-dependent profile makes attention or prefill material. Qwen3.5 has both recurrent DeltaNet and full-attention layers; generic 32-head/H100 examples do not describe its entire graph. Tensor Core/dequant primitives must match sm_89, actual quantization and token count. KV quantization changes rounding/state representation and needs separate qualification. |
+| Later | Revisit small-batch target verification or bounded draft generation with weight reuse across rows. | Existing lookup/acceptance screens have both gains and rejection regressions; inspect their receipts first. CUDA M=2–8 weight reuse is a hypothesis, not an automatic speculative-decoding win. Preserve exact acceptance/replay and measure complete requests. |
+| Deferred hardware/complexity | PDL, Blackwell native FP4, and a persistent whole-forward kernel. | NVIDIA documents PDL for compute capability 9.0+, excluding this sm_89 host. Blackwell-only arithmetic is unavailable here. A persistent kernel is deferred until a connected bottleneck justifies explicit scheduling/resource/failure design. |
+
+Primary references for future trials: NVIDIA's
+[global-memory/SIMT guide](https://docs.nvidia.com/cuda/cuda-programming-guide/02-basics/writing-cuda-kernels.html),
+[effective versus actual bandwidth guide](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#bandwidth),
+[CUDA Graphs guide](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/cuda-graphs.html),
+and [PDL availability and synchronization contract](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/programmatic-dependent-launch.html).
+No fixed 80–90% kernel/60–70% request bandwidth rule is adopted, and no
+automatic 16-byte-load, cache-bypass or all-layer Tensor Core conversion is
+assumed to improve this workload. A selected future trial records its own
+numerical limits, cost ceiling and owner before implementation.
+
 ## 2026-09-29: Q4_0 half-block lane mapping follow-up
 
 The pinned `vecdotq.cuh` uses two lanes per Q4_0 block in decode: each lane
