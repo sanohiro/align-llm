@@ -25,6 +25,7 @@ MAX_PROMPT := 2048
 MAX_GENERATED := 4096
 MAX_LOOKUP_DRAFTS := 3
 NATIVE_Q6_HEAD_DEVICE_BYTES := 1003352
+NATIVE_FFN_TAIL_DEVICE_BYTES := 58368
 SLOT_BYTES := 1040
 MASKED := 4286578688
 
@@ -83,6 +84,7 @@ fn key(borrow owner: ggml_ffi.GpuDevice, borrow options: runtime_options.Runtime
   if graph_greedy { b.write(":graph-greedy") }
   if ggml_ffi.gpu_native_state_copy_enabled(owner) { b.write(":native-state-copy") }
   if ggml_ffi.gpu_native_q6_head_enabled(owner) { b.write(":native-q6-head") }
+  if ggml_ffi.gpu_native_ffn_tail_enabled(owner) { b.write(":native-ffn-tail") }
   if ggml_ffi.gpu_native_conv_copy_enabled(owner) { b.write(":native-conv-copy") }
   if ggml_ffi.gpu_native_prefill_state_copy_enabled(owner) {
     b.write(":native-prefill-state-copy")
@@ -393,6 +395,8 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
   if (options.backend != "metal" && options.backend != "cuda")
     || (config.native_q6_head && (options.backend != "cuda"
         || g.n_embd != 2048 || g.n_vocab != 248320))
+    || (config.native_ffn_tail && (!config.native_q6_head || config.native_state_copy
+        || g.n_ff != 6144))
     || (options.backend == "cuda" && (config.mapped_weights || config.shared_logits
         || config.neon_greedy || config.graph_greedy
         || config.native_conv_copy || config.native_prefill_state_copy
@@ -406,6 +410,9 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
     return Err(Error.Invalid)
   }
   ggml_ffi.gpu_native_q6_head_select(owner, config.native_q6_head) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_native_ffn_tail_select(owner, config.native_ffn_tail) else {
     return Err(Error.Invalid)
   }
   ggml_ffi.gpu_native_conv_copy_select(owner, config.native_conv_copy) else {
@@ -432,7 +439,8 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
     || plan.kv_bytes > options.device_budget_bytes - storage_bytes {
     return Err(Error.Invalid)
   }
-  native_head_bytes := if config.native_q6_head { NATIVE_Q6_HEAD_DEVICE_BYTES } else { 0 }
+  native_head_bytes := (if config.native_q6_head { NATIVE_Q6_HEAD_DEVICE_BYTES } else { 0 })
+    + (if config.native_ffn_tail { NATIVE_FFN_TAIL_DEVICE_BYTES } else { 0 })
   if native_head_bytes > options.device_budget_bytes - storage_bytes - plan.kv_bytes {
     return Err(Error.Invalid)
   }

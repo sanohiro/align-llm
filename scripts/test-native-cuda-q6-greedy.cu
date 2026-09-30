@@ -46,6 +46,84 @@ static void check(Context *ctx, const std::vector<float> &values, bool prefetche
     if (!prefetched) check(ctx, values, true);
 }
 
+static void check_tail(Context *ctx, Q6Block *weights, float *input) {
+    require(align_native_cuda_q6_tail_enable(ctx) == 1
+        && align_native_cuda_q6_tail_enable(ctx) == 0, "tail allocation/reselection failed");
+    float *attention = nullptr, *norm = nullptr;
+    void *q4 = nullptr;
+    const size_t q4_bytes = 7077888;
+    require(cudaMalloc(&attention, WIDTH * sizeof(float)) == cudaSuccess
+        && cudaMalloc(&norm, WIDTH * sizeof(float)) == cudaSuccess
+        && cudaMalloc(&q4, q4_bytes) == cudaSuccess, "tail fixture allocation failed");
+    std::vector<float> x(WIDTH), a(WIDTH), w(WIDTH), actual(WIDTH), residual(WIDTH);
+    double squares = 0.0;
+    for (int index = 0; index < WIDTH; ++index) {
+        x[index] = float(index % 97 - 48) / 8.0f;
+        a[index] = float(index % 31 - 15) / 16.0f;
+        w[index] = float(index % 19 - 9) / 7.0f;
+        const float value = x[index] + a[index];
+        squares += double(value) * value;
+    }
+    const float epsilon = 1e-6f;
+    require(cudaMemcpy(input, x.data(), WIDTH * sizeof(float), cudaMemcpyHostToDevice) == cudaSuccess
+        && cudaMemcpy(attention, a.data(), WIDTH * sizeof(float), cudaMemcpyHostToDevice) == cudaSuccess
+        && cudaMemcpy(norm, w.data(), WIDTH * sizeof(float), cudaMemcpyHostToDevice) == cudaSuccess
+        && cudaMemset(q4, 0, q4_bytes) == cudaSuccess, "tail fixture upload failed");
+    residual_norm<<<1, 256, 0, ctx->stream>>>(input, attention, norm, epsilon,
+        ctx->normalized, ctx->residual);
+    require(cudaGetLastError() == cudaSuccess && cudaStreamSynchronize(ctx->stream) == cudaSuccess
+        && cudaMemcpy(actual.data(), ctx->normalized, WIDTH * sizeof(float), cudaMemcpyDeviceToHost)
+            == cudaSuccess
+        && cudaMemcpy(residual.data(), ctx->residual, WIDTH * sizeof(float), cudaMemcpyDeviceToHost)
+            == cudaSuccess, "residual/norm fixture failed");
+    const double inverse = 1.0 / std::sqrt(squares / WIDTH + epsilon);
+    for (int index = 0; index < WIDTH; ++index) {
+        const float value = x[index] + a[index];
+        require(residual[index] == value, "residual arithmetic changed");
+        require(std::abs(double(actual[index]) - double(value) * inverse * w[index]) < 2e-6,
+            "learned RMS normalization exceeded scalar reference bound");
+    }
+    int64_t token = -1;
+    for (int kind = 0; kind < 3; ++kind) {
+        for (int replay = 0; replay < 3; ++replay) {
+            require(align_native_cuda_q6_tail_run(ctx, kind, weights, input, attention,
+                    norm, q4, q4, q4, norm, epsilon) == 1
+                && align_native_cuda_q6_head_greedy(ctx, &token) == 1 && token == 0,
+                "captured/replayed tail changed zero-weight greedy choice");
+            require(cudaMemcpy(actual.data(), ctx->normalized, WIDTH * sizeof(float),
+                cudaMemcpyDeviceToHost) == cudaSuccess, "tail normalized output read failed");
+            for (int index = 0; index < WIDTH; ++index)
+                require(std::abs(double(actual[index]) - double(x[index] + a[index]) * inverse
+                    * w[index]) < 2e-6, "connected tail lost FFN residual or head norm");
+        }
+        require(align_native_cuda_q6_tail_run(ctx, kind, weights, attention, input,
+                norm, q4, q4, q4, norm, epsilon) == 0
+            && align_native_cuda_q6_head_greedy(ctx, &token) == 0 && token == -1,
+            "changed captured pointer accepted or stale choice retained");
+        require(align_native_cuda_q6_tail_run(ctx, kind, weights, input, attention,
+            norm, q4, q4, q4, norm, 2 * epsilon) == 0, "changed epsilon accepted");
+    }
+    require(align_native_cuda_q6_tail_reset(ctx, -1) == 1
+        && align_native_cuda_q6_head_greedy(ctx, &token) == 0 && token == -1,
+        "all-kind reset left readable output");
+    require(align_native_cuda_q6_tail_run(ctx, 1, weights, attention, input, norm,
+            q4, q4, q4, norm, 2 * epsilon) == 1
+        && align_native_cuda_q6_head_greedy(ctx, &token) == 1 && token == 0,
+        "reset refused valid replacement graph");
+    for (float bad : {0.0f, -epsilon, std::numeric_limits<float>::quiet_NaN(),
+                     std::numeric_limits<float>::infinity()})
+        require(align_native_cuda_q6_tail_run(ctx, 0, weights, input, attention,
+            norm, q4, q4, q4, norm, bad) == 0, "invalid epsilon accepted");
+    require(align_native_cuda_q6_tail_run(ctx, 3, weights, input, attention, norm,
+            q4, q4, q4, norm, epsilon) == 0
+        && align_native_cuda_q6_tail_run(ctx, 0, weights, nullptr, attention, norm,
+            q4, q4, q4, norm, epsilon) == 0
+        && align_native_cuda_q6_tail_reset(ctx, 3) == 0
+        && align_native_cuda_q6_tail_reset(ctx, -1) == 1, "invalid tail input accepted");
+    require(cudaFree(q4) == cudaSuccess && cudaFree(norm) == cudaSuccess
+        && cudaFree(attention) == cudaSuccess, "tail borrowed fixture release failed");
+}
+
 int main() {
     int64_t token = 99;
     require(align_native_cuda_q6_head_greedy(nullptr, &token) == 0 && token == -1,
@@ -110,11 +188,13 @@ int main() {
         require(align_native_cuda_q6_head_run_greedy(ctx, nullptr, nullptr) == 0
             && align_native_cuda_q6_head_greedy(ctx, &token) == 0 && token == -1,
             "failed prefetched projection retained stale choice");
+        check_tail(ctx, weights, input);
         require(cudaFree(input) == cudaSuccess && cudaFree(weights) == cudaSuccess,
             "projection fixture release failed");
         align_native_cuda_q6_head_close(ctx);
     }
     align_native_cuda_q6_head_close(nullptr);
     puts("CUDA native-head greedy: ties, signed zero, extreme/random finite rows, "
-         "nonfinite rejection, repeated/stale reads and construction pass");
+         "nonfinite rejection, repeated/stale reads, connected tail scalar norm/residual, "
+         "capture/replay/identity/reset and construction pass");
 }

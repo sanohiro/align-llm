@@ -466,6 +466,10 @@ if [[ "${flavour}" = real* ]] && [ "${native_cuda}" = 1 ]; then
     "${native_flags[@]+"${native_flags[@]}"}" \
     -c "${root_dir}/scripts/native_cuda_q6_head.cu" -o "${q6_object}"
   native_objects+=("${q6_object}")
+  q4_object="${out_dir}/align_native_cuda_q40_ffn.o"
+  "${cuda_compiler}" -O2 -std=c++17 -Xcompiler -fPIC \
+    -c "${root_dir}/scripts/native_cuda_q40_ffn.cu" -o "${q4_object}"
+  native_objects+=("${q4_object}")
   include_flags+=("-DALIGN_LLM_NATIVE_CUDA=1")
   link_flags+=("-L${cuda_root}/lib64" "-lcudart" "-lstdc++")
 fi

@@ -287,6 +287,45 @@ __attribute__((used)) static struct { const void *replacement, *original; } inte
         (const void *)&traced_compute, (const void *)&align_gpu_graph_compute
     };
 #else
+// Registration challenges are independent oracle work, never a product dispatch.
+int32_t align_gpu_native_ffn_tail_register(void *owner, int32_t kind, void *slots,
+        int64_t input, int64_t attention, int64_t norm, int64_t gate, int64_t up,
+        int64_t down, int64_t head_norm, int64_t epsilon) {
+    typedef int32_t (*register_fn)(void *, int32_t, void *, int64_t, int64_t,
+        int64_t, int64_t, int64_t, int64_t, int64_t, int64_t);
+    static register_fn original;
+    if (original == NULL) {
+        void *symbol = dlsym(RTLD_NEXT, "align_gpu_native_ffn_tail_register");
+        require(symbol != NULL, "tail registration symbol unavailable");
+        memcpy(&original, &symbol, sizeof(original));
+    }
+    // Stable shim status: CONFIG=-1. All rejected attempts must leave the owner usable.
+    require(original(owner, 3, slots, input, attention, norm, gate, up, down, head_norm, epsilon) == -1,
+        "invalid tail kind accepted");
+    require(original(owner, kind, NULL, input, attention, norm, gate, up, down, head_norm, epsilon) == -1,
+        "absent tail slots accepted");
+    require(original(owner, kind, slots, input, attention, gate, gate, up, down, head_norm, epsilon) == -1,
+        "invalid norm type accepted");
+    require(original(owner, kind, slots, input, attention, norm, gate, up, gate, head_norm, epsilon) == -1,
+        "invalid down shape accepted");
+    require(original(owner, kind, slots, input, attention, norm, gate, up, down, head_norm, 0) == -1,
+        "invalid tail epsilon accepted");
+    require(original(owner, kind, slots, input, attention, norm, gate, up, down, norm, epsilon) == -1,
+        "different head norm accepted");
+    require(original(owner, kind, slots, attention, input, norm, gate, up, down, head_norm, epsilon) == -1,
+        "different residual chain accepted");
+    require(original(owner, kind, slots, input, attention, norm, up, gate, down, head_norm, epsilon) == -1,
+        "different gate/up chain accepted");
+    const int32_t status = original(owner, kind, slots, input, attention, norm, gate, up, down,
+        head_norm, epsilon);
+    if (status == 0) {
+        require(original(owner, kind, slots, input, attention, norm, gate, up, down,
+            head_norm, epsilon) == -1, "duplicate tail registration accepted");
+        fprintf(stderr, "Q35_TAIL_REG {\"kind\":%d,\"refusals\":9}\n", kind);
+    }
+    return status;
+}
+
 int32_t align_gpu_graph_compute(void *owner, int32_t kind, const void *key,
                                int64_t length, void *value) {
     return traced_compute(owner, kind, key, length, value);

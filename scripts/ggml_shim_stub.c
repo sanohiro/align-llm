@@ -2910,6 +2910,23 @@ int64_t align_gpu_native_q6_head_greedy(void *owner) {
     return -1;
 }
 
+int32_t align_gpu_native_ffn_tail_mode(void *owner, int32_t mode) {
+    return owner != NULL && mode == 0 ? ALIGN_GPU_OK : ALIGN_GPU_UNSUPPORTED;
+}
+
+int32_t align_gpu_native_ffn_tail_enabled(void *owner) {
+    (void) owner;
+    return 0;
+}
+
+int32_t align_gpu_native_ffn_tail_register(void *owner, int32_t kind, void *slots,
+        int64_t input, int64_t attention, int64_t norm, int64_t gate, int64_t up,
+        int64_t down, int64_t head_norm, int64_t epsilon_bits) {
+    (void) owner; (void) kind; (void) slots; (void) input; (void) attention;
+    (void) norm; (void) gate; (void) up; (void) down; (void) head_norm; (void) epsilon_bits;
+    return ALIGN_GPU_UNSUPPORTED;
+}
+
 int32_t align_gpu_native_q6_head_read(void *owner, void *bytes, int64_t n) {
     (void) owner; (void) bytes; (void) n;
     return ALIGN_GPU_UNSUPPORTED;

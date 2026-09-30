@@ -1082,6 +1082,10 @@ struct align_gpu_device_state {
     struct ggml_tensor *native_q6_head_weights[ALIGN_GPU_GRAPH_KINDS];
     struct ggml_tensor *native_q6_head_inputs[ALIGN_GPU_GRAPH_KINDS];
     struct ggml_tensor *native_q6_head_outputs[ALIGN_GPU_GRAPH_KINDS];
+    int native_ffn_tail;
+    struct ggml_tensor *native_ffn_tail_tensors[ALIGN_GPU_GRAPH_KINDS][7];
+    struct ggml_tensor *native_ffn_tail_nodes[ALIGN_GPU_GRAPH_KINDS][10];
+    float native_ffn_tail_epsilon[ALIGN_GPU_GRAPH_KINDS];
     struct ggml_tensor *native_copy_greedy_source[ALIGN_GPU_GRAPH_KINDS];
     int native_state_copy_count[ALIGN_GPU_GRAPH_KINDS];
     struct ggml_tensor *native_state_copy_sources[ALIGN_GPU_GRAPH_KINDS][64];
@@ -1560,6 +1564,8 @@ int32_t align_gpu_memory_admit(
 #if defined(ALIGN_LLM_NATIVE_CUDA)
         || (state->native_q6_head && !align_gpu_add_bytes(device_total,
             ALIGN_NATIVE_CUDA_Q6_HEAD_DEVICE_BYTES, &device_total))
+        || (state->native_ffn_tail && !align_gpu_add_bytes(device_total,
+            ALIGN_NATIVE_CUDA_FFN_TAIL_DEVICE_BYTES, &device_total))
 #endif
         || !align_gpu_add_bytes(metadata_bytes, staging_bytes, &host_total)
         || !align_gpu_add_bytes(host_total, legacy_cache_bytes, &host_total)
@@ -1571,6 +1577,12 @@ int32_t align_gpu_memory_admit(
     if (state->native_q6_head) {
         state->native_q6_head_context = align_native_cuda_q6_head_open(0);
         if (state->native_q6_head_context == NULL) return ALIGN_GPU_ALLOCATION;
+        if (state->native_ffn_tail
+            && !align_native_cuda_q6_tail_enable(state->native_q6_head_context)) {
+            align_native_cuda_q6_head_close(state->native_q6_head_context);
+            state->native_q6_head_context = NULL;
+            return ALIGN_GPU_ALLOCATION;
+        }
     }
 #endif
     state->weights_bytes = weights_bytes;
@@ -1910,6 +1922,7 @@ int64_t align_gpu_memory_allocated_bytes(void *owner, int32_t field) {
     if (state->native_q6_head) {
         workspace += ALIGN_NATIVE_CUDA_Q6_HEAD_DEVICE_BYTES;
     }
+    if (state->native_ffn_tail) workspace += ALIGN_NATIVE_CUDA_FFN_TAIL_DEVICE_BYTES;
 #endif
     switch (field) {
     case 0: return state->metadata_bytes + (state->shape_planning ? 0 : state->staging_bytes);
@@ -2594,6 +2607,7 @@ int32_t align_gpu_native_state_copy_mode(void *owner, int32_t mode) {
     if (state == NULL || (mode != 0 && mode != 1) || state->weights_finished
         || state->workspace_prepared) return ALIGN_GPU_CONFIG;
     if (mode == 0) return state->native_state_copy ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+    if (state->native_ffn_tail) return ALIGN_GPU_CONFIG;
 #if defined(__APPLE__)
     ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(state->backend);
     const char *name = buft == NULL ? NULL : ggml_backend_buft_name(buft);
@@ -2656,6 +2670,26 @@ int32_t align_gpu_native_q6_head_mode(void *owner, int32_t mode) {
 int32_t align_gpu_native_q6_head_enabled(void *owner) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     return state != NULL && state->native_q6_head == 1 ? 1 : 0;
+}
+
+int32_t align_gpu_native_ffn_tail_mode(void *owner, int32_t mode) {
+    struct align_gpu_device_state *state = owner;
+    if (state == NULL || (mode != 0 && mode != 1) || state->memory_planned
+        || state->weights_finished || state->workspace_prepared) return ALIGN_GPU_CONFIG;
+    if (mode == 0) return state->native_ffn_tail ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+#if defined(ALIGN_LLM_NATIVE_CUDA)
+    if (!state->native_q6_head || state->native_state_copy || state->native_ffn_tail)
+        return ALIGN_GPU_UNSUPPORTED;
+    state->native_ffn_tail = 1;
+    return ALIGN_GPU_OK;
+#else
+    return ALIGN_GPU_UNSUPPORTED;
+#endif
+}
+
+int32_t align_gpu_native_ffn_tail_enabled(void *owner) {
+    struct align_gpu_device_state *state = owner;
+    return state != NULL && state->native_ffn_tail == 1 ? 1 : 0;
 }
 
 int64_t align_gpu_native_q6_head_greedy(void *owner) {
@@ -2803,6 +2837,90 @@ int32_t align_gpu_native_q6_head_register(void *owner, int32_t kind,
     state->native_q6_head_weights[kind] = weight;
     state->native_q6_head_inputs[kind] = input;
     state->native_q6_head_outputs[kind] = output;
+    return ALIGN_GPU_OK;
+}
+
+static int align_gpu_tail_shape(struct ggml_tensor *tensor, enum ggml_type type,
+        int64_t width, int64_t rows) {
+    return tensor != NULL && tensor->type == type && ggml_is_contiguous(tensor)
+        && tensor->ne[0] == width && tensor->ne[1] == rows
+        && tensor->ne[2] == 1 && tensor->ne[3] == 1;
+}
+
+int32_t align_gpu_native_ffn_tail_register(void *owner, int32_t kind, void *slots,
+        int64_t input_slot, int64_t attention_slot, int64_t norm_slot,
+        int64_t gate_slot, int64_t up_slot, int64_t down_slot,
+        int64_t head_norm_slot, int64_t epsilon_bits) {
+    struct align_gpu_device_state *state = owner;
+    struct ggml_tensor *tensors[7] = {
+        align_ggml_slot_load(slots, input_slot), align_ggml_slot_load(slots, attention_slot),
+        align_ggml_slot_load(slots, norm_slot), align_ggml_slot_load(slots, gate_slot),
+        align_ggml_slot_load(slots, up_slot), align_ggml_slot_load(slots, down_slot),
+        align_ggml_slot_load(slots, head_norm_slot)
+    };
+    struct ggml_tensor *nodes[10], *view;
+    float epsilon, actual;
+    uint32_t bits = (uint32_t) epsilon_bits;
+    if (state == NULL || !state->native_ffn_tail || !align_gpu_graph_kind_ok(kind)
+        || state->graph_prepared[kind] || state->native_ffn_tail_tensors[kind][0] != NULL
+        || state->native_q6_head_inputs[kind] == NULL || epsilon_bits < 0
+        || epsilon_bits > UINT32_MAX) return ALIGN_GPU_CONFIG;
+    memcpy(&epsilon, &bits, sizeof(epsilon));
+    if (!isfinite(epsilon) || epsilon <= 0.0f) return ALIGN_GPU_CONFIG;
+    for (int at = 0; at < 7; ++at) {
+        const enum ggml_type type = at >= 3 && at <= 5 ? GGML_TYPE_Q4_0 : GGML_TYPE_F32;
+        const int64_t width = at == 5 ? 6144 : 2048;
+        const int64_t rows = at == 3 || at == 4 ? 6144 : at == 5 ? 2048 : 1;
+        if (!align_gpu_tail_shape(tensors[at], type, width, rows)
+            || (type == GGML_TYPE_Q4_0 && ggml_nbytes(tensors[at]) != 7077888))
+            return ALIGN_GPU_CONFIG;
+    }
+    // Verify the exact metadata chain removed from ggml, including both residuals.
+    nodes[9] = state->native_q6_head_inputs[kind];
+    if (nodes[9]->op != GGML_OP_MUL || nodes[9]->src[1] != tensors[6]) return ALIGN_GPU_CONFIG;
+    nodes[8] = nodes[9]->src[0];
+    if (!align_gpu_tail_shape(nodes[8], GGML_TYPE_F32, 2048, 1)
+        || nodes[8]->op != GGML_OP_RMS_NORM) return ALIGN_GPU_CONFIG;
+    view = nodes[8]->src[0];
+    if (!align_gpu_tail_shape(view, GGML_TYPE_F32, 2048, 1)
+        || view->op != GGML_OP_VIEW || view->view_offs != 0) return ALIGN_GPU_CONFIG;
+    nodes[7] = view->src[0];
+    if (!align_gpu_tail_shape(nodes[7], GGML_TYPE_F32, 2048, 1)
+        || nodes[7]->op != GGML_OP_ADD) return ALIGN_GPU_CONFIG;
+    nodes[0] = nodes[7]->src[0];
+    nodes[6] = nodes[7]->src[1];
+    if (!align_gpu_tail_shape(nodes[0], GGML_TYPE_F32, 2048, 1)
+        || nodes[0]->op != GGML_OP_ADD || nodes[0]->src[0] != tensors[0]
+        || nodes[0]->src[1] != tensors[1]
+        || !align_gpu_tail_shape(nodes[6], GGML_TYPE_F32, 2048, 1)
+        || nodes[6]->op != GGML_OP_MUL_MAT || nodes[6]->src[0] != tensors[5])
+        return ALIGN_GPU_CONFIG;
+    nodes[5] = nodes[6]->src[1];
+    if (!align_gpu_tail_shape(nodes[5], GGML_TYPE_F32, 6144, 1)
+        || nodes[5]->op != GGML_OP_GLU || ggml_get_glu_op(nodes[5]) != GGML_GLU_OP_SWIGLU
+        || nodes[5]->op_params[1] != 0) return ALIGN_GPU_CONFIG;
+    nodes[3] = nodes[5]->src[0];
+    nodes[4] = nodes[5]->src[1];
+    if (!align_gpu_tail_shape(nodes[3], GGML_TYPE_F32, 6144, 1)
+        || !align_gpu_tail_shape(nodes[4], GGML_TYPE_F32, 6144, 1)
+        || nodes[3]->op != GGML_OP_MUL_MAT || nodes[4]->op != GGML_OP_MUL_MAT
+        || nodes[3]->src[0] != tensors[3] || nodes[4]->src[0] != tensors[4]
+        || nodes[3]->src[1] != nodes[4]->src[1]) return ALIGN_GPU_CONFIG;
+    nodes[2] = nodes[3]->src[1];
+    if (!align_gpu_tail_shape(nodes[2], GGML_TYPE_F32, 2048, 1)
+        || nodes[2]->op != GGML_OP_MUL || nodes[2]->src[1] != tensors[2])
+        return ALIGN_GPU_CONFIG;
+    nodes[1] = nodes[2]->src[0];
+    if (!align_gpu_tail_shape(nodes[1], GGML_TYPE_F32, 2048, 1)
+        || nodes[1]->op != GGML_OP_RMS_NORM || nodes[1]->src[0] != nodes[0])
+        return ALIGN_GPU_CONFIG;
+    for (int at = 0; at < 2; ++at) {
+        memcpy(&actual, (at == 0 ? nodes[1] : nodes[8])->op_params, sizeof(actual));
+        if (actual != epsilon) return ALIGN_GPU_CONFIG;
+    }
+    memcpy(state->native_ffn_tail_tensors[kind], tensors, sizeof(tensors));
+    memcpy(state->native_ffn_tail_nodes[kind], nodes, sizeof(nodes));
+    state->native_ffn_tail_epsilon[kind] = epsilon;
     return ALIGN_GPU_OK;
 }
 
@@ -3428,6 +3546,11 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
         state->workspace_failed = 1;
         return ALIGN_GPU_COMPUTE;
     }
+    if (state->native_ffn_tail && state->native_q6_head_context != NULL
+        && !align_native_cuda_q6_tail_reset(state->native_q6_head_context, -1)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
 #endif
     for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; ++kind) {
         if (state->graph_prepared[kind]) {
@@ -3551,6 +3674,15 @@ int32_t align_gpu_graph_prepare(
         }
         observed_ops += 1; /* The native Q6_K projection is outside the ggml graph. */
     }
+    if (state->native_ffn_tail_tensors[kind][0] != NULL) {
+        for (node = 0; node < 10; ++node) {
+            if (!align_gpu_count_model_node(state, state->native_ffn_tail_nodes[kind][node],
+                    &observed_ops, &observed_layers, &observed_experts)) {
+                state->observation_failed = 1;
+                return ALIGN_GPU_CONFIG;
+            }
+        }
+    }
     state->graph_cached_nodes[kind] = observed_nodes;
     state->graph_cached_ops[kind] = observed_ops;
     state->graph_cached_layers[kind] = observed_layers;
@@ -3602,6 +3734,9 @@ int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
     state->native_q6_head_weights[kind] = NULL;
     state->native_q6_head_inputs[kind] = NULL;
     state->native_q6_head_outputs[kind] = NULL;
+    memset(state->native_ffn_tail_tensors[kind], 0, sizeof(state->native_ffn_tail_tensors[kind]));
+    memset(state->native_ffn_tail_nodes[kind], 0, sizeof(state->native_ffn_tail_nodes[kind]));
+    state->native_ffn_tail_epsilon[kind] = 0.0f;
     state->native_q6_head_ready = 0;
     if (kind == ALIGN_GPU_GRAPH_PREFILL) { state->prefill_rows_registered = 0; state->prefill_rows_valid = 0; }
     state->graph_prepared[kind] = 0;
@@ -3845,8 +3980,7 @@ static int align_gpu_native_q6_head_commit(struct align_gpu_device_state *state,
     input = state->native_q6_head_inputs[kind];
     if (state->native_q6_head_context == NULL || weight->buffer != state->weights_buffer
         || weight->data == NULL || input == NULL
-        || state->native_q6_head_outputs[kind] == NULL
-        || !align_gpu_native_cuda_extent(input, &input_base, &input_size, &input_offset))
+        || state->native_q6_head_outputs[kind] == NULL)
         return 0;
     buffer = weight->buffer;
     name = ggml_backend_buft_name(ggml_backend_buffer_get_type(buffer));
@@ -3857,8 +3991,31 @@ static int align_gpu_native_q6_head_commit(struct align_gpu_device_state *state,
     weight_offset = (uint64_t) ((uintptr_t) weight->data - (uintptr_t) weight_base);
     if (weight_offset > weight_size || 417177600 > weight_size - (size_t) weight_offset)
         return 0;
-    if (!align_native_cuda_q6_head_run_greedy(state->native_q6_head_context,
-            weight->data, input->data)) return 0;
+    if (state->native_ffn_tail_tensors[kind][0] != NULL) {
+        struct ggml_tensor **tensors = state->native_ffn_tail_tensors[kind];
+        for (int at = 0; at < 7; ++at) {
+            struct ggml_tensor *tensor = tensors[at];
+            if (tensor == NULL || tensor->data == NULL) return 0;
+            if (at < 2) {
+                if (!align_gpu_native_cuda_extent(tensor, &input_base, &input_size, &input_offset))
+                    return 0;
+            } else {
+                if (tensor->buffer != state->weights_buffer
+                    || (uintptr_t) tensor->data < (uintptr_t) weight_base) return 0;
+                const uint64_t offset = (uint64_t) ((uintptr_t) tensor->data - (uintptr_t) weight_base);
+                if (offset > weight_size || ggml_nbytes(tensor) > weight_size - (size_t) offset)
+                    return 0;
+            }
+        }
+        if (!state->native_ffn_tail || !align_native_cuda_q6_tail_run(state->native_q6_head_context,
+                kind, weight->data, tensors[0]->data, tensors[1]->data, tensors[2]->data,
+                tensors[3]->data, tensors[4]->data, tensors[5]->data, tensors[6]->data,
+                state->native_ffn_tail_epsilon[kind])) return 0;
+    } else {
+        if (!align_gpu_native_cuda_extent(input, &input_base, &input_size, &input_offset)
+            || !align_native_cuda_q6_head_run_greedy(state->native_q6_head_context,
+                weight->data, input->data)) return 0;
+    }
     state->observation_read_bytes += 8;
     state->observation_read_calls += 1;
     state->native_q6_head_ready = 1;

@@ -2,6 +2,7 @@
 #define ALIGN_NATIVE_CUDA_Q40_FFN_H
 
 #include <stddef.h>
+#define ALIGN_NATIVE_CUDA_Q40_FFN_DEVICE_BYTES 41984LL
 
 #ifdef __cplusplus
 extern "C" {
@@ -15,6 +16,10 @@ int align_native_cuda_q40_ffn_run(void *context, const void *gate, const void *u
 int align_native_cuda_q40_ffn_read(void *context, float *gated, size_t gated_count,
         float *output, size_t output_count);
 void align_native_cuda_q40_ffn_close(void *context);
+// Caller drains the borrowed stream before closing; these calls do not wait.
+int align_native_cuda_q40_ffn_enqueue(void *context, const void *gate, const void *up,
+        const void *down, const float *input, const float *residual, void *stream);
+const float *align_native_cuda_q40_ffn_output(void *context);
 
 #ifdef __cplusplus
 }

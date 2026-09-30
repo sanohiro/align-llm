@@ -2,6 +2,29 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Active connected CUDA FFN/residual/norm/head trial (2026-09-30)
+
+Branch `agent/native-cuda-ffn-tail`, base `b4814fb`. The user explicitly
+requested a larger optimization. Implement one native scalar final-layer
+FFN/residual/norm/head CUDA Graph, preserving multirow prefill and ordinary/
+plain-head controls. The authoritative public selection, cache ownership,
+58,368-byte added device cost, numerical/closure owners and request metrics
+are in `docs/specs/gpu-runtime-performance.md` before implementation.
+
+The implementation and real-model owners are complete. Three campaigns
+retain 2,700 timed Align requests with matching output/counts. Initial
+gains did not survive repeats: the final pointer-cache variant loses
+2.066/5.918/4.976 ms versus the preserved greedy-head route (1/5, 2/5,
+1/5 wins). Default/retained full logits/state, malformed/conflicting/
+budget refusals, scalar kernel and forced submit/completion/greedy owners
+pass. Last-row prefill exceeded the 0.01 logit bound and was excluded.
+
+Next: archive this tested source checkpoint, withdraw all active product
+and helper changes, record every pair and trace limits, review/preflight
+the final record, and merge. The user explicitly requested stopping
+after this PR; do not start another optimization. No new Align gap was
+encountered. Review/publication pending.
+
 ## Bounded CUDA optimization checkpoint (2026-09-30)
 
 Branch `agent/native-cuda-q4-cache-pressure`, integrated base `3592791`;
