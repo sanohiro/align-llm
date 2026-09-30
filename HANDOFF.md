@@ -19,12 +19,12 @@ gains did not survive repeats: the final pointer-cache variant loses
 budget refusals, scalar kernel and forced submit/completion/greedy owners
 pass. Last-row prefill exceeded the 0.01 logit bound and was excluded.
 
-Next: finish the final record's comprehensive review and exact-head
-preflight, publish and merge with a merge commit preserving `460eb4d`,
-then stop. The user explicitly requested no next optimization after
-this PR. Reproduction and every paired result are in
+If not yet integrated, finish publication with a merge commit preserving
+`460eb4d`. After integration, stop: the user explicitly requested no next
+optimization after this PR. There is no active work and any future trial
+requires an explicit resume. Reproduction and every paired result are in
 `docs/cuda-native-optimization-log.md`; raw artifacts stay outside Git.
-No new Align gap was encountered. No implementation work remains active.
+No new Align gap was encountered.
 
 ## Bounded CUDA optimization checkpoint (2026-09-30)
 
