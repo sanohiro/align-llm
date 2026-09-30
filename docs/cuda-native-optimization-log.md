@@ -1204,3 +1204,223 @@ remains a separate hypothesis requiring explicit cost, ownership and complete
 request/state/failure evidence. A final-layer-only connection cannot multiply
 its local gain by all 24 layers. Other models/GPUs and full DRAM counters are
 explicitly deferred until available; no new Align gap was encountered.
+
+## Withdrawn connected FFN/residual/norm/head execution unit (2026-09-30)
+
+The larger trial moved the final scalar layer's attention residual, learned
+RMS normalization, Q4 gate/up/SwiGLU/down and residual, head normalization,
+Q6 projection and greedy reduction into one native CUDA Graph. Align kept
+model construction and explicit selection. The ggml prefix expanded the
+raw final-layer input and attention result; it did not execute the removed
+FFN/head again. Multirow prefill kept the existing ggml FFN/native head.
+The trial added exactly 58,368 explicit device bytes: 41,984 Q4 scratch/output
+and two 8,192-byte rows, totaling 1,061,720 with the existing head. CUDA graph
+driver bookkeeping was not claimed as an exact accounted byte count.
+
+**Withdrawn:** repeated whole-request comparisons did not beat the preceding
+native greedy-head route. Its existing performance is retained, with no new
+flag, ABI, helper or test in active `src/` or `scripts/`. The complete tested
+experiment is preserved in commit
+`460eb4d3f5b3edae78dae2e6716c73a002e95666`. That snapshot is a historical
+experiment, not an adopted performance improvement or a supported new mode.
+The user requested stopping after this PR; no next experiment is active.
+
+Three uninstrumented campaigns used RTX 4070 Ti, CUDA 13.3 and driver 610,
+the same authenticated 2B Q4_0 model and pinned ggml bundle as above.
+Each case had five alternating pairs and twenty completed requests per
+Align arm per pair. Each cell below is the arithmetic mean of those twenty
+requests in milliseconds; gain summaries use the median of five paired
+mean differences. Every nanosecond sample is retained outside Git. Each
+campaign contains 900 timed Align requests, totaling 2,700. All output text,
+actual prompt/completion counts and repeated outputs matched. The pinned
+llama.cpp arm contributes one warm generation interval per pair, following
+two warmups; it excludes model loading and text detokenization. Align's
+clock includes the retained worker round trip. These are named warm-request
+metrics, not startup, HTTP/SSE, time-to-passing-patch or general backend
+superiority claims.
+
+The preserved greedy-head executable SHA256 is
+`5b474ca53c23881cc9c876df5cc0497e4007ffd84a020a3eff5912a989df9574`;
+its shim is
+`58bbf96330a59c362b8287ad81a4c4952e687c9c2790cae2d3da870f930560a4`.
+The measurement checked both digests and the actual loaded Linux shim
+path/device/inode before timing. The final cache candidate executable is
+`d6976aa3de3d0dd066c8f75aa4480efbbb1254769b4cd11b77a9df4209ea9355`,
+and its shim is
+`341f2a8fdedacb4048c4a726486a0fc02f30c27077b290acc425f9b3ef8b8cbe`.
+The model, plugin, reference executable and pinned source identities remain
+those recorded earlier in this document; none changed between the arms.
+
+The first campaign was encouraging, but its gains did not survive repeats.
+The second campaign used the same scalar arithmetic after excluding failed
+last-row prefill; the third also cached CUDA pointer validation. Replay
+checked exact pointer/epsilon identities, with owner extents checked at
+commit and every native graph destroyed before workspace release. That
+removed repeated attribute queries without changing device math. This
+revision still lost to the preceding head, so it was also withdrawn.
+
+| Campaign | Prompt/output | Gain vs preceding head (ms) | Wins | Gain vs ordinary Align (ms) | Wins | Gain vs llama.cpp (ms) | Wins |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Initial | 56/16 | +0.057 | 4/5 | +2.381 | 5/5 | +19.480 | 5/5 |
+| Initial | 200/32 | +3.897 | 4/5 | +1.576 | 4/5 | +11.062 | 5/5 |
+| Initial | 330/64 | +3.673 | 4/5 | +4.999 | 5/5 | +14.283 | 5/5 |
+| Repeat | 56/16 | −1.692 | 1/5 | +0.185 | 3/5 | +13.393 | 5/5 |
+| Repeat | 200/32 | +3.646 | 3/5 | +2.524 | 4/5 | +3.589 | 5/5 |
+| Repeat | 330/64 | −1.296 | 1/5 | +1.668 | 3/5 | +17.726 | 5/5 |
+| Cached validation | 56/16 | −2.066 | 1/5 | +0.074 | 3/5 | +15.700 | 5/5 |
+| Cached validation | 200/32 | −5.918 | 2/5 | +1.675 | 3/5 | +8.787 | 5/5 |
+| Cached validation | 330/64 | −4.976 | 1/5 | +3.457 | 4/5 | +15.181 | 5/5 |
+
+Positive is control minus candidate. The comparison with ordinary Align or
+llama.cpp does not establish added value over the already retained native
+head. Timing variation is substantial, and no exact causal split of the
+request regression is claimed.
+
+Initial campaign, all pairs:
+
+| Prompt/output | Pair | Ordinary Align | Connected tail | Preceding head | Pinned llama.cpp |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 56/16 | 0 | 73.934 | 73.765 | 72.853 | 87.719 |
+| 56/16 | 1 | 73.170 | 70.154 | 70.175 | 95.051 |
+| 56/16 | 2 | 72.325 | 69.944 | 70.001 | 94.188 |
+| 56/16 | 3 | 73.009 | 69.947 | 70.221 | 86.063 |
+| 56/16 | 4 | 72.352 | 70.680 | 71.702 | 90.160 |
+| 200/32 | 0 | 159.676 | 164.539 | 157.066 | 169.061 |
+| 200/32 | 1 | 158.810 | 158.193 | 163.998 | 175.284 |
+| 200/32 | 2 | 158.179 | 156.410 | 162.705 | 167.472 |
+| 200/32 | 3 | 157.587 | 155.026 | 158.923 | 171.358 |
+| 200/32 | 4 | 157.143 | 155.568 | 157.138 | 166.164 |
+| 330/64 | 0 | 306.516 | 300.357 | 303.917 | 326.560 |
+| 330/64 | 1 | 308.657 | 304.265 | 309.014 | 317.993 |
+| 330/64 | 2 | 309.007 | 308.331 | 297.328 | 322.614 |
+| 330/64 | 3 | 319.011 | 304.100 | 308.982 | 317.850 |
+| 330/64 | 4 | 307.650 | 302.651 | 306.324 | 318.560 |
+
+Repeat campaign, all pairs:
+
+| Prompt/output | Pair | Ordinary Align | Connected tail | Preceding head | Pinned llama.cpp |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 56/16 | 0 | 75.203 | 78.710 | 76.024 | 92.118 |
+| 56/16 | 1 | 77.610 | 76.737 | 71.645 | 86.651 |
+| 56/16 | 2 | 73.295 | 73.110 | 71.532 | 86.503 |
+| 56/16 | 3 | 73.269 | 74.089 | 72.397 | 86.740 |
+| 56/16 | 4 | 75.119 | 72.146 | 72.607 | 99.068 |
+| 200/32 | 0 | 163.307 | 159.928 | 163.574 | 167.667 |
+| 200/32 | 1 | 160.908 | 158.384 | 164.701 | 166.984 |
+| 200/32 | 2 | 163.865 | 167.125 | 159.680 | 168.196 |
+| 200/32 | 3 | 168.901 | 164.368 | 169.861 | 165.196 |
+| 200/32 | 4 | 168.791 | 168.282 | 165.927 | 171.870 |
+| 330/64 | 0 | 315.099 | 315.579 | 310.527 | 329.143 |
+| 330/64 | 1 | 314.724 | 309.814 | 308.788 | 329.070 |
+| 330/64 | 2 | 313.942 | 312.274 | 310.978 | 330.000 |
+| 330/64 | 3 | 314.238 | 315.959 | 312.711 | 325.729 |
+| 330/64 | 4 | 313.789 | 308.247 | 309.525 | 327.558 |
+
+Cached-validation campaign, all pairs:
+
+| Prompt/output | Pair | Ordinary Align | Connected tail | Preceding head | Pinned llama.cpp |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 56/16 | 0 | 76.376 | 77.345 | 75.082 | 100.013 |
+| 56/16 | 1 | 75.991 | 76.727 | 71.708 | 90.596 |
+| 56/16 | 2 | 73.172 | 73.098 | 71.667 | 88.798 |
+| 56/16 | 3 | 76.739 | 73.652 | 71.586 | 88.655 |
+| 56/16 | 4 | 73.494 | 72.633 | 73.419 | 90.080 |
+| 200/32 | 0 | 165.924 | 168.807 | 158.065 | 174.073 |
+| 200/32 | 1 | 167.570 | 165.895 | 159.977 | 170.563 |
+| 200/32 | 2 | 162.311 | 163.990 | 157.847 | 172.778 |
+| 200/32 | 3 | 168.530 | 158.749 | 162.285 | 171.958 |
+| 200/32 | 4 | 167.995 | 160.256 | 165.897 | 175.706 |
+| 330/64 | 0 | 311.937 | 316.012 | 307.905 | 324.869 |
+| 330/64 | 1 | 310.988 | 308.863 | 305.578 | 323.226 |
+| 330/64 | 2 | 318.498 | 310.521 | 305.545 | 334.420 |
+| 330/64 | 3 | 315.473 | 305.898 | 310.895 | 326.581 |
+| 330/64 | 4 | 318.606 | 315.149 | 310.078 | 330.329 |
+
+The raw receipt SHA256 values are:
+
+| Receipt | SHA256 |
+| --- | --- |
+| `requests.log` | `54736438b81a5a9bd0642894dc4657ca76cbdf2bb0f9303a163ffc389527fe98` |
+| `requests-final.log` | `8ed1efbefda58ade35c6a2978a40a1b55ca235681e9d6ec71d711fea94a0baeb` |
+| `requests-cache.log` | `79abeb6ddf1db241acf83063b1b5385f60ebd5f48df0554a35cf7b1fbfd53827` |
+
+The final scalar owner passed three full vocabulary rows and 252 exact state
+planes for each 31/200/330-token prompt, retained short/wider/short requests,
+nine registration challenges per decode graph, five malformed/conflicting
+selections, insufficient device budget and forced submit/completion/greedy
+failures. Ordinary control remained usable under each fault; selected workers
+returned failure without output and exited 2. All scalar logits satisfy the
+unchanged 0.01 absolute bound; maximum observed error was 1.90734863e-6.
+Cumulative model-operation credit matched ordinary Align at 2,058. At the
+8,000,000,000-byte device budget, selected allocated/observed-peak bytes were
+1,281,515,224, 1,296,453,336 and 1,308,167,896 respectively. Those are explicit
+shim observations, not a claim to account for every opaque driver allocation.
+
+The kernel owner also passed a scalar reference for learned normalization
+and residual addition, all three graph kinds, capture/replay, changed-pointer
+and epsilon refusal, all-kind reset/reconstruction, ties and stale/nonfinite
+read rejection. The Q4 standalone full-row owner and a paired build against
+the same source passed with the new borrowed-stream exports renamed in the
+baseline object. `make build`, `make fmt`, Python boundary, shell syntax and
+diff checks passed for the experiment. None of these tests adopts the route.
+
+A wider optional prefill trial using the existing last-FFN-row selection
+failed its full-logit owner: the first offending value was 12.9820556640625
+ordinary versus 12.994684219360352 native, a 0.0126285553 difference. Matching
+pinned RMS reduction order and fast division did not remove that failure;
+both variants were discarded. The final snapshot refuses that combination
+before admission. Its precise numeric cause remains unresolved; the bound
+was not loosened. The existing plain native head with last-row prefill passed
+all three real-model cases independently.
+
+Separate node-level Nsight traces requested 32 tokens for `hello ` repeated
+170 times. Both actually returned the same 18 visible tokens plus EOG after
+19 projections; this is a 200-token trace with 18 scalar decode tails, not the
+200/32 timing workload. Tail trace: 18 native gate/up, 18 native down, 36
+native residual/norm and 19 native Q6/reducer executions, with exactly 19
+eight-byte D2H copies. The preceding-head trace also has 19 projections and
+copies. Its final FFN nodes disappear from the prefix; the corresponding
+native nodes execute once. Native gate/up/down medians were 35.186/17.857 us,
+versus 35.0265/17.857 us for the preceding graph's final FFN. Device kernel
+superiority was not established. The tail trace has three additional native
+graph instantiations, consistent with reset/reconstruction of shared ggml
+workspace. These instrumented cold traces do not measure warm lifecycle cost
+or explain the whole request regression. Hardware counters remain denied on
+this host, and other GPUs/models remain unmeasured.
+
+Reproduction requires the archived source. Publication must preserve
+`460eb4d` as an ancestor by using a merge commit; squash or rebase that drops
+that source checkpoint is unsupported. Verify the final merging head with
+`git merge-base --is-ancestor 460eb4d3f5b3edae78dae2e6716c73a002e95666 HEAD`.
+Prepare a detached worktree at that commit, use the pinned managed Align
+compiler and the authenticated model/bundle inputs already named above,
+then run:
+
+```sh
+ALIGN_LLM_NATIVE_CUDA=1 \
+  ALIGN_LLM_GGML_INCLUDE="$GGML_SOURCE/ggml/include" \
+  ALIGN_LLM_GGML_LIB="$GGML_LIB" ALIGN_LLM_GGML_SHIM_DIR="$TRIAL_SHIM" make build
+scripts/run-native-cuda-q6-greedy-test
+QWEN35_NATIVE_FFN_TAIL=1 scripts/run-qwen35-native-q6-head-smoke
+QWEN35_CUDA_MEASURE_MODE=ffn-tail QWEN35_CUDA_PAIR_REQUESTS=20 \
+  scripts/measure-qwen35-native-cuda
+```
+
+Compile `scripts/trace-qwen35-state.c` from the same archived worktree for the
+full-row/registration owner. Set its `QWEN35_STATE_TRACE`, real
+`QWEN35_NATIVE_Q6_BINARY`/`QWEN35_NATIVE_COPY_BINARY`, existing authenticated
+model/pack/geometry/options variables, pinned llama benchmark/source/digest,
+and the preceding binary/shim paths and digests shown above. Do not rebuild
+or overwrite either loaded shim during a campaign. Forced fault builds use
+`ALIGN_LLM_GGML_FORCE=native-q6-submit|native-q6-complete|native-q6-greedy` in
+separate shim directories, `LD_PRELOAD` that shim, and the corresponding
+`QWEN35_NATIVE_Q6_FAILURE=submit|complete|greedy` owner selector. Node traces
+require `--cuda-graph-trace=node`; aggregate graph traces do not expose the
+captured kernels and cannot prove per-node counts.
+
+The bounded lesson is that connecting this final tail into one graph was
+numerically qualified for the tested scalar requests, but neither its device
+FFN nor complete request beat the preceding route repeatably. A future attempt
+needs a separately measured kernel/layout or persistent-workspace hypothesis
+before broader integration. No final-layer gain is multiplied by 24, and no
+new permanent gate or follow-up task is introduced by this failed screen.

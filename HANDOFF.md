@@ -2,6 +2,30 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Completed larger CUDA FFN/residual/norm/head trial (2026-09-30)
+
+Branch `agent/native-cuda-ffn-tail`, base `b4814fb`, archived experiment
+`460eb4d`. The larger scalar final-layer FFN/residual/norm/head CUDA Graph
+is withdrawn. Active `src/`, `scripts/` and Python classification are
+restored to the base; the preceding native greedy-head route remains.
+The preimplementation cost/ownership/closure ledger is retained as an
+explicitly historical contract in `docs/specs/gpu-runtime-performance.md`.
+
+The implementation and real-model owners are complete. Three campaigns
+retain 2,700 timed Align requests with matching output/counts. Initial
+gains did not survive repeats: the final pointer-cache variant loses
+2.066/5.918/4.976 ms versus the preserved greedy-head route (1/5, 2/5,
+1/5 wins). Default/retained full logits/state, malformed/conflicting/
+budget refusals, scalar kernel and forced submit/completion/greedy owners
+pass. Last-row prefill exceeded the 0.01 logit bound and was excluded.
+
+If not yet integrated, finish publication with a merge commit preserving
+`460eb4d`. After integration, stop: the user explicitly requested no next
+optimization after this PR. There is no active work and any future trial
+requires an explicit resume. Reproduction and every paired result are in
+`docs/cuda-native-optimization-log.md`; raw artifacts stay outside Git.
+No new Align gap was encountered.
+
 ## Bounded CUDA optimization checkpoint (2026-09-30)
 
 Branch `agent/native-cuda-q4-cache-pressure`, integrated base `3592791`;
