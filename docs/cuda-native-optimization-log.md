@@ -311,6 +311,160 @@ lane mapping again. A larger connected CUDA boundary and its request
 correctness/timing remain the next consumer; other GPUs, Qwen sizes and
 Gemma are unmeasured.
 
+## Connected native-head CUDA greedy readback (2026-09-30)
+
+The user resumed experiments. The first connected candidate replaces the
+native head's full-row CPU greedy scan with a two-stage CUDA reduction and
+eight-byte readback, while preserving the complete logits for diagnostics.
+The source projection and selection mode remain unchanged. The helper adds
+7,768 admitted device bytes; Align, shim and CUDA sizes agree at 1,003,352.
+The kernel owner covers cross-warp/block ties, signed zero, extreme/random
+finite rows, NaN/infinities, repeated reads and invalidated output. Test
+fixture uploads explicitly use and drain the helper stream: a pageable
+default-stream upload was not a dependency for its nonblocking stream.
+
+`run-qwen35-native-q6-head-smoke` passed three full logits and 252 resident
+planes at 31/200/330 prompt tokens, with maximum error `1.90734863e-6` and
+equal model-operation counts (`2058`). Retained short/wider/short requests
+and malformed selection passed. Forced submit, completion and greedy
+failures each allowed the ordinary control but refused the selected request
+without output, worker exit 2. Build, formatter, Python boundary guard and
+its 30-case mutation owner passed. This is a local implementation checkpoint;
+publication/review remain pending.
+
+Two uninstrumented campaigns used two warmups followed by five alternating
+pairs per workload. The preserved full-row native control was built from
+`53872693b283a34dcda2ecc77e654f3029060340`, executable SHA-256
+`cb82d8fb9f10067bd1f247779d4bafdf92d7f9c6658a2455201e50fdba3e9f20`.
+The same model/plugin/pinned llama.cpp identities apply. All outputs matched.
+Paired gains below are milliseconds; positive favors the new candidate.
+
+| Run | Prompt/output | Previous native gain / wins | Ordinary Align gain / wins | Pinned llama.cpp gain / wins |
+| --- | --- | --- | --- | --- |
+| 1 | 56/16 | +3.909 / 4/5 | -1.112 / 2/5 | +15.505 / 4/5 |
+| 1 | 200/32 | +4.273 / 5/5 | -0.537 / 2/5 | +11.028 / 5/5 |
+| 1 | 330/64 | +3.707 / 4/5 | +9.240 / 4/5 | +18.996 / 4/5 |
+| 2 | 56/16 | +6.822 / 3/5 | +0.714 / 3/5 | +16.452 / 5/5 |
+| 2 | 200/32 | -0.786 / 2/5 | +2.405 / 3/5 | +7.538 / 4/5 |
+| 2 | 330/64 | +4.437 / 3/5 | +1.407 / 3/5 | +14.399 / 5/5 |
+
+The middle-workload reversal and large outliers prevent a general speed
+claim. All samples are retained outside Git in `measure-1.log` and
+`measure-2.log` under the durable trial evidence. Reproduce with the existing
+`measure-qwen35-native-cuda` inputs, `QWEN35_CUDA_MEASURE_MODE=q6-head`, and
+optional `QWEN35_CUDA_BASELINE_BINARY` plus its required exact
+`QWEN35_CUDA_BASELINE_SHA256`. A wrong baseline digest refuses before sessions.
+
+A separate three-token Nsight Systems trace contains exactly three D2H
+copies of eight bytes and no full-row copy. Native projection, partial and
+final reduction GPU intervals average 899.229/5.845/2.336 microseconds.
+The two decode projection-to-reduction gaps are 54.370 and 47.746
+microseconds in this instrumented run. This motivates the next bounded
+variant: submit reduction/readback before the projection's existing wait,
+then let the token reader consume a completed host result. Instrumented
+intervals do not predict uninstrumented request gains.
+
+### Submit greedy selection before the native completion wait
+
+The next candidate submits projection, both reduction kernels and the
+eight-byte readback before one stream wait. The token getter consumes a
+completed host choice without another CUDA call. The shim accounts that
+transfer at graph commit. Plain standalone projection callers retain the
+on-demand getter. Device allocation and projection arithmetic are unchanged.
+The kernel owner also exercises prefetched fixtures, a complete synthetic
+zero-weight projection, repeated reads and failed-projection invalidation.
+Complete real-model logits/state, retained requests, malformed mode and all
+three forced failure boundaries pass again. The maximum logit error remains
+`1.90734863e-6`; admitted/allocated/peak totals rise by exactly 7,768 bytes
+from the preserved native control.
+
+A first single-request campaign gave previous-native paired median gains
+of +6.502/-4.044/+8.303 ms and ordinary-Align gains of
++0.480/+2.880/+7.171 ms at 56/16, 200/32 and 330/64. The middle-workload
+reversal justified a bounded repeat campaign rather than a general claim.
+`QWEN35_CUDA_PAIR_REQUESTS=20` averages twenty actual requests per Align arm
+within each of five alternating pairs and retains every individual sample.
+Pinned llama.cpp retains one warm generation interval per pair; its column
+has different repetition uncertainty. All 900 timed Align requests have the
+required counts and matching output text. No samples were excluded.
+
+| Prompt/output | Pair | Ordinary Align ms | Candidate ms | Previous native ms | Pinned llama.cpp ms |
+| --- | --- | --- | --- | --- | --- |
+| 56/16 | 0 | 73.965 | 74.926 | 74.893 | 89.357 |
+| 56/16 | 1 | 72.979 | 72.186 | 73.981 | 87.275 |
+| 56/16 | 2 | 73.833 | 71.474 | 74.097 | 118.022 |
+| 56/16 | 3 | 75.948 | 71.652 | 74.352 | 90.036 |
+| 56/16 | 4 | 73.286 | 72.888 | 74.576 | 90.801 |
+| 200/32 | 0 | 163.087 | 159.299 | 160.577 | 169.586 |
+| 200/32 | 1 | 166.022 | 160.696 | 163.749 | 167.491 |
+| 200/32 | 2 | 163.313 | 166.156 | 162.359 | 171.037 |
+| 200/32 | 3 | 164.842 | 166.602 | 163.523 | 174.253 |
+| 200/32 | 4 | 163.150 | 161.103 | 165.267 | 173.345 |
+| 330/64 | 0 | 311.843 | 305.101 | 312.967 | 334.707 |
+| 330/64 | 1 | 366.157 | 303.507 | 318.498 | 319.143 |
+| 330/64 | 2 | 312.066 | 310.025 | 319.301 | 327.312 |
+| 330/64 | 3 | 313.232 | 302.839 | 317.390 | 342.798 |
+| 330/64 | 4 | 318.484 | 311.178 | 317.800 | 322.075 |
+
+| Prompt/output | Previous native gain / wins | Ordinary Align gain / wins | Pinned llama.cpp gain / wins |
+| --- | --- | --- | --- |
+| 56/16 | +1.795 ms / 4/5 | +0.794 ms / 4/5 | +17.913 ms / 5/5 |
+| 200/32 | +1.277 ms / 3/5 | +2.047 ms / 3/5 | +7.652 ms / 5/5 |
+| 330/64 | +9.277 ms / 5/5 | +7.306 ms / 5/5 | +17.287 ms / 5/5 |
+
+These are medians of paired arithmetic means, not pooled token throughput.
+The ordinary 330/64 pair 1 retains a 1,449.975 ms request outlier. The
+short/middle differences remain small and variable. The strongest result
+is this retained 2B/RTX 4070 Ti 330/64 workload; the route stays default-off.
+No cold-load, TTFT, other-model or other-device improvement is established.
+The baseline shim SHA-256 is
+`e932b6ba478a8969c44dcfe903cea06459d44e55c21c892814deea389a19da89`;
+the completed candidate shim is
+`58bbf96330a59c362b8287ad81a4c4952e687c9c2790cae2d3da870f930560a4`.
+Raw `measure-prefetched-1.log`, `measure-prefetched-batch20.log`, owner/fault
+logs and profiler artifacts remain outside Git. Reproduce with the existing
+explicit model/binary/plugin/trace inputs and baseline digest above, then
+`QWEN35_CUDA_PAIR_REQUESTS=20 scripts/measure-qwen35-native-cuda` in
+`q6-head` mode. Invalid repeat counts refuse before sessions.
+
+One comprehensive host-native review found that the new preserved binary
+digest did not bind the shared shim containing the CUDA implementation.
+The consolidated repair requires an explicit baseline shim path/digest,
+checks its hash before sessions, verifies the loaded Linux mapping's exact
+path/device/inode after readiness and rechecks the hash before timing.
+Wrong hash and wrong loaded path both refuse. The root-cause audit covers
+the optional baseline arm's executable/library identity; the existing plugin
+and pinned-reference identity checks remain. CUDA arithmetic and scheduling
+are unchanged by this measurement repair.
+
+A second complete twenty-request campaign verifies that loaded baseline
+identity, retains another 900 timed Align requests and gives:
+
+| Prompt/output | Previous native gain / wins | Ordinary Align gain / wins | Pinned llama.cpp gain / wins |
+| --- | --- | --- | --- |
+| 56/16 | +3.630 ms / 5/5 | +1.404 ms / 5/5 | +17.907 ms / 5/5 |
+| 200/32 | +2.584 ms / 4/5 | +1.317 ms / 4/5 | +7.117 ms / 4/5 |
+| 330/64 | +8.462 ms / 5/5 | +3.734 ms / 4/5 | +19.818 ms / 5/5 |
+
+All counts and output text match again. This repeats the strongest gain
+against the old native route, while the ordinary-Align gain remains smaller
+and variable. Raw pairs and every sample are in
+`measure-bound-shim-batch20.log`. Reproduction additionally requires
+`QWEN35_CUDA_BASELINE_SHIM` and `QWEN35_CUDA_BASELINE_SHIM_SHA256`, with the
+baseline shim digest above. Other controls retain their previous invocation.
+
+The separate 200/32 Nsight Systems trace contains exactly 32 eight-byte D2H
+copies and no full-row copy. Native projection averages 894.782 microseconds;
+projection-to-partial-reduction gap median is 1.184 microseconds, range
+1.088..86.276. This demonstrates the intended scheduling change; the earlier
+three-token trace is a different instrumented workload, not a paired timing
+control. Q4_0 fused one-column kernels still sum to 38.358 ms, unfused
+one-column kernels to 15.633 ms, and native projections to 28.633 ms.
+The actual 6144-row fused gate/up instances average 34.229 microseconds,
+well above the small repeatedly cached FFN screen. The next hypothesis must
+test larger weight working sets before projecting local Q4 gains onto a
+whole request. Nsight Compute bandwidth counters remain unavailable.
+
 ## Deferred CUDA hypotheses from user-supplied advice (2026-09-30)
 
 The user supplied a Claude analysis and explicitly requested recording useful
@@ -326,7 +480,7 @@ workloads and controls in their own receipts.
 | First | Profile prefill and decode separately, including host submission, synchronization, copies and allocations. | Use the existing 200/32 and short/wider request controls. Q4_0 and Q6_K dominate the current decode trace; do not infer that attention or prefill is the same bottleneck. A wall-time-minus-summed-kernel value includes host work, transfers, idle intervals and possible overlap, so inspect the timestamped critical path before calling it launch overhead. |
 | First | Inspect SASS load widths, register count/spills and independent outstanding loads; try bounded unrolling or layout changes. | The aligned Q4_0 loads above already demonstrate the value of inspecting generated code. Keep direct sm_89 compilation and record `-Xptxas=-v` output. Existing Q4_0/Q6_K block strides do not permit unconditional `uint4` loads; any repack needs explicit initialization cost, resident-memory accounting, ownership and reuse measurements. |
 | First | Extend native fusion across residual/RMSNorm, Q8 activation quantization and the FFN/output-head boundary. | DP4A, fused gate/up/SiLU and local CUDA Graphs already exist. Measure a larger connected boundary that avoids another ggml/native wait; preserve full logits/state, failure containment and operation/device-memory accounting. Kernel fusion and graph replay address different costs. |
-| Next | Capture/replay the connected native tail and reduce full-logit D2H/host greedy work. | The ggml decode graph is already captured; the connected native Q6_K helper still submits two kernels and reads a full row. Measure incremental tail replay or a CUDA greedy reduction. Preserve first-index ties, nonfinite policy, exact output/EOG handling and request failure semantics before any device-fed next token. Existing Metal greedy results do not establish a CUDA gain. |
+| Next | Capture/replay the connected native tail beyond the completed greedy-readback trial. | The ggml decode graph is already captured; the selected native Q6_K route now reduces on device and reads eight bytes before one completion wait. Measure incremental tail replay only against that completed baseline. Preserve first-index ties, nonfinite policy, exact output/EOG handling and request failure semantics before any device-fed next token. Existing Metal greedy results do not establish a CUDA gain. |
 | Conditional | Test streaming-load/cache hints and compute a workload-specific bandwidth estimate. | A small repeatedly executed Q4_0 FFN can reuse L2; bypass/eviction hints may hurt it. The Q6_K head has a much larger weight footprint. Keep useful payload bandwidth distinct from actual DRAM traffic, and include KV/recurrent-state bytes when estimating a whole request. `ncu` DRAM/sectors/occupancy counters need Windows-host permission, currently denied; do not invent their values. |
 | Conditional | Split long-context decode attention, share GQA KV reads, or use optimized prefill matrix/attention primitives. | Start only if a length-dependent profile makes attention or prefill material. Qwen3.5 has both recurrent DeltaNet and full-attention layers; generic 32-head/H100 examples do not describe its entire graph. Tensor Core/dequant primitives must match sm_89, actual quantization and token count. KV quantization changes rounding/state representation and needs separate qualification. |
 | Later | Revisit small-batch target verification or bounded draft generation with weight reuse across rows. | Existing lookup/acceptance screens have both gains and rejection regressions; inspect their receipts first. CUDA M=2–8 weight reuse is a hypothesis, not an automatic speculative-decoding win. Preserve exact acceptance/replay and measure complete requests. |
@@ -341,6 +495,31 @@ No fixed 80–90% kernel/60–70% request bandwidth rule is adopted, and no
 automatic 16-byte-load, cache-bypass or all-layer Tensor Core conversion is
 assumed to improve this workload. A selected future trial records its own
 numerical limits, cost ceiling and owner before implementation.
+
+### Verification of the linked optimization roundup (2026-09-30)
+
+The user also supplied this [optimization roundup](https://note.com/samehadaonsen/n/n8d53b4e1f746).
+Its linked upstream changes are useful discovery leads, with these corrections:
+
+- [llama.cpp PR #26079](https://github.com/ggml-org/llama.cpp/pull/26079/files)
+  adds hardware/quantization-specific MMVQ-to-MMQ thresholds, not the
+  article's `GGML_CUDA_MMVQ_MAX` environment variable. The measured pinned
+  source `bb4caa7540188872173c44d161602d9271386413` already contains the change
+  in `ggml/src/ggml-cuda/mmvq.cu`. Ada's dense Q4_0 and Q6_K cases retain the
+  default threshold. The useful later hypothesis is to measure dispatch
+  and weight reuse for actual multirow verification shapes; this change
+  does not supply a new setting for our one-column decode.
+- [vLLM PR #49750](https://github.com/vllm-project/vllm/pull/49750)
+  avoids a contiguous residual copy by accepting strided RMSNorm inputs.
+  Its B300, BF16, width-7168 benchmark reports 3.15x at 2,048 tokens and
+  1.23x at one token, rather than a 3.1x whole-request or RTX 4070 Ti gain.
+  Inspect our copy/normalization boundaries before considering a similar
+  change; the larger residual/RMSNorm/Q8 fusion hypothesis above remains
+  deferred pending a connected trace and correctness owner.
+
+Keep the roundup as a source of upstream links. Verify implemented APIs,
+merge status, workload and hardware in each primary source before selecting
+an experiment; neither reported factor predicts our request speed.
 
 ## 2026-09-29: Q4_0 half-block lane mapping follow-up
 

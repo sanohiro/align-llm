@@ -376,6 +376,7 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_native_state_copy_enabled(owner: raw) -> i32
   fn align_gpu_native_q6_head_mode(owner: raw, mode: i32) -> i32
   fn align_gpu_native_q6_head_enabled(owner: raw) -> i32
+  fn align_gpu_native_q6_head_greedy(owner: raw) -> i64
   fn align_gpu_native_q6_head_read(owner: raw, bytes: slice<u8>, n: i64) -> i32
   fn align_gpu_native_q6_head_register(owner: raw, kind: i32, slots: slice<u8>,
     weight: i64, input: i64, output: i64) -> i32
@@ -1192,6 +1193,15 @@ pub fn gpu_native_q6_head_select(borrow owner: GpuDevice, enabled: bool) -> Resu
 pub fn gpu_native_q6_head_enabled(borrow owner: GpuDevice) -> bool {
   unsafe {
     return align_gpu_native_q6_head_enabled(resource.raw(resource.borrow(owner))) == 1
+  }
+}
+
+pub fn gpu_native_q6_head_greedy(borrow owner: GpuDevice, label: str) -> Result<i64, Fault> {
+  gpu_failure_activity(GPU_STAGE_READBACK)
+  unsafe {
+    token := align_gpu_native_q6_head_greedy(resource.raw(resource.borrow(owner)))
+    if token < 0 || token >= 248320 { return Err(fault("COMPUTE", label)) }
+    return Ok(token)
   }
 }
 

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" -ne 0 ]; then
+  echo 'usage: run-native-cuda-q6-greedy-test' >&2
+  exit 2
+fi
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+test_dir=$(mktemp -d)
+trap 'rm -rf -- "$test_dir"' EXIT
+nvcc -O2 -std=c++17 -gencode arch=compute_89,code=sm_89 \
+  "$root_dir/scripts/test-native-cuda-q6-greedy.cu" -o "$test_dir/test"
+"$test_dir/test"

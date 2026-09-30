@@ -24,7 +24,7 @@ import std.time
 MAX_PROMPT := 2048
 MAX_GENERATED := 4096
 MAX_LOOKUP_DRAFTS := 3
-NATIVE_Q6_HEAD_DEVICE_BYTES := 995584
+NATIVE_Q6_HEAD_DEVICE_BYTES := 1003352
 SLOT_BYTES := 1040
 MASKED := 4286578688
 
@@ -122,6 +122,11 @@ fn read_choice(borrow owner: ggml_ffi.GpuDevice, borrow slots: slice<u8>,
   native_copy_greedy: bool, n_vocab: i64,
   borrow output: slice<u8>, label: str,
 ) -> Result<i64, Error> {
+  if ggml_ffi.gpu_native_q6_head_enabled(owner) {
+    token := ggml_ffi.gpu_native_q6_head_greedy(owner, label) else { return Err(Error.Invalid) }
+    if token >= n_vocab { return Err(Error.Invalid) }
+    return Ok(token)
+  }
   if native_copy_greedy {
     ggml_ffi.gpu_native_state_copy_finish(owner) else { return Err(Error.Invalid) }
     token := ggml_ffi.gpu_native_copy_greedy_result(owner) else { return Err(Error.Invalid) }

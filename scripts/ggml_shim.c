@@ -2658,6 +2658,25 @@ int32_t align_gpu_native_q6_head_enabled(void *owner) {
     return state != NULL && state->native_q6_head == 1 ? 1 : 0;
 }
 
+int64_t align_gpu_native_q6_head_greedy(void *owner) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    if (state == NULL || !state->native_q6_head || !state->native_q6_head_ready
+        || state->workspace_failed || state->observation_failed) return -1;
+#if defined(ALIGN_LLM_NATIVE_CUDA)
+    int64_t token = -1;
+    if (state->native_q6_head_context == NULL
+        || !align_native_cuda_q6_head_greedy(state->native_q6_head_context, &token)
+        || token < 0 || token >= 248320) {
+        state->workspace_failed = 1;
+        fprintf(stderr, "native_q6_head greedy failure\n");
+        return -2;
+    }
+    return token;
+#else
+    return -1;
+#endif
+}
+
 int32_t align_gpu_native_q6_head_read(void *owner, void *bytes, int64_t n) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || !state->native_q6_head || !state->native_q6_head_ready
@@ -3821,6 +3840,8 @@ static int align_gpu_native_q6_head_commit(struct align_gpu_device_state *state,
     if (!state->native_q6_head) return 1;
     weight = state->native_q6_head_weights[kind];
     if (weight == NULL) return 1; /* Non-logit graph. */
+    if (state->observation_failed || state->observation_read_calls == INT64_MAX
+        || state->observation_read_bytes > INT64_MAX - 8) return 0;
     input = state->native_q6_head_inputs[kind];
     if (state->native_q6_head_context == NULL || weight->buffer != state->weights_buffer
         || weight->data == NULL || input == NULL
@@ -3836,8 +3857,10 @@ static int align_gpu_native_q6_head_commit(struct align_gpu_device_state *state,
     weight_offset = (uint64_t) ((uintptr_t) weight->data - (uintptr_t) weight_base);
     if (weight_offset > weight_size || 417177600 > weight_size - (size_t) weight_offset)
         return 0;
-    if (!align_native_cuda_q6_head_run(state->native_q6_head_context,
+    if (!align_native_cuda_q6_head_run_greedy(state->native_q6_head_context,
             weight->data, input->data)) return 0;
+    state->observation_read_bytes += 8;
+    state->observation_read_calls += 1;
     state->native_q6_head_ready = 1;
     return 1;
 }

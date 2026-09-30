@@ -196,6 +196,12 @@ PY_HASH
                  printf '%s\n' 'native Q6 head failure requires native CUDA' >&2; exit 1; }
                native_flags+=("-DALIGN_NATIVE_CUDA_Q6_FORCE_SUBMIT_FAILURE=1")
                flavour="real+force-native-q6-submit" ;;
+    native-q6-greedy)
+               if [ "${native_cuda}" != 1 ]; then
+                 printf '%s\n' 'native-q6-greedy requires native CUDA' >&2; exit 1
+               fi
+               native_flags+=("-DALIGN_NATIVE_CUDA_Q6_FORCE_GREEDY_FAILURE=1")
+               flavour="real+force-native-q6-greedy" ;;
     native-q6-complete)
                [ "${native_cuda}" = 1 ] || {
                  printf '%s\n' 'native Q6 head failure requires native CUDA' >&2; exit 1; }
