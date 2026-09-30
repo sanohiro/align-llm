@@ -427,6 +427,32 @@ explicit model/binary/plugin/trace inputs and baseline digest above, then
 `QWEN35_CUDA_PAIR_REQUESTS=20 scripts/measure-qwen35-native-cuda` in
 `q6-head` mode. Invalid repeat counts refuse before sessions.
 
+One comprehensive host-native review found that the new preserved binary
+digest did not bind the shared shim containing the CUDA implementation.
+The consolidated repair requires an explicit baseline shim path/digest,
+checks its hash before sessions, verifies the loaded Linux mapping's exact
+path/device/inode after readiness and rechecks the hash before timing.
+Wrong hash and wrong loaded path both refuse. The root-cause audit covers
+the optional baseline arm's executable/library identity; the existing plugin
+and pinned-reference identity checks remain. CUDA arithmetic and scheduling
+are unchanged by this measurement repair.
+
+A second complete twenty-request campaign verifies that loaded baseline
+identity, retains another 900 timed Align requests and gives:
+
+| Prompt/output | Previous native gain / wins | Ordinary Align gain / wins | Pinned llama.cpp gain / wins |
+| --- | --- | --- | --- |
+| 56/16 | +3.630 ms / 5/5 | +1.404 ms / 5/5 | +17.907 ms / 5/5 |
+| 200/32 | +2.584 ms / 4/5 | +1.317 ms / 4/5 | +7.117 ms / 4/5 |
+| 330/64 | +8.462 ms / 5/5 | +3.734 ms / 4/5 | +19.818 ms / 5/5 |
+
+All counts and output text match again. This repeats the strongest gain
+against the old native route, while the ordinary-Align gain remains smaller
+and variable. Raw pairs and every sample are in
+`measure-bound-shim-batch20.log`. Reproduction additionally requires
+`QWEN35_CUDA_BASELINE_SHIM` and `QWEN35_CUDA_BASELINE_SHIM_SHA256`, with the
+baseline shim digest above. Other controls retain their previous invocation.
+
 The separate 200/32 Nsight Systems trace contains exactly 32 eight-byte D2H
 copies and no full-row copy. Native projection averages 894.782 microseconds;
 projection-to-partial-reduction gap median is 1.184 microseconds, range

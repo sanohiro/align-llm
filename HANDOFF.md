@@ -11,8 +11,9 @@ for the existing native Q6_K route, preserving full diagnostic/sampling
 logits, first-index ties, nonfinite failure and memory accounting. The
 authoritative contract/cost/closure ledger is in
 `docs/specs/gpu-runtime-performance.md`. Checkpoint `69abd87` implemented
-selection; the current uncommitted batch submits selection/readback before
-the projection wait and adds bounded repeated-request measurement.
+selection; checkpoint `5fd7cbf` submits selection/readback before the
+projection wait and adds bounded repeated-request measurement. The current
+repair binds the previous-native binary to its actually loaded shim.
 
 First greedy-readback checkpoint passes kernel/full-model/state/retained/
 malformed owners, forced submit/completion/greedy faults, build, formatter
@@ -29,8 +30,15 @@ All request counts/output match. The separate 200/32 trace has exactly
 32 eight-byte D2H copies, median projection-to-reduction gap 1.184 us.
 Full receipts, outliers and limits are in `docs/cuda-native-optimization-log.md`.
 
-Next: settle the scheduling batch, one comprehensive review, exact-head
-preflight, publish and merge when required checks pass. Then test the Q4
+One comprehensive host-native review found missing baseline shim identity;
+the repair checks its digest plus loaded path/device/inode. Wrong hash/path
+refusals and another 900-request campaign pass. Repeated previous-native
+gains are 3.630/2.584/8.462 ms (5/5, 4/5, 5/5 wins), ordinary-Align gains
+1.404/1.317/3.734 ms (5/5, 4/5, 4/5); CUDA code is unchanged.
+
+Next: commit the consolidated repair, exact-head preflight, publish and
+merge when required checks pass. The separate Q4 cache-pressure worktree
+tests the Q4
 kernel with a weight working set beyond L2 before connecting another
 native FFN boundary. Real decode gate/up averages 34.229 us versus the
 small cached screen's 8.64 us; that cache difference must not be treated

@@ -69,6 +69,25 @@ def timed_many(session: Session, request: dict, prompt: int, completion: int,
     return sum(samples) // len(samples), result
 
 
+def check_loaded_shim(session: Session, expected: Path, digest: str) -> None:
+    identity = expected.stat()
+    mappings = []
+    for line in Path(f"/proc/{session.process.pid}/maps").read_text().splitlines():
+        fields = line.split(None, 5)
+        if len(fields) == 6 and Path(fields[5]).name.startswith("libalign_ggml_shim.so"):
+            mappings.append(fields)
+    if not mappings or any(fields[5] != str(expected) for fields in mappings):
+        raise RuntimeError("previous native session loaded a different shim path")
+    device = (os.major(identity.st_dev), os.minor(identity.st_dev))
+    if any(tuple(int(part, 16) for part in fields[3].split(":")) != device
+           or int(fields[4]) != identity.st_ino for fields in mappings):
+        raise RuntimeError("previous native session shim mapping identity changed")
+    with expected.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
+            raise RuntimeError("previous native shim differs from the recorded baseline")
+    print(f"previous_native_loaded_shim={expected} sha256={digest}", flush=True)
+
+
 def llama_request(reference: Path, binary: Path, model: Path, work: Path,
                   label: str, rendered: Path, ids: Path,
                   prompt: int, completion: int) -> tuple[int, str]:
@@ -107,6 +126,8 @@ def main() -> None:
     baseline_value = os.environ.get("QWEN35_CUDA_BASELINE_BINARY")
     baseline = Path(baseline_value).resolve() if baseline_value else None
     baseline_digest = None
+    baseline_shim = None
+    baseline_shim_digest = None
     if baseline is not None:
         if measure_mode != "q6-head":
             raise RuntimeError("previous native binary requires q6-head mode")
@@ -114,6 +135,11 @@ def main() -> None:
             baseline_digest = hashlib.file_digest(stream, "sha256").hexdigest()
         if baseline_digest != os.environ["QWEN35_CUDA_BASELINE_SHA256"]:
             raise RuntimeError("previous native binary differs from the recorded baseline")
+        baseline_shim = Path(os.environ["QWEN35_CUDA_BASELINE_SHIM"]).resolve()
+        baseline_shim_digest = os.environ["QWEN35_CUDA_BASELINE_SHIM_SHA256"]
+        with baseline_shim.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != baseline_shim_digest:
+                raise RuntimeError("previous native shim differs from the recorded baseline")
     reference_value = os.environ.get("QWEN35_LLAMA_BENCH")
     reference = Path(reference_value).resolve() if reference_value else None
     reference_digest = None
@@ -158,6 +184,8 @@ def main() -> None:
         previous = (stack.enter_context(Session([str(baseline), *command[1:]],
                                                timeout=180, env=native_selection))
                     if baseline else None)
+        if previous is not None:
+            check_loaded_shim(previous, baseline_shim, baseline_shim_digest)
         work = Path(temporary)
         for label, user, prompt, completion in CASES:
             prepared = (prepare_reference(binary, model, work, label, user, prompt)
