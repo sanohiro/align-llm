@@ -45,8 +45,6 @@ if [ "$#" -eq 5 ]; then
     -Dalign_native_cuda_q40_ffn_run=baseline_run \
     -Dalign_native_cuda_q40_ffn_read=baseline_read \
     -Dalign_native_cuda_q40_ffn_close=baseline_close \
-    -Dalign_native_cuda_q40_ffn_enqueue=baseline_enqueue \
-    -Dalign_native_cuda_q40_ffn_output=baseline_output \
     -c "$baseline_source" -o "$screen_dir/baseline.o"
   paired_flags=(-DALIGN_CUDA_Q4_BASELINE=1)
   paired_objects=("$screen_dir/baseline.o")

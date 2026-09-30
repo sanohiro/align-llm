@@ -116,8 +116,8 @@ def main() -> None:
         raise RuntimeError("QWEN35_CUDA_PAIR_REQUESTS must be an integer from 1 to 20")
     repetitions = int(repeat_text)
     measure_mode = os.environ.get("QWEN35_CUDA_MEASURE_MODE", "state-copy")
-    if measure_mode not in ("state-copy", "q6-head", "ffn-tail"):
-        raise RuntimeError("QWEN35_CUDA_MEASURE_MODE must be state-copy, q6-head or ffn-tail")
+    if measure_mode not in ("state-copy", "q6-head"):
+        raise RuntimeError("QWEN35_CUDA_MEASURE_MODE must be state-copy or q6-head")
     model = Path(os.environ["QWEN35_GGUF"]).resolve()
     pack = Path(os.environ["QWEN35_ALIGNPACK"]).resolve()
     geometry = Path(os.environ["QWEN35_MODEL_IR"]).resolve()
@@ -129,8 +129,8 @@ def main() -> None:
     baseline_shim = None
     baseline_shim_digest = None
     if baseline is not None:
-        if measure_mode not in ("q6-head", "ffn-tail"):
-            raise RuntimeError("previous native binary requires q6-head or ffn-tail mode")
+        if measure_mode != "q6-head":
+            raise RuntimeError("previous native binary requires q6-head mode")
         with baseline.open("rb") as stream:
             baseline_digest = hashlib.file_digest(stream, "sha256").hexdigest()
         if baseline_digest != os.environ["QWEN35_CUDA_BASELINE_SHA256"]:
@@ -174,17 +174,15 @@ def main() -> None:
     environment["ALIGN_LLM_NATIVE_PREFILL_STATE_COPY"] = "0"
     environment["ALIGN_LLM_NATIVE_COPY_GREEDY"] = "0"
     ordinary_selection = dict(environment, ALIGN_LLM_NATIVE_STATE_COPY="0",
-                              ALIGN_LLM_NATIVE_Q6_HEAD="0", ALIGN_LLM_NATIVE_FFN_TAIL="0")
+                              ALIGN_LLM_NATIVE_Q6_HEAD="0")
     native_selection = dict(environment,
                             ALIGN_LLM_NATIVE_STATE_COPY="1" if measure_mode == "state-copy" else "0",
-                            ALIGN_LLM_NATIVE_Q6_HEAD="0" if measure_mode == "state-copy" else "1",
-                            ALIGN_LLM_NATIVE_FFN_TAIL="1" if measure_mode == "ffn-tail" else "0")
-    previous_selection = dict(native_selection, ALIGN_LLM_NATIVE_FFN_TAIL="0")
+                            ALIGN_LLM_NATIVE_Q6_HEAD="1" if measure_mode == "q6-head" else "0")
     with tempfile.TemporaryDirectory(prefix="qwen35-cuda-measure-") as temporary, \
          Session(command, timeout=180, env=ordinary_selection) as ordinary, \
          Session(command, timeout=180, env=native_selection) as native, ExitStack() as stack:
         previous = (stack.enter_context(Session([str(baseline), *command[1:]],
-                                               timeout=180, env=previous_selection))
+                                               timeout=180, env=native_selection))
                     if baseline else None)
         if previous is not None:
             check_loaded_shim(previous, baseline_shim, baseline_shim_digest)

@@ -2,14 +2,14 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Active connected CUDA FFN/residual/norm/head trial (2026-09-30)
+## Completed larger CUDA FFN/residual/norm/head trial (2026-09-30)
 
-Branch `agent/native-cuda-ffn-tail`, base `b4814fb`. The user explicitly
-requested a larger optimization. Implement one native scalar final-layer
-FFN/residual/norm/head CUDA Graph, preserving multirow prefill and ordinary/
-plain-head controls. The authoritative public selection, cache ownership,
-58,368-byte added device cost, numerical/closure owners and request metrics
-are in `docs/specs/gpu-runtime-performance.md` before implementation.
+Branch `agent/native-cuda-ffn-tail`, base `b4814fb`, archived experiment
+`460eb4d`. The larger scalar final-layer FFN/residual/norm/head CUDA Graph
+is withdrawn. Active `src/`, `scripts/` and Python classification are
+restored to the base; the preceding native greedy-head route remains.
+The preimplementation cost/ownership/closure ledger is retained as an
+explicitly historical contract in `docs/specs/gpu-runtime-performance.md`.
 
 The implementation and real-model owners are complete. Three campaigns
 retain 2,700 timed Align requests with matching output/counts. Initial
@@ -19,11 +19,12 @@ gains did not survive repeats: the final pointer-cache variant loses
 budget refusals, scalar kernel and forced submit/completion/greedy owners
 pass. Last-row prefill exceeded the 0.01 logit bound and was excluded.
 
-Next: archive this tested source checkpoint, withdraw all active product
-and helper changes, record every pair and trace limits, review/preflight
-the final record, and merge. The user explicitly requested stopping
-after this PR; do not start another optimization. No new Align gap was
-encountered. Review/publication pending.
+Next: finish the final record's comprehensive review and exact-head
+preflight, publish and merge with a merge commit preserving `460eb4d`,
+then stop. The user explicitly requested no next optimization after
+this PR. Reproduction and every paired result are in
+`docs/cuda-native-optimization-log.md`; raw artifacts stay outside Git.
+No new Align gap was encountered. No implementation work remains active.
 
 ## Bounded CUDA optimization checkpoint (2026-09-30)
 

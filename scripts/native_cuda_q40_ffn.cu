@@ -31,9 +31,6 @@ struct Q81Block {
     int8_t values[32];
 };
 static_assert(sizeof(Q81Block) == 36, "Q8_1 block layout changed");
-static_assert((WIDTH + HIDDEN) * sizeof(float)
-    + (WIDTH + HIDDEN) / 32 * sizeof(Q81Block) == ALIGN_NATIVE_CUDA_Q40_FFN_DEVICE_BYTES,
-    "FFN device admission changed");
 
 struct Context {
     cudaStream_t stream = nullptr;
@@ -135,8 +132,7 @@ __global__ void gate_up_swiglu(const Q40Block *gate, const Q40Block *up,
     }
 }
 
-__global__ void down_matvec(const Q40Block *weight, const Q81Block *input, float *output,
-        const float *residual) {
+__global__ void down_matvec(const Q40Block *weight, const Q81Block *input, float *output) {
     const int lane = threadIdx.x % DOWN_LANES_PER_ROW;
     const int local_row = threadIdx.x / DOWN_LANES_PER_ROW;
     const int row = blockIdx.x * DOWN_ROWS_PER_BLOCK + local_row;
@@ -149,11 +145,8 @@ __global__ void down_matvec(const Q40Block *weight, const Q81Block *input, float
     sum = reduce(sum);
     if ((threadIdx.x & 31) == 0) partial[local_row][lane >> 5] = sum;
     __syncthreads();
-    if (lane == 0) {
-        float value = partial[local_row][0] + partial[local_row][1]
-            + partial[local_row][2] + partial[local_row][3];
-        output[row] = residual == nullptr ? value : value + residual[row];
-    }
+    if (lane == 0) output[row] = partial[local_row][0] + partial[local_row][1]
+        + partial[local_row][2] + partial[local_row][3];
 }
 }
 
@@ -195,7 +188,7 @@ extern "C" int align_native_cuda_q40_ffn_run(void *context, const void *gate, co
         ctx->gated, ctx->qgated);
     launched = cudaGetLastError() == cudaSuccess && launched;
     down_matvec<<<WIDTH / DOWN_ROWS_PER_BLOCK, THREADS, 0, ctx->stream>>>(
-        static_cast<const Q40Block *>(down), ctx->qgated, ctx->output, nullptr);
+        static_cast<const Q40Block *>(down), ctx->qgated, ctx->output);
     launched = cudaGetLastError() == cudaSuccess && launched;
     if (cudaStreamEndCapture(ctx->stream, &ctx->graph) != cudaSuccess || !launched
         || cudaGraphInstantiate(&ctx->executable, ctx->graph, 0) != cudaSuccess)
@@ -217,30 +210,6 @@ extern "C" int align_native_cuda_q40_ffn_read(void *context, float *gated,
                == cudaSuccess
         && cudaMemcpy(output, ctx->output, WIDTH * sizeof(float), cudaMemcpyDeviceToHost)
                == cudaSuccess;
-}
-
-extern "C" int align_native_cuda_q40_ffn_enqueue(void *context, const void *gate,
-        const void *up, const void *down, const float *input, const float *residual,
-        void *stream) {
-    auto *ctx = static_cast<Context *>(context);
-    auto borrowed = static_cast<cudaStream_t>(stream);
-    if (!ctx || !gate || !up || !down || !input || !borrowed) return 0;
-    quantize_q81<<<WIDTH / Q40_BLOCK, Q40_BLOCK, 0, borrowed>>>(input, ctx->qinput);
-    bool ok = cudaGetLastError() == cudaSuccess;
-    gate_up_swiglu<<<HIDDEN / ROWS_PER_BLOCK, THREADS, 0, borrowed>>>(
-        static_cast<const Q40Block *>(gate), static_cast<const Q40Block *>(up),
-        ctx->qinput, ctx->gated);
-    ok = cudaGetLastError() == cudaSuccess && ok;
-    quantize_q81<<<HIDDEN / Q40_BLOCK, Q40_BLOCK, 0, borrowed>>>(ctx->gated, ctx->qgated);
-    ok = cudaGetLastError() == cudaSuccess && ok;
-    down_matvec<<<WIDTH / DOWN_ROWS_PER_BLOCK, THREADS, 0, borrowed>>>(
-        static_cast<const Q40Block *>(down), ctx->qgated, ctx->output, residual);
-    return cudaGetLastError() == cudaSuccess && ok;
-}
-
-extern "C" const float *align_native_cuda_q40_ffn_output(void *context) {
-    auto *ctx = static_cast<Context *>(context);
-    return ctx ? ctx->output : nullptr;
 }
 
 extern "C" void align_native_cuda_q40_ffn_close(void *context) {

@@ -68,10 +68,7 @@ Align product; its tracing and decisions never enter product inference.
 the recorded real 2B CUDA product in default and explicit native-head modes,
 compares every diagnostic F32 logit, chosen token and resident-state digest,
 compares model-work counts and device-budget observations, and checks
-refusal/failure envelopes, including CUDA greedy-read failure. Its optional
-`QWEN35_NATIVE_FFN_TAIL=1` selection qualifies the connected scalar final FFN
-and native head with the same full-logit/state/retained owners, plus tail
-configuration refusals; it remains an independent product launcher. It never computes a model value or
+refusal/failure envelopes, including CUDA greedy-read failure. It never computes a model value or
 selects an inference operation for production.
 `scripts/measure-native-swiglu` remains `BENCHMARK_OR_MEASUREMENT`; its explicit
 copy and native-greedy arms are independent workload selectors and cannot choose a model
@@ -137,10 +134,6 @@ bounded request repetitions report every sample to assess timing uncertainty. It
 computes logits nor chooses product tokens. Its explicit
 `QWEN35_CUDA_MEASURE_MODE=q6-head` arm compares the default graph with the
 opt-in independent CUDA head while keeping native state copy disabled in both.
-Its `ffn-tail` measurement mode compares the connected final-layer tail to
-ordinary Align and a digest-bound preceding native greedy-head binary. The
-preceding arm explicitly disables the new tail, and every arm's product
-selection stays an independent measurement input.
 
 `scripts/measure-native-swiglu` is `BENCHMARK_OR_MEASUREMENT`: it launches
 native products/reference executables, captures timing and checks output/counts.

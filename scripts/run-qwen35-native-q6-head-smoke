@@ -22,10 +22,6 @@ CASES = (("short", "Hello", 31), ("chunked", "hello " * 170, 200),
 ROWS = 248320
 
 
-def tail_selection(mode: str) -> str:
-    return "1" if os.environ.get("QWEN35_NATIVE_FFN_TAIL", "0") == "1" and mode == "1" else "0"
-
-
 def run(binary: Path, model: Path, pack: Path, geometry: Path, options: Path,
         trace: Path, work: Path, name: str, user: str, mode: str) -> tuple:
     dump = work / f"{name}-{mode}-logits"
@@ -34,7 +30,6 @@ def run(binary: Path, model: Path, pack: Path, geometry: Path, options: Path,
     environment = dict(os.environ, LD_PRELOAD=str(trace), ALIGN_STATE_COUNT="84",
                        ALIGN_GRAPH_LOGIT_BYTES=str(ROWS * 4),
                        ALIGN_LOGIT_DUMP_DIR=str(dump), ALIGN_LLM_NATIVE_Q6_HEAD=mode,
-                       ALIGN_LLM_NATIVE_FFN_TAIL=tail_selection(mode),
                        ALIGN_LLM_NATIVE_STATE_COPY="0", ALIGN_LLM_PREFILL_CHUNK="512")
     command = [str(binary), "--provider", "align-runtime", str(model), str(pack),
                str(geometry), user, str(result_path), "3", "--runtime-options", str(options)]
@@ -43,7 +38,7 @@ def run(binary: Path, model: Path, pack: Path, geometry: Path, options: Path,
     if process.returncode:
         raise RuntimeError(f"{name} mode {mode} failed: {process.stderr[-1500:]!r}")
     result = json.loads(result_path.read_text(encoding="utf-8"))
-    states, complete, logits, accounts, tail_registrations = [], [], [], [], []
+    states, complete, logits, accounts = [], [], [], []
     for line in process.stderr.decode("utf-8", "replace").splitlines():
         if line.startswith("Q35_STATE "):
             row = json.loads(line[len("Q35_STATE "):])
@@ -58,11 +53,6 @@ def run(binary: Path, model: Path, pack: Path, geometry: Path, options: Path,
             logits.append((row["ordinal"], row["sha256"]))
         elif line.startswith("Q35_ACCOUNT "):
             accounts.append(json.loads(line[len("Q35_ACCOUNT "):]))
-        elif line.startswith("Q35_TAIL_REG "):
-            tail_registrations.append(json.loads(line[len("Q35_TAIL_REG "):]))
-    expected_kinds = [1, 2] if tail_selection(mode) == "1" else []
-    if tail_registrations != [dict(kind=kind, refusals=9) for kind in expected_kinds]:
-        raise RuntimeError(f"{name} mode {mode}: tail registration refusals not qualified")
     if complete != [0, 1, 2] or len(states) != 252 or len(logits) != 3 \
             or [entry[0] for entry in logits] != [0, 1, 2] \
             or [entry["ordinal"] for entry in accounts] != [0, 1, 2]:
@@ -110,15 +100,12 @@ def forced_failure(binary: Path, model: Path, pack: Path, geometry: Path,
                    system="You are a coding assistant. Return a concise patch-oriented answer.",
                    user="Hello", max_tokens=2, temperature=0.0, seed=None)
     environment = dict(os.environ, ALIGN_LLM_NATIVE_Q6_HEAD="0",
-                       ALIGN_LLM_NATIVE_STATE_COPY="0", ALIGN_LLM_NATIVE_FFN_TAIL="0",
-                       ALIGN_LLM_PREFILL_LAST_FFN_ROW="0")
+                       ALIGN_LLM_NATIVE_STATE_COPY="0")
     with Session(command, timeout=180, env=environment) as session:
         result = session.generate(request)
         if result["completion_tokens"] != 2 or result["prompt_tokens"] != 31:
             raise RuntimeError("ordinary graph control failed under native fault build")
     environment["ALIGN_LLM_NATIVE_Q6_HEAD"] = "1"
-    environment["ALIGN_LLM_NATIVE_FFN_TAIL"] = tail_selection("1")
-    # Fault builds defer selected tail faults until the first scalar decode.
     session = Session(command, timeout=180, env=environment)
     try:
         raw = json.dumps(request, separators=(",", ":")).encode("utf-8")
@@ -138,8 +125,6 @@ def forced_failure(binary: Path, model: Path, pack: Path, geometry: Path,
         if f"native_q6_head forced {forced} failure" not in diagnostic \
                 or f"native_q6_head {boundary} failure" not in diagnostic:
             raise RuntimeError(f"native Q6 fault not reached: {diagnostic[-1800:]}")
-        if tail_selection("1") == "1" and f"native_ffn_tail forced {forced} failure" not in diagnostic:
-            raise RuntimeError(f"connected tail fault not reached: {diagnostic[-1800:]}")
         print(f"native Q6 {failure}: ordinary control passed; selected request failed "
               "without output, worker exit 2")
     finally:
@@ -147,8 +132,6 @@ def forced_failure(binary: Path, model: Path, pack: Path, geometry: Path,
 
 
 def main() -> None:
-    if os.environ.get("QWEN35_NATIVE_FFN_TAIL", "0") not in ("0", "1"):
-        raise RuntimeError("QWEN35_NATIVE_FFN_TAIL must be 0 or 1")
     model = Path(os.environ["QWEN35_GGUF"]).resolve()
     pack = Path(os.environ["QWEN35_ALIGNPACK"]).resolve()
     geometry = Path(os.environ["QWEN35_MODEL_IR"]).resolve()
@@ -194,8 +177,7 @@ def main() -> None:
         retained = {}
         for mode in ("0", "1"):
             environment = dict(os.environ, ALIGN_LLM_NATIVE_Q6_HEAD=mode,
-                               ALIGN_LLM_NATIVE_STATE_COPY="0",
-                               ALIGN_LLM_NATIVE_FFN_TAIL=tail_selection(mode))
+                               ALIGN_LLM_NATIVE_STATE_COPY="0")
             with Session(command, timeout=180, env=environment) as session:
                 retained[mode] = []
                 for label in ("short", "wider-attention", "short"):
@@ -212,40 +194,15 @@ def main() -> None:
             raise RuntimeError("retained ordinary/native responses differ")
         print("retained short/wider/short: three ordinary/native requests match")
         invalid_path = work / "invalid-mode.json"
-        refusals = [dict(ALIGN_LLM_NATIVE_Q6_HEAD="2", ALIGN_LLM_NATIVE_FFN_TAIL="0")]
-        if tail_selection("1") == "1":
-            refusals += [dict(ALIGN_LLM_NATIVE_Q6_HEAD="1", ALIGN_LLM_NATIVE_FFN_TAIL="2"),
-                         dict(ALIGN_LLM_NATIVE_Q6_HEAD="0", ALIGN_LLM_NATIVE_FFN_TAIL="1"),
-                         dict(ALIGN_LLM_NATIVE_Q6_HEAD="1", ALIGN_LLM_NATIVE_FFN_TAIL="1",
-                              ALIGN_LLM_NATIVE_STATE_COPY="1"),
-                         dict(ALIGN_LLM_NATIVE_Q6_HEAD="1", ALIGN_LLM_NATIVE_FFN_TAIL="1",
-                              ALIGN_LLM_PREFILL_LAST_FFN_ROW="1")]
-        for selection in refusals:
-            invalid_env = dict(os.environ, ALIGN_LLM_NATIVE_STATE_COPY="0")
-            invalid_env.update(selection)
-            invalid = subprocess.run([str(binary), "--provider", "align-runtime", str(model),
-                                      str(pack), str(geometry), "Hello", str(invalid_path), "1",
-                                      "--runtime-options", str(options)], env=invalid_env,
-                                     capture_output=True, timeout=180, check=False)
-            refused = json.loads(invalid_path.read_text(encoding="utf-8"))
-            if invalid.returncode != 2 or refused["status"] != "error" or refused["output"] != "":
-                raise RuntimeError(f"invalid native selection was not refused: {selection}")
-        print(f"malformed/conflicting modes: {len(refusals)} refused without generated output")
-        if tail_selection("1") == "1":
-            small_options = json.loads(options.read_text(encoding="utf-8"))
-            small_options["device_budget_bytes"] = 1048576
-            small_path = work / "small-budget.json"
-            small_path.write_text(json.dumps(small_options) + "\n", encoding="utf-8")
-            small_env = dict(os.environ, ALIGN_LLM_NATIVE_Q6_HEAD="1",
-                             ALIGN_LLM_NATIVE_FFN_TAIL="1", ALIGN_LLM_NATIVE_STATE_COPY="0")
-            small = subprocess.run([str(binary), "--provider", "align-runtime", str(model),
-                                    str(pack), str(geometry), "Hello", str(invalid_path), "1",
-                                    "--runtime-options", str(small_path)], env=small_env,
-                                   capture_output=True, timeout=180, check=False)
-            refused = json.loads(invalid_path.read_text(encoding="utf-8"))
-            if small.returncode != 2 or refused["status"] != "error" or refused["output"] != "":
-                raise RuntimeError("insufficient tail device budget published output")
-            print("insufficient tail device budget: refused without generated output")
+        invalid_env = dict(os.environ, ALIGN_LLM_NATIVE_Q6_HEAD="2")
+        invalid = subprocess.run([str(binary), "--provider", "align-runtime", str(model),
+                                  str(pack), str(geometry), "Hello", str(invalid_path), "1",
+                                  "--runtime-options", str(options)], env=invalid_env,
+                                 capture_output=True, timeout=180, check=False)
+        refused = json.loads(invalid_path.read_text(encoding="utf-8"))
+        if invalid.returncode != 2 or refused["status"] != "error" or refused["output"] != "":
+            raise RuntimeError("malformed native Q6 mode was not refused before output")
+        print("malformed mode: refused without generated output")
 
 
 if __name__ == "__main__":

@@ -380,11 +380,6 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_native_q6_head_read(owner: raw, bytes: slice<u8>, n: i64) -> i32
   fn align_gpu_native_q6_head_register(owner: raw, kind: i32, slots: slice<u8>,
     weight: i64, input: i64, output: i64) -> i32
-  fn align_gpu_native_ffn_tail_mode(owner: raw, mode: i32) -> i32
-  fn align_gpu_native_ffn_tail_enabled(owner: raw) -> i32
-  fn align_gpu_native_ffn_tail_register(owner: raw, kind: i32, slots: slice<u8>,
-    input: i64, attention: i64, norm: i64, gate: i64, up: i64, down: i64,
-    head_norm: i64, epsilon_bits: i64) -> i32
   fn align_gpu_native_state_copy_finish(owner: raw) -> i32
   fn align_gpu_native_state_copy_register(
     owner: raw, kind: i32, slots: slice<u8>, source: i64, destination: i64,
@@ -1234,40 +1229,6 @@ pub fn gpu_native_q6_head_register(borrow owner: GpuDevice, kind: i64,
   unsafe {
     status := align_gpu_native_q6_head_register(
       resource.raw(resource.borrow(owner)), kind as i32, slots, weight, input, output,
-    ) as i64
-    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
-    return Ok(())
-  }
-}
-
-pub fn gpu_native_ffn_tail_select(borrow owner: GpuDevice, enabled: bool) -> Result<(), Fault> {
-  gpu_failure_activity(GPU_STAGE_PLAN)
-  unsafe {
-    status := align_gpu_native_ffn_tail_mode(
-      resource.raw(resource.borrow(owner)), if enabled { 1 } else { 0 },
-    ) as i64
-    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
-    return Ok(())
-  }
-}
-
-pub fn gpu_native_ffn_tail_enabled(borrow owner: GpuDevice) -> bool {
-  unsafe {
-    return align_gpu_native_ffn_tail_enabled(resource.raw(resource.borrow(owner))) == 1
-  }
-}
-
-pub fn gpu_native_ffn_tail_register(borrow owner: GpuDevice, kind: i64,
-  borrow slots: slice<u8>, input: i64, attention: i64, norm: i64,
-  gate: i64, up: i64, down: i64, head_norm: i64, epsilon_bits: i64,
-) -> Result<(), Fault> {
-  gpu_failure_activity(GPU_STAGE_PLAN)
-  if kind != GPU_GRAPH_PREFILL && kind != GPU_GRAPH_DECODE && kind != GPU_GRAPH_DECODE_ALT {
-    return Err(fault("CONFIG", "graph_kind"))
-  }
-  unsafe {
-    status := align_gpu_native_ffn_tail_register(resource.raw(resource.borrow(owner)),
-      kind as i32, slots, input, attention, norm, gate, up, down, head_norm, epsilon_bits,
     ) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
