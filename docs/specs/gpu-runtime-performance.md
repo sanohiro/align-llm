@@ -284,6 +284,30 @@ original graph and readback.
 | Compute/read failure and early exit | `native_cuda_q6_head` and `ggml_shim` poison or refuse stale/failed output; the same smoke owner runs submit/completion fault builds and asserts no token/result publication. |
 | Invalidate and cleanup | `ggml_shim` clears readiness on new compute/invalidation, drains on workspace rebuild and owner Drop; the retained-request owner crosses graph reuse and new request storage. |
 
+#### CUDA native-head greedy readback trial (2026-09-30)
+
+The next connected hypothesis removes the 993,280-byte logit readback and
+Align CPU scan from native-head greedy generation. Keep the existing
+default-off `ALIGN_LLM_NATIVE_Q6_HEAD=0|1` selection, complete native logits
+and full-row diagnostic/sampling reads. No new process option, persisted
+format or network surface is introduced (`N/A`).
+
+| Contract | Definition |
+| --- | --- |
+| Surface and owner | `ggml_ffi.gpu_native_q6_head_greedy(owner, label) -> Result<i64, Fault>` wraps `int64_t align_gpu_native_q6_head_greedy(void *owner)`. `runtime_qwen35_generation.read_choice` selects it only for native-head greedy requests. Explicit diagnostic/full-row reads retain the existing ABI. The helper's `int align_native_cuda_q6_head_run_greedy(void *context, const void *weight, const void *input)` submits projection, reduction and readback before one completion wait; `int align_native_cuda_q6_head_greedy(void *context, int64_t *token)` publishes the completed host choice only on success. Its existing plain projection API retains on-demand reduction for independent callers. |
+| Results and validation | Require selected mode, completed current projection, healthy workspace and available observation counters before submission. Reduce all 248,320 F32 values on device; equal values select the lowest index, including signed zero. Any NaN or infinity fails before token publication. Negative ABI results become existing faults; failed launch, copy or completion poisons the workspace. New projection/invalidation clears readiness; no stale result may succeed. |
+| Allocation and cost ceiling | Helper owns the existing 993,280-byte output and 2,304-byte Q8_1 scratch plus 970 eight-byte partials and one eight-byte result: 1,003,352 admitted device bytes total. At most two reduction launches and one eight-byte D2H are submitted behind projection before its single completion wait; the token reader launches nothing and copies no device data. The shim records the actual eight-byte transfer at successful graph commit, without counting the later cached getter as another transfer. No weight copy, projection arithmetic change or per-token device allocation. Align reservation, shim accounting and CUDA static assertion agree. Preparation <=3600 s, campaign <=900 s and request <=180 s. Host result storage lives until completion; invalidation/Drop drain before freeing scratch. |
+| Acceptance and metrics | `scripts/run-native-cuda-q6-greedy-test` covers ties across warp/block boundaries, signed zero, extreme finite values, nonfinite rejection, repeated reads and stale/invalid contexts. `scripts/run-qwen35-native-q6-head-smoke` compares three complete logits/state planes for each real prompt, retained output and model/device accounting, plus forced greedy failure with no result publication. Five alternating warm-request pairs compare the preserved native full-row binary, ordinary Align and pinned llama.cpp at 56/16, 200/32 and 330/64; retain every sample and loss. A trace must show eight-byte greedy reads while diagnostic full-row reads remain available. No fixed gain floor. |
+| Reproduction controls | `scripts/measure-qwen35-native-cuda` accepts optional `QWEN35_CUDA_BASELINE_BINARY` only in `q6-head` mode and requires its exact `QWEN35_CUDA_BASELINE_SHA256`, `QWEN35_CUDA_BASELINE_SHIM` path and `QWEN35_CUDA_BASELINE_SHIM_SHA256` before starting sessions. After session readiness, Linux `/proc/PID/maps` must identify that exact shim path/device/inode, with no other mapped shim; recheck its digest before timing. It runs the same native selection, prompts and output counts on that binary, verifies matching outputs, alternates old/new order and reports all previous-native samples and paired gains. Existing controls/results remain available without this operand. |
+| Timing uncertainty | Optional `QWEN35_CUDA_PAIR_REQUESTS=1..20`, default `1`, repeats each Align arm's actual request within a pair and reports the arithmetic mean latency plus every individual nanosecond sample. Each repetition must have the same prompt/completion counts and output. Pinned llama.cpp keeps its existing warm interval; report this asymmetric repetition count explicitly. Use `20` to assess observed request outliers, within the existing 900 s campaign ceiling. Invalid counts fail before sessions. |
+
+| Closure case | Implementation and exact owner |
+| --- | --- |
+| Formation, malformed and early exit | `ggml_ffi`, real/stub `ggml_shim` and `native_cuda_q6_head` validate owner, readiness, pointers, counters and token extent; `run-native-cuda-q6-greedy-test` plus existing malformed-mode smoke. |
+| Success and repeated use | CUDA two-stage finite/first-index reduction, shim read accounting, Align `read_choice`; kernel owner and real-model full-row/state/retained owner. |
+| Failure and stale output | CUDA invalidates readiness on projection attempt, shim poisons failed greedy work; kernel nonfinite/stale cases and real-model forced greedy failure. |
+| Admission, rebuild and cleanup | Align reserves 1,003,352 bytes, shim includes it before helper construction; CUDA frees both reduction buffers after draining. Real-model budget/rebuild observations and kernel repeated construction owner. |
+
 ### Independent Q6_K small-batch output-head screen (2026-09-28)
 
 The current four-row target verifier amortizes model weights across candidate

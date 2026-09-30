@@ -12,6 +12,7 @@ import subprocess
 import tempfile
 import time
 from pathlib import Path
+from contextlib import ExitStack
 
 from gpu_session_client import Session
 
@@ -52,6 +53,41 @@ def prepare_reference(binary: Path, model: Path, work: Path, label: str,
     return rendered_path, ids_path
 
 
+def timed_many(session: Session, request: dict, prompt: int, completion: int,
+               repetitions: int, label: str) -> tuple[int, dict]:
+    samples = []
+    first_output = None
+    result = None
+    for _ in range(repetitions):
+        elapsed, result = timed(session, request, prompt, completion)
+        if first_output is not None and result["output"] != first_output:
+            raise RuntimeError(f"{label}: repeated request output changed")
+        first_output = result["output"]
+        samples.append(elapsed)
+    if repetitions > 1:
+        print(f"{label} samples_ns={json.dumps(samples, separators=(',', ':'))}", flush=True)
+    return sum(samples) // len(samples), result
+
+
+def check_loaded_shim(session: Session, expected: Path, digest: str) -> None:
+    identity = expected.stat()
+    mappings = []
+    for line in Path(f"/proc/{session.process.pid}/maps").read_text().splitlines():
+        fields = line.split(None, 5)
+        if len(fields) == 6 and Path(fields[5]).name.startswith("libalign_ggml_shim.so"):
+            mappings.append(fields)
+    if not mappings or any(fields[5] != str(expected) for fields in mappings):
+        raise RuntimeError("previous native session loaded a different shim path")
+    device = (os.major(identity.st_dev), os.minor(identity.st_dev))
+    if any(tuple(int(part, 16) for part in fields[3].split(":")) != device
+           or int(fields[4]) != identity.st_ino for fields in mappings):
+        raise RuntimeError("previous native session shim mapping identity changed")
+    with expected.open("rb") as stream:
+        if hashlib.file_digest(stream, "sha256").hexdigest() != digest:
+            raise RuntimeError("previous native shim differs from the recorded baseline")
+    print(f"previous_native_loaded_shim={expected} sha256={digest}", flush=True)
+
+
 def llama_request(reference: Path, binary: Path, model: Path, work: Path,
                   label: str, rendered: Path, ids: Path,
                   prompt: int, completion: int) -> tuple[int, str]:
@@ -75,6 +111,10 @@ def llama_request(reference: Path, binary: Path, model: Path, work: Path,
 
 
 def main() -> None:
+    repeat_text = os.environ.get("QWEN35_CUDA_PAIR_REQUESTS", "1")
+    if not repeat_text.isascii() or not repeat_text.isdecimal() or not 1 <= int(repeat_text) <= 20:
+        raise RuntimeError("QWEN35_CUDA_PAIR_REQUESTS must be an integer from 1 to 20")
+    repetitions = int(repeat_text)
     measure_mode = os.environ.get("QWEN35_CUDA_MEASURE_MODE", "state-copy")
     if measure_mode not in ("state-copy", "q6-head"):
         raise RuntimeError("QWEN35_CUDA_MEASURE_MODE must be state-copy or q6-head")
@@ -83,6 +123,23 @@ def main() -> None:
     geometry = Path(os.environ["QWEN35_MODEL_IR"]).resolve()
     options = Path(os.environ["QWEN35_RUNTIME_OPTIONS"]).resolve()
     binary = Path(os.environ["QWEN35_NATIVE_COPY_BINARY"]).resolve()
+    baseline_value = os.environ.get("QWEN35_CUDA_BASELINE_BINARY")
+    baseline = Path(baseline_value).resolve() if baseline_value else None
+    baseline_digest = None
+    baseline_shim = None
+    baseline_shim_digest = None
+    if baseline is not None:
+        if measure_mode != "q6-head":
+            raise RuntimeError("previous native binary requires q6-head mode")
+        with baseline.open("rb") as stream:
+            baseline_digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if baseline_digest != os.environ["QWEN35_CUDA_BASELINE_SHA256"]:
+            raise RuntimeError("previous native binary differs from the recorded baseline")
+        baseline_shim = Path(os.environ["QWEN35_CUDA_BASELINE_SHIM"]).resolve()
+        baseline_shim_digest = os.environ["QWEN35_CUDA_BASELINE_SHIM_SHA256"]
+        with baseline_shim.open("rb") as stream:
+            if hashlib.file_digest(stream, "sha256").hexdigest() != baseline_shim_digest:
+                raise RuntimeError("previous native shim differs from the recorded baseline")
     reference_value = os.environ.get("QWEN35_LLAMA_BENCH")
     reference = Path(reference_value).resolve() if reference_value else None
     reference_digest = None
@@ -107,7 +164,9 @@ def main() -> None:
         plugin_hash = hashlib.file_digest(stream, "sha256").hexdigest()
     print(f"measure_mode={measure_mode} model_sha256={digest} plugin_sha256={plugin_hash} "
           f"llama_bench_sha256={reference_digest or 'none'} "
-          f"llama_source_commit={reference_revision or 'none'}", flush=True)
+          f"llama_source_commit={reference_revision or 'none'} "
+          f"previous_native_sha256={baseline_digest or 'none'} "
+          f"align_requests_per_arm={repetitions} llama_warm_intervals_per_pair=1", flush=True)
     command = [str(binary), "--runtime-session", str(model), str(pack),
                str(geometry), str(options), "0"]
     environment = os.environ.copy()
@@ -121,7 +180,12 @@ def main() -> None:
                             ALIGN_LLM_NATIVE_Q6_HEAD="1" if measure_mode == "q6-head" else "0")
     with tempfile.TemporaryDirectory(prefix="qwen35-cuda-measure-") as temporary, \
          Session(command, timeout=180, env=ordinary_selection) as ordinary, \
-         Session(command, timeout=180, env=native_selection) as native:
+         Session(command, timeout=180, env=native_selection) as native, ExitStack() as stack:
+        previous = (stack.enter_context(Session([str(baseline), *command[1:]],
+                                               timeout=180, env=native_selection))
+                    if baseline else None)
+        if previous is not None:
+            check_loaded_shim(previous, baseline_shim, baseline_shim_digest)
         work = Path(temporary)
         for label, user, prompt, completion in CASES:
             prepared = (prepare_reference(binary, model, work, label, user, prompt)
@@ -132,19 +196,37 @@ def main() -> None:
                 if timed(ordinary, request, prompt, completion)[1]["output"] != \
                         timed(native, request, prompt, completion)[1]["output"]:
                     raise RuntimeError(f"{label}: warmup outputs differ")
+                if previous is not None and timed(previous, request, prompt, completion)[1]["output"] \
+                        != timed(native, request, prompt, completion)[1]["output"]:
+                    raise RuntimeError(f"{label}: previous native warmup outputs differ")
             pairs = []
+            previous_pairs = []
             for at in range(5):
+                old = (timed_many(previous, request, prompt, completion, repetitions,
+                                  f"{label} pair={at} previous")
+                       if previous is not None and at % 2 == 0 else None)
                 llama = (llama_request(reference, binary, model, work, label,
                                        prepared[0], prepared[1], prompt, completion)
                          if reference and at % 2 else None)
                 if at % 2 == 0:
-                    control, expected = timed(ordinary, request, prompt, completion)
-                    selected, actual = timed(native, request, prompt, completion)
+                    control, expected = timed_many(ordinary, request, prompt, completion,
+                                                   repetitions, f"{label} pair={at} ordinary")
+                    selected, actual = timed_many(native, request, prompt, completion,
+                                                  repetitions, f"{label} pair={at} native")
                 else:
-                    selected, actual = timed(native, request, prompt, completion)
-                    control, expected = timed(ordinary, request, prompt, completion)
+                    selected, actual = timed_many(native, request, prompt, completion,
+                                                  repetitions, f"{label} pair={at} native")
+                    control, expected = timed_many(ordinary, request, prompt, completion,
+                                                   repetitions, f"{label} pair={at} ordinary")
                 if actual["output"] != expected["output"]:
                     raise RuntimeError(f"{label} pair {at}: output differs")
+                if previous is not None and old is None:
+                    old = timed_many(previous, request, prompt, completion, repetitions,
+                                     f"{label} pair={at} previous")
+                if old is not None:
+                    if old[1]["output"] != actual["output"]:
+                        raise RuntimeError(f"{label} pair {at}: previous native output differs")
+                    previous_pairs.append((old[0], selected))
                 if reference and llama is None:
                     llama = llama_request(reference, binary, model, work, label,
                                           prepared[0], prepared[1], prompt, completion)
@@ -152,11 +234,19 @@ def main() -> None:
                     raise RuntimeError(f"{label} pair {at}: pinned llama.cpp output differs")
                 pairs.append((control, selected, llama[0] if llama else None))
                 comparison = (f" llama_ms={llama[0] / 1e6:.3f}" if llama else "")
+                if old is not None:
+                    comparison += f" previous_native_ms={old[0] / 1e6:.3f}"
                 print(f"{label} pair={at} ordinary_ms={control / 1e6:.3f} "
                       f"native_ms={selected / 1e6:.3f}{comparison}", flush=True)
             gains = [(base - candidate) / 1e6 for base, candidate, _ in pairs]
             print(f"{label}: median_native_gain_ms={statistics.median(gains):.3f} "
                   f"native_wins={sum(gain > 0 for gain in gains)}/5", flush=True)
+            if previous_pairs:
+                previous_gains = [(old - selected) / 1e6 for old, selected in previous_pairs]
+                print(f"{label}: median_gain_vs_previous_native_ms="
+                      f"{statistics.median(previous_gains):.3f} "
+                      f"native_wins_vs_previous={sum(gain > 0 for gain in previous_gains)}/5",
+                      flush=True)
             if reference:
                 llama_gains = [(llama_ns - candidate) / 1e6
                                for _, candidate, llama_ns in pairs]
