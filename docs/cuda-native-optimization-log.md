@@ -931,3 +931,97 @@ complete `q6-repair-ordinary-llama.stdout` receipt is outside Git:
 | 330/64 | 2 | 304.047 | 320.422 | 320.712 |
 | 330/64 | 3 | 312.624 | 314.581 | 337.740 |
 | 330/64 | 4 | 322.261 | 319.660 | 321.456 |
+
+## Q4_0 cache-pressure qualification and withdrawn mappings (2026-09-30)
+
+The real 200/32 request's 6144-row fused Q4 gate/up instances average
+34.229 microseconds, versus about 8.64 in the small repeatedly cached native
+screen. The existing independent FFN owner now accepts developer-only
+`ALIGN_CUDA_Q4_CACHE_PRESSURE=0|1`, default `0`. Mode `1` touches a separate
+128 MiB buffer with explicit uint4 global stores and waits before each arm;
+both arms receive identical pressure, excluded from the completed-FFN timer.
+The RTX 4070 Ti reports 48 MiB L2, so this exceeds twice its capacity.
+This is a cache-pressure diagnostic, not a proven cache-state reset or a
+replica of all model layers. Graphs and weight copies are unchanged, with no
+allocation in timed work. Other devices require their own qualification.
+
+Synthetic and actual complete intermediate/final rows pass the existing
+finite bound, including the captured gated/down rows. Default and pressure
+synthetic owners pass (`1.49012e-8` gated error, exact down); pressure actual
+error is `1.78814e-6` gated and `9.53674e-7` down. Selectors `2`, `01` and
+empty refuse before path resolution/compilation/device initialization;
+shell syntax and diff checks pass. The public runner is the reproduction
+path, with the same explicit pinned source/library/plugin and capture inputs
+already recorded above, prefixed by `ALIGN_CUDA_Q4_CACHE_PRESSURE=1`.
+
+The unchanged aligned-load helper SHA-256 is
+`2b55714179b3dc8d6e98d7b4d531d68c9d09c28943bb75227f10f1a25beb46a3`.
+Two pressure ggml/native campaigns give paired median gains of 7.038 and
+6.396 microseconds, 3/5 and 4/5 wins. All pairs below are completed local
+FFNs, milliseconds, with 12 warmups and twenty operations per pair.
+
+| Run | Pair | ggml ms | Native ms |
+| --- | --- | --- | --- |
+| 1 | 0 | 0.111509 | 0.127721 |
+| 1 | 1 | 0.128254 | 0.101331 |
+| 1 | 2 | 0.107582 | 0.100544 |
+| 1 | 3 | 0.128914 | 0.101374 |
+| 1 | 4 | 0.105150 | 0.105521 |
+| 2 | 0 | 0.131433 | 0.118315 |
+| 2 | 1 | 0.109039 | 0.106589 |
+| 2 | 2 | 0.119425 | 0.134733 |
+| 2 | 3 | 0.140388 | 0.110313 |
+| 2 | 4 | 0.106649 | 0.100253 |
+
+A separate pressure Nsight trace contains 112 instances per matrix kernel
+and 224 pressure kernels. Native gate/up averages 41.834 us versus ggml
+42.319 us; native down averages 31.898 us versus ggml 21.484 us. Native
+activation quantization averages 1.203 us versus ggml 2.467 us. These
+instrumented intervals do not establish uninstrumented request speed or
+DRAM throughput; hardware counters remain denied. The down penalty and
+variable wall samples prevent treating the cached screen as a model win.
+
+Three predeclared standalone variants were screened against the same
+digest-identified preceding helper in one process. Every complete gated/down
+row passes; all three are withdrawn, leaving the helper byte-identical.
+
+| Variant | Pair | Preceding ms | Variant ms | Condition |
+| --- | --- | --- | --- | --- |
+| One warp per gate/up row | 0 | 0.107457 | 0.108261 | Pressure |
+| One warp per gate/up row | 1 | 0.138989 | 0.115477 | Pressure |
+| One warp per gate/up row | 2 | 0.113621 | 0.107399 | Pressure |
+| One warp per gate/up row | 3 | 0.103380 | 0.114373 | Pressure |
+| One warp per gate/up row | 4 | 0.100828 | 0.099798 | Pressure |
+| Streaming packed-payload loads | 0 | 0.124497 | 0.108741 | Pressure |
+| Streaming packed-payload loads | 1 | 0.108965 | 0.117698 | Pressure |
+| Streaming packed-payload loads | 2 | 0.151193 | 0.122904 | Pressure |
+| Streaming packed-payload loads | 3 | 0.123640 | 0.139632 | Pressure |
+| Streaming packed-payload loads | 4 | 0.111290 | 0.117504 | Pressure |
+| Two rows, whole Q4 blocks for down | 0 | 0.109020 | 0.131061 | Pressure |
+| Two rows, whole Q4 blocks for down | 1 | 0.114124 | 0.139848 | Pressure |
+| Two rows, whole Q4 blocks for down | 2 | 0.098893 | 0.105214 | Pressure |
+| Two rows, whole Q4 blocks for down | 3 | 0.103986 | 0.111470 | Pressure |
+| Two rows, whole Q4 blocks for down | 4 | 0.106204 | 0.105390 | Pressure |
+| Two rows, whole Q4 blocks for down | 0 | 0.038531 | 0.038425 | Cached |
+| Two rows, whole Q4 blocks for down | 1 | 0.044425 | 0.046110 | Cached |
+| Two rows, whole Q4 blocks for down | 2 | 0.046572 | 0.044481 | Cached |
+| Two rows, whole Q4 blocks for down | 3 | 0.044155 | 0.043371 | Cached |
+| Two rows, whole Q4 blocks for down | 4 | 0.046041 | 0.045818 | Cached |
+
+Pressure paired median gains are +1.030/-6.214/-7.484 us, with 3/5, 2/5
+and 1/5 wins; the whole-block variant's cached gain is only +0.223 us.
+Variant source digests are respectively
+`6edb776d8510863da5f62a2f06356a482b3ad1007bf7062621b605b44ca3ad11`,
+`eaa6b1903e76ac517da1c585744ba1f6e76db22b98f934dd943449884e99a950` and
+`2fa09b71a03a7aca906598e3feeaf504a7b66700aaea6f0cb54b46c614f3e706`.
+Raw sources, logs and traces remain outside Git. These are failed local
+screens, not reproducible adopted kernel changes. The checked-in pressure
+owner makes the useful workload distinction repeatable.
+
+The bounded outcome is to retain the current kernel and request route. The
+remaining small mapping/cache-hint changes have no demonstrated useful gain.
+Larger weight repacking or a native FFN/residual/norm/head execution unit
+remains a separate hypothesis requiring explicit cost, ownership and complete
+request/state/failure evidence. A final-layer-only connection cannot multiply
+its local gain by all 24 layers. Other models/GPUs and full DRAM counters are
+explicitly deferred until available; no new Align gap was encountered.

@@ -2,6 +2,32 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Active CUDA Q4 cache-pressure diagnostic (2026-09-30)
+
+Branch `agent/native-cuda-q4-cache-pressure`, base `5387269`, implementation
+checkpoint `8d18538`. The user's continuing speed work has completed useful
+Q6 device greedy/scheduling changes on a separate reviewed candidate. This
+capability makes the independent Q4 cache-pressure comparison repeatable:
+one 128 MiB global-store buffer, excluded from both FFN timers, versus the
+reported 48 MiB L2. Default/pressure synthetic and actual full-row owners,
+invalid-selector refusals, shell syntax and diff checks pass.
+
+Three bounded kernel variants are withdrawn. Pressure paired gains are
++1.030/-6.214/-7.484 us for one-warp gate/up, streaming payload loads and
+whole-block down (3/5, 2/5, 1/5 wins). The pressure trace shows native gate/up
+near ggml but down slower (31.898 versus 21.484 us). Current helper is
+byte-identical to the merged aligned-load kernel. Full receipts and limits
+are in `docs/cuda-native-optimization-log.md`; raw artifacts stay outside Git.
+
+Next: settle this candidate, one comprehensive review and exact-head
+preflight, integrate the completed Q6 capability without changing Q4 risks,
+then publish/merge when required checks pass. The measured small mapping/
+cache-hint improvements are now too thin to justify product integration.
+Larger weight repacking or a native FFN/residual/norm/head execution unit
+remains deferred pending its own cost/ownership and complete-request owner;
+do not multiply a final-layer gain by all 24 layers. Other GPUs/models and
+hardware counters remain deferred until available. No new Align gap found.
+
 ## Active native CUDA Q4_0 aligned-load screen (2026-09-30)
 
 PR #330 merged at `14c05d9`. Its down-only half-block mapping, actual/synthetic
