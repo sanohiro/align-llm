@@ -2,18 +2,32 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
-## Requested CUDA publication boundary (2026-10-01)
+## Current request-register checkpoint (2026-10-02)
 
-Branch `agent/cuda-request-reuse`, prior base `687acd3`. The user now authorizes
-publication and integration of the completed CUDA work, followed by a stop.
-The independent R1 Q4 diagnostic is published first. B1/B2/B3 are one completed
-runtime consumer capability: batched decode inputs, retained workspace and
+Branch `agent/sync-merged-align-requests`, base `acec49c3`. Requests 21, 24, 26,
+30, 31, 35 and 121–123 now record their merged Align provider surfaces, exact
+commits and remaining consumer acceptance. Provider PRs #1180–#1182 and
+#1194–#1199 are merged with successful required platform checks. Request 35
+ships only the capacity accessor; fallible construction remains deferred.
+The managed pin remains `b20429be50d6ab889496a0589143320683b29aeb`, and no
+consumer adoption or ALIGN_LLM_VERIFIED/CLOSED transition is claimed.
+
+This checkpoint changes only the request register and handoff. Documentation
+consistency uses provider merge/contract evidence, `git diff --check` and the
+Markdown publication lane; product owner suites are N/A. GitHub owns review,
+preflight and integration check evidence. No consumer implementation is active.
+Next, only if requested: select a consumer-complete adoption boundary, batch its
+merged prerequisites into one managed pin update, and run every acceptance owner
+named by those requests. No new optimization or roadmap work is selected.
+
+## Completed CUDA publication boundary (2026-10-01)
+
+The independent R1 Q4 diagnostic merged as PR #335 at `c0e29349`. B1/B2/B3
+merged as PR #336 at `acec49c3`: batched decode inputs, retained workspace and
 four-entry prefill topology reuse. Their qualified product source and measured
-artifacts are preserved; selectors remain opt-in with default zero.
-Next: qualify and comprehensively review the exact publication candidate, merge
-after its required checks pass, then stop. No next optimization or roadmap
-capability is selected. Historical no-publication instructions below are
-superseded by this request. GitHub owns publication/review/check metadata.
+artifacts are preserved; selectors remain opt-in with default zero. The user's
+publication request superseded the historical no-publication instructions below
+and ended with a stop. GitHub owns publication/review/check metadata.
 
 ## CUDA B3 prefill graph cache (2026-10-01)
 
