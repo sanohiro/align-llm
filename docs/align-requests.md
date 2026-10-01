@@ -592,7 +592,7 @@ unmeasured in `docs/backend-parity.md`.
 
 ### Request 94: fixed-size inline arrays in structs ([T; N]) to eliminate decode-step heap allocations (2026-09-17)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
 Blocked gate or slice: none
@@ -960,7 +960,7 @@ partition is formed.
 
 ### Request 99: derive a complete memory-effects model for every runtime ABI symbol (2026-09-18)
 
-Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
+Status: ALIGN_MERGED
 Priority: high
 Blocking: no
 Blocked gate or slice: none
@@ -9090,7 +9090,7 @@ integration binary on a leg that already compiles the workspace and is not the c
 ## Request 21 — `std.fs`: read-only random-access file open (`fs.open_ro`)
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: medium
 Blocking: no
 Blocked gate or slice: none today — all shipped GGUF/runtime readers and R7-TOKENIZER continue on
@@ -9099,11 +9099,11 @@ a read-only mount, a root-owned shared cache, or a container image layer, where 
 obtained at all
 Independent work that may continue: all current consumers that can require a writable input path or
 copy/own their input file, including R7-TOKENIZER
-Resume condition: Align ships a read-only `file` constructor whose handle supports `pread` and
-`len`; align-llm then adopts it in `src/gguf.align`, `src/expert_trace.align`, and every dependent
+Resume condition: align-llm adopts the shipped read-only `file` constructor with `pread` and
+`len` in `src/gguf.align`, `src/expert_trace.align`, and every dependent
 reader, and the GGUF/model/tokenizer owners and real-model qualifications pass against input files
 the invoking user cannot write
-Align commit or pull request: none
+Align commit or pull request: PR #1196, merge 55e727b034a84da50b5f99762cfcc7cb88be6cae
 align-llm verification: pending — `make gguf-smoke` extended with a `chmod 444` model fixture case,
 `make expert-trace-smoke`'s existing `read-only-transcript` case (mode `0444`) flipped from "exits
 nonzero with no document" to a successful derivation, `make tokenizer-smoke` exercises its GGUF
@@ -9291,6 +9291,38 @@ read-only constructor" claims at `draft.md:2772` and `docs/language-spec.md:1043
    and `scripts/run-gguf-reference-parity` passes once against a real model on a read-only mount,
    with its size and modification time unchanged. The R0 writable-path precondition is then removed
    from `docs/align-development.md` and from `docs/specs/r0-gguf-inspection.md` section 2.7.
+
+### Align response (2026-10-01)
+
+Shipped in [PR #1196](https://github.com/sanohiro/align/pull/1196), merged as
+`55e727b034a84da50b5f99762cfcc7cb88be6cae`. The exact surface is
+`fs.open_ro(path: str) -> Result<file, Error>`, requiring `import std.fs`.
+It opens an existing ordinary path with O_RDONLY and O_CLOEXEC and returns the
+existing Move file. Relative paths and symlinks follow ordinary resolution;
+creation, truncation, extension and a new regular-file admission rule are absent.
+The path is borrowed only during the call, including implicit string borrowing;
+UTF-8/NUL validation precedes filesystem work. NUL is Invalid, empty paths use OS
+mapping, missing is NotFound, permissions Denied, and other failures use the fixed
+Invalid/Code(errno) table. Native path conversion and the existing handle shell
+allocate; no buffer or mmap is allocated and no path lifetime is retained.
+
+Pread, short/EOF counts, live len and exactly-once descriptor Drop are unchanged.
+Pwrite returns `Error.Denied` on a read-only descriptor, including empty data;
+negative offsets still abort first. The runtime queries kernel-owned descriptor
+mode without a second File type, stored capability flag or compiler constructor
+history. Existing single-threaded, aggregate and bound-receiver restrictions remain.
+
+Local read-only permission/window/denial, path/flag/Drop, temporary-owner,
+forged HIR/MIR and imported whole-program/per-unit owners passed, including
+Linux x86_64 descriptor cycles. The final preflight, bounded gate, workspace
+Clippy, all three required platform CI legs and literal
+`cargo build --release --workspace` passed. Plan 84 records the contract and
+closure matrix.
+
+Align's provider implementation is complete. Consumer-owned adoption remains:
+switch GGUF/transcript/tokenizer/KV constructors, run their focused owners on
+mode-0444 fixtures and qualify real models on read-only mounts. This request
+cannot become ALIGN_LLM_VERIFIED or CLOSED until align-llm performs that work.
 
 ---
 
@@ -9711,14 +9743,14 @@ targeted regardless of mode) are both unaffected.
 ## Request 24 — `builder` as a `borrow mut` parameter type
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: medium
 Blocking: no
-Blocked gate or slice: none (duplication in place)
+Blocked gate or slice: none (Align capability shipped; consumer deduplication pending)
 Independent work that may continue: all
-Resume condition: Align ships builder parameters
-Align commit or pull request: none
-align-llm verification: pending
+Resume condition: align-llm adopts the shipped builder helper surface and verifies the shared GGUF walk
+Align commit or pull request: PR #1194, merge 5898e4b7fea5b7a8785c7501ddc61fee78015573
+align-llm verification: pending — consumer-owned GGUF walk refactor and gguf-smoke/model-ir-smoke
 ```
 
 If the active R2A-EXPERT-TRACE-CAPTURE (`docs/specs/r2a-expert-trace.md`) needs its own
@@ -9792,6 +9824,36 @@ cannot store it past the call, return it, or otherwise let it escape or be consu
    (`:1455`) onto one shared decode-and-accumulate walk taking a `borrow mut b: builder` parameter (or
    equivalent), removing the duplicated inline accumulation the section 2.3.6 comment names, and pass
    `make gguf-smoke model-ir-smoke`.
+
+### Align response (2026-10-01)
+
+Shipped in [PR #1194](https://github.com/sanohiro/align/pull/1194), merged as
+`5898e4b7fea5b7a8785c7501ddc61fee78015573`. The zero-argument `builder` type is
+nameable in local annotations and direct named-function parameters/results.
+A helper taking `borrow mut output: builder` can append through all five existing
+write methods and forward that exclusive borrow to another helper. By-value
+parameters and results transfer the existing Move owner. Shared borrows remain
+read-only and support the existing writer-source operations.
+
+Append copies text bytes during the call and retains no input view. A borrowed
+builder cannot be stored, captured, returned, passed by value, or consumed by
+`to_string()`; the caller retains its owner. Ordinary exclusive whole-owner
+replacement remains supported with Drop before store. Existing aggregate,
+function-value formation, capture, and task-result placement restrictions remain.
+Borrowed calls retain the boxed header ABI, and a write rejects a later argument
+that invalidates its already evaluated receiver.
+
+Whole-program and per-unit native owners cover imported and generic helpers,
+exact appended output, isolated replacement, selected receivers, early exits,
+shared reads, and negative ownership cases. The focused owners, bounded PR gate,
+workspace Clippy, three-platform required CI, and local
+`cargo build --release --workspace` passed. Plan 82 records the public contract
+and implementation closure matrix.
+
+Align's provider implementation is complete. Acceptance criterion 3 remains
+consumer-owned: align-llm still needs to deduplicate its GGUF walk and run
+`make gguf-smoke model-ir-smoke` before this request can become
+`ALIGN_LLM_VERIFIED` or `CLOSED`.
 
 ---
 
@@ -9926,17 +9988,17 @@ Align prefers) is Align's call; the requirement is the capability, not the name.
 ## Request 26 — `str`-to-integer parsing in the standard library
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none. Three call sites route a plain decimal integer through a `json.decode`
   detour and R2A writes the one private parser the detour cannot serve.
 Independent work that may continue: all of it — this is a duplication and correctness-surface
   concern, not a capability gate.
-Resume condition: Align ships a checked text-to-integer conversion (e.g. `str.parse_i64() ->
-  Result<i64, Error>`) with a stated overflow/sign/whitespace contract; align-llm then drops the
-  three `json.decode` detours and R2A's private parser and adopts the shipped surface.
-Align commit or pull request: none
+Resume condition: align-llm repins to the shipped `str.parse_i64() -> Result<i64, Error>`, drops
+  the three `json.decode` detours and R2A's private parser, and verifies the named consumer owners.
+Align commit or pull request: #1195 https://github.com/sanohiro/align/pull/1195
+  merged as 77d53f69a3258f4091658162680a964f8f7808fe
 align-llm verification: pending — replace the three `json.decode` detours
   (`src/main.align:71` `parse_i64`, `src/failure_memory.align:176` `parse_integer`,
   `src/c6f1_request11_adoption.align:6` `parse_i64`) and the one private parser
@@ -10075,6 +10137,11 @@ so no genuine float-parsing consumer is recorded here.
    and `src/expert_trace.align:328` adopts the shipped surface instead of its private `parse_uint`.
    `make check failure-memory-smoke expert-trace-smoke` and the `c6f1_request11_adoption`
    owner pass unchanged.
+
+### Align provider answer (2026-10-01)
+
+Shipped `str.parse_i64() -> Result<i64, Error>` in Align PR #1195. It accepts the complete ASCII grammar `[+-]?[0-9]+`, including leading zeros and signed zero, over the inclusive i64 range. Empty/sign-only, whitespace, non-ASCII digits, NUL, fractions/exponents, separators, prefixes and overflow return `Error.Invalid`; callers trim explicitly. The Pure operation borrows text once, retains no view, preserves bound string ownership and allocates no heap storage. Generic/imported whole-program and per-unit owners, temporary cleanup, raw-span/range and zero-allocation runtime owners, forged HIR/MIR rejection, ABI exports, local preflight/Clippy, all platform CI and the optimized workspace build passed. Radix and float conversion are outside this surface. The four consumer replacements and their owners remain align-llm-owned and pending.
+
 
 ---
 
@@ -10451,19 +10518,45 @@ d.finish() -> array<u8>                   // consumes the handle, yields 32 byte
 ## Request 30 — `fs.create_rw_exclusive`
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
 Blocked gate or slice: none. R4-ALIGNPACK-LAYER-MAJOR ships the documented check-then-create race
   (`R4_DEST_EXISTS`: `fs.exists` then `fs.create_rw`) as its destination guard.
 Independent work that may continue: all of R4-ALIGNPACK-LAYER-MAJOR.
-Resume condition: an Align release ships an exclusive random-access constructor; align-llm then
-  replaces the exists-then-create sequence in `src/alignpack.align` with it.
-Align commit or pull request: none
+Resume condition: align-llm repins to the merged surface and replaces the exists-then-create
+  sequences in its alignpack/KV writers.
+Align commit or pull request: PR #1197 https://github.com/sanohiro/align/pull/1197;
+  merge 01182068efa9ef19fc67911f6aebe8c85e8eb874
 align-llm verification: pending — `alignpack-smoke`'s `dest-exists` case asserts the exclusive
   failure directly, with no `fs.exists` preflight, and no window in which a competing creator can
   win between check and create.
 ```
+
+### Align implementation answer (2026-10-01)
+
+[PR #1197](https://github.com/sanohiro/align/pull/1197) merged
+`fs.create_rw_exclusive(path: str) -> Result<file, Error>` as one Impure native
+O_RDWR|O_CREAT|O_EXCL|O_CLOEXEC|O_NOFOLLOW open, mode 0644 subject to umask.
+Every occupied final entry, including directories, live/dangling symlinks, FIFO
+and devices, returns Code(native EEXIST) without opening, following, truncating,
+replacing or removing it. Empty/invalid-UTF-8/NUL paths return Invalid before
+filesystem work; missing parents are NotFound and permissions Denied. Parents
+use ordinary resolution; there is no exists/stat preflight or fallback.
+
+The path is borrowed only during the call, including implicit string borrowing.
+The ephemeral native path copy and existing File shell allocate; the same Move
+File owns one descriptor and uses unchanged positional methods. Drop closes
+once and leaves partial output for explicit cleanup. Atomic final-entry
+acquisition follows the local Linux ext4/tmpfs and macOS APFS floor; native
+competing-creator/mode/occupied-entry/cleanup owners and whole/per-unit compiler
+owners pass. This adds no parent confinement, path stability, rollback,
+transaction or durability. The final preflight, three-platform CI and literal
+`cargo build --release --workspace` passed.
+
+Consumer repinning, deleting alignpack/KV's exists-then-create windows and
+running their original acceptance suites remain align-llm-owned and pending.
+No consumer code, tests, fixtures or adoption state was changed by Align.
 
 ### Motivation and current sibling evidence
 
@@ -10527,16 +10620,18 @@ handle with the same `Drop` contract as `fs.create_rw`.
 ## Request 31 — File durability (`fsync`/`fdatasync`)
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: low
 Blocking: no
 Blocked gate or slice: none. R4-ALIGNPACK-LAYER-MAJOR makes no durability claim (section 1.3 states
   it as a non-goal: a pack is a reproducible derivative of a file that still exists, so the recovery
   from a torn pack is to run `--pack` again, and `--pack-verify` detects a torn pack anyway).
 Independent work that may continue: all work.
-Resume condition: an Align release ships a sync operation with a stated per-platform guarantee.
-Align commit or pull request: none
-align-llm verification: R6-KV-PERSIST's `--decode-step KV_SAVE` would call `f.sync()` before
+Resume condition: align-llm repins to the shipped sync surface and verifies R6-KV-PERSIST adoption
+  against its stated per-platform guarantee.
+Align commit or pull request: [PR #1198](https://github.com/sanohiro/align/pull/1198),
+  merge fd704044b5b6a08598dbed6acb63657c116b51a2
+align-llm verification: pending — R6-KV-PERSIST's `--decode-step KV_SAVE` would call `f.sync()` before
   reporting `kv.destination: "WRITTEN"`, and `gmake layer-forward-smoke` would pass unchanged in
   outcome.
 ```
@@ -10584,6 +10679,27 @@ because a durability API that over-promises is worse than none: a compiler test 
 `sync()` returns `Ok`, a subsequent read (in-process or via a fresh open) observes the written bytes,
 and the platform-specific guarantee (e.g. `F_FULLFSYNC` on APFS vs. plain `fsync` elsewhere) is
 documented in `draft.md`/`docs/language-spec.md` rather than left implicit.
+
+### Align response (2026-10-01 — provider merged, #1198)
+
+`f.sync()` and `w.sync()` return `Result<(), Error>` without consuming the existing
+owner. File issues one native request; writer first performs its existing flush
+and issues no sync request if that fails. Linux uses `fsync`, macOS uses
+`fcntl(F_FULLFSYNC)`, without retry or weaker fallback. Native errors preserve
+the owner; Drop remains cleanup and never syncs implicitly.
+
+Success is the native filesystem/device completion report, conditional on support
+and truthful reporting. It does not establish parent-directory entry durability,
+multi-file atomicity, arbitrary power-loss survival or durability on tmpfs.
+Native operation/error-ordering, fresh-open visibility, whole/per-unit imported
+helpers and borrowed writer projections passed locally; Linux x86_64/ARM64 and
+macOS Apple Silicon CI passed. The request batch's literal release workspace
+build passed. Plan 86 and the synchronized language/fs specifications own the
+shipped guarantee.
+
+The provider capability is merged. R6 KV_SAVE adoption, consumer repinning and
+`layer-forward-smoke` remain align-llm-owned verification and have not been run
+or modified by Align.
 
 ---
 
@@ -10936,7 +11052,8 @@ Extending the existing `Result`/`Option` payload surface, consistent with the pa
 ## Request 35 — Observable `buffer` capacity and allocation failure
 
 ```text
-Status: PROPOSED
+Status: ALIGN_MERGED
+Provider scope: capacity accessor only; fallible construction remains deferred.
 Priority: high
 Blocking: no
 Blocked gate or slice: none. `R4_WINDOW_UNAVAILABLE` (R0) and R4.5's window/allocation-failure code
@@ -10945,10 +11062,11 @@ Blocked gate or slice: none. `R4_WINDOW_UNAVAILABLE` (R0) and R4.5's window/allo
   reason.
 Independent work that may continue: all of R0-GGUF-INSPECT, R4-ALIGNPACK-LAYER-MAJOR, and
   R4.5-EXTERNAL-BUFFER-SPIKE.
-Resume condition: an Align release adds a fallible constructor and/or a capacity accessor to
-  `buffer`.
-Align commit or pull request: none
-align-llm verification: replace the observable-consequence guards (a zero-length read at an
+Resume condition: align-llm repins to the shipped capacity accessor, adopts direct read-window
+  guards, and verifies the named consumer owners; fallible construction remains deferred.
+Align commit or pull request: #1199 https://github.com/sanohiro/align/pull/1199
+  merged as 3cdb5db0d3dc9d5119c52642c244ef0978a7f6c5
+align-llm verification: pending — replace the observable-consequence guards (a zero-length read at an
   in-range offset) with a direct capacity check before the read; pass `make gguf-smoke`,
   `make alignpack-smoke`, and `make ggml-spike-smoke`.
 ```
@@ -11051,6 +11169,37 @@ plane, a degraded reservation is an **unreachable guard** rather than the differ
 document and a process abort. The observable-consequence check on `weights.bytes().len()` still
 stands in for the missing report and still carries `R4_WINDOW_UNAVAILABLE` on this arm, and no
 second code was introduced for it.
+
+### Align response (2026-10-02 — capacity portion merged, #1199)
+
+`b.capacity() -> i64` is now a Pure, zero-argument, nonconsuming public query
+through existing stable locals, nested fields and borrowed payload receivers.
+It reports the current usable read-window capacity independently of initialized
+`b.len()`. Successful ordinary reservation publishes the requested window;
+invalid/unreservable requests publish zero, so a client can check before a
+bounded read. Append/put and successful line-read growth update the window;
+short reads, EOF and failed line reads retain it. Returned/decoded buffers
+publish initialized length as capacity. Hidden allocator spare does not enlarge
+that window. No `cap` alias or retained view is added.
+
+This ships the request's capacity-accessor resume trigger, not its fallible
+constructor criterion. Best-effort ordinary construction and terminal filled/
+growth allocation failure remain under the settled plan-65 policy. Capacity is
+not physical-memory admission, page residency or a guarantee of future growth
+success. `buffer.try_new` and recoverable growth remain deferred. Plan 87 and
+the synchronized language/core string contracts own the exact surface.
+
+Native descriptor/line owners passed on macOS and Linux x86_64; the dedicated
+huge-reservation refusal and public whole/per-unit generic/read-window owners
+passed on native macOS. Docker/Rosetta's huge-allocation SIGTRAP is explicitly
+excluded as native refusal evidence. Borrowed/parallel receivers, forged HIR/MIR
+and three discriminating mutation controls passed. Final preflight, release
+workspace build and Linux x86_64/ARM64/macOS Apple Silicon CI passed.
+
+Consumer repinning, direct guard adoption, fixture re-evaluation and gguf/
+alignpack/ggml-spike smoke verification remain align-llm-owned and pending. No
+consumer code, test, fixture, build, branch, commit or PR was modified.
+
 
 ## Request 36 — In-place replacement of owned array record fields and moving out of nested fields
 
@@ -16894,14 +17043,14 @@ SSE, malformed-input refusal, disconnect recovery, and shutdown/restart also pas
 
 ### Request 121: independent scratch views beside a borrowed resource field (2026-09-26)
 
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: medium
 Blocking: no
-Blocked gate or slice: factoring retained Qwen3.5 stream input updates through the existing helper
-Independent work that may continue: retain scratch, write inputs in the owning function, refresh sibling views after mutable calls, and measure real requests
-Resume condition: shipped ownership analysis can prove this independent-storage case without admitting dependent-resource aliasing
-Align commit or pull request: none; observed at consumer pin `b20429be50d6ab889496a0589143320683b29aeb` and installed sibling compiler; sibling source inspected at `c2f32a2d213fcba6678f7c4dfeca5dac11e308a9`
-align-llm verification: pending provider implementation; current application path compiles and passes generation/serving owners without consuming a proposed API
+Blocked gate or slice: none on the Align side; factoring the retained Qwen3.5 stream input helper remains consumer-owned
+Independent work that may continue: repin Align, factor the helper, refresh sibling views after mutable calls, and measure real requests
+Resume condition: Align capability shipped; consumer may repin and verify the factored helper
+Align commit or pull request: [PR #1182](https://github.com/sanohiro/align/pull/1182), merged as `123900b29c47ba1fba87834e03f855d097c6878d`
+align-llm verification: pending repin, factored helper, and unchanged generation/serving recovery owners; the current local-write path remains the client path
 
 Classification: compiler ownership-analysis capability, not inference semantics.
 A record containing `device: ggml_ffi.GpuDevice`, `scratch: buffer` and
@@ -16919,8 +17068,8 @@ pub fn update(borrow mut p: Pair) {
 
 Here `write` takes `(borrow device: ggml_ffi.GpuDevice,
 borrow mut bytes: slice<u8>, borrow mut other: slice<u8>)`, writes the two
-views, and calls `ggml_ffi.gpu_device_synchronize(device)`. Both tested compilers
-reject this witness. Sibling `align_sema/src/lib.rs`'s conflicting-root check
+views, and calls `ggml_ffi.gpu_device_synchronize(device)`. At report time, both
+tested compilers rejected this witness. Sibling `align_sema/src/lib.rs`'s conflicting-root check
 already has disjoint-sibling-place handling; resource-derived roots still
 conflict in this case. Plan `37-borrowed-buffer-writer-plan.md` admits field byte
 views but preserves the existing alias/effect rules, so it does not settle this
@@ -16939,25 +17088,46 @@ layer or a hypothetical compiler dependency.
 
 The 2026-10-01 CUDA input-batch implementation reproduces this same gap at the
 unchanged consumer pin: an independent three-buffer witness passes, while replacing
-only its owner field with a resource produces the three alias diagnostics. Current
-sibling source `f3ff43d0f62408a8171806667ca4126dd5179b96` still uses
+only its owner field with a resource produces the three alias diagnostics. The
+inspected pre-fix sibling source `f3ff43d0f62408a8171806667ca4126dd5179b96` still used
 `is_disjoint_sibling_fields` and the conflicting-root check in
-`crates/align_sema/src/lib.rs:36283–36402`; its existing
+`crates/align_sema/src/lib.rs:36283–36402`; its then-existing
 `disjoint_field_borrows.rs` tests cover scalar and buffer siblings, not this resource
 case. The batch writer therefore takes only mutable byte slices; the caller forms
 fresh immutable views and submits them with the resource after writing. No new
 language surface or compiler pin is consumed, and this request remains non-blocking.
 
+Align shipped answer (2026-09-29): the ownership checker admits a shared borrow
+of a resource-only record field beside mutable views of independently owned
+buffer fields. The first divergent field types must prove a resource-only
+borrow graph on one side and a nonborrowing owned graph on the other. Nested
+records, tuples, sums, `Option`, and generic instantiations use the same
+type-graph proof. The common containing-record root is excluded only for this
+pair; all residual roots, direct/prefix overlap, duplicate buffer backing,
+resource-derived views, copied or rebound descriptors, and view-bearing carrier
+fields keep their existing rejection. Assignment, mutable calls, owner
+replacement, and control-flow joins invalidate stale field-origin proof. The
+views continue to borrow their buffers and allocate no new backing. No source
+API, HIR/MIR variant, interface format, runtime ABI, or native behavior changed.
+Whole-program and per-unit owners execute exact bytes for direct, nested,
+tagged, and generic witnesses and reject the dependent or stale alternatives.
+The focused resource, disjoint-field, and replacement owners, release workspace
+build, final-SHA preflight, Linux x86_64/ARM64, macOS, and PostgreSQL CI passed.
+This scoped capability does not implement the general copied-descriptor or
+dynamic-index proof under Align plan 61. Align changed no align-llm source,
+tests, fixtures, or pin; helper adoption and real-request verification remain
+consumer-owned.
+
 ## Request 122 — Imported public constants in constant initializers
 
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: low
 Blocking: no
 Blocked gate or slice: none; controlled upload/prefill trial uses the defining constant directly
 Independent work that may continue: direct qualified uses inside functions, runtime implementation and measurements
-Resume condition: shipped constant evaluation resolves imported public scalar constants with visibility and cycle checks
-Align commit or pull request: none; consumer pin b20429be50d6ab889496a0589143320683b29aeb rejects the initializer
-align-llm verification: build rejected `pub MAX_PREFILL := runtime_attention.MAX_PREFILL`; direct uses avoid the alias
+Resume condition: Align capability shipped; consumer may repin and verify the original alias
+Align commit or pull request: [PR #1180](https://github.com/sanohiro/align/pull/1180), merged as `7dc935a78a6c390a0f2c435b1aa3cb413551dbec`
+align-llm verification: pending repin and build of `pub MAX_PREFILL := runtime_attention.MAX_PREFILL`; direct uses remain valid
 
 Classification: compiler constant-evaluation gap, not model execution policy.
 Sibling `align_sema/src/lib.rs` at `c2f32a2d213fcba6678f7c4dfeca5dac11e308a9`
@@ -16971,16 +17141,28 @@ Acceptance: whole/per-unit compilation folds imported public scalars and rejects
 private references and cycles deterministically; the two-module witness and an
 align-llm build pass. This is non-blocking and introduces no compatibility layer.
 
+Align shipped answer (2026-09-29): constant initializers now fold `module.NAME` when the
+declaring file imports that module and the referenced constant is `pub`. The source keeps its
+definition-fixed type; integer, float, bool, char, `str`, and the exact raw-null sentinel use the
+existing constant evaluator, including expressions and aggregate-literal elements. A constant
+alias neither owns storage nor allocates at runtime. Private, missing, non-constant and
+type-mismatched references reject; aggregate-constant aliases remain excluded. Import-graph
+cycles reject before constant evaluation, and same-module constant cycles have stable diagnostics.
+Whole-program and per-unit execution, rejection parity, a transitive producer-edit cache owner,
+release workspace build, final-SHA preflight, and Linux x86_64/ARM64 plus macOS CI passed. Align
+changed no align-llm source, tests, fixtures, or pin. Consumer adoption and its build remain
+align-llm-owned verification.
+
 ### Request 123: return a resource view borrowed from a caller-owned resource
 
-Status: PROPOSED
+Status: ALIGN_MERGED
 Priority: low
 Blocking: no
-Blocked gate or slice: factoring the checked shared Metal output view as a separate borrowed-view helper
+Blocked gate or slice: none on the Align side; consumer adoption of the separate checked shared Metal output helper remains pending
 Independent work that may continue: form and consume the view inside `ggml_ffi.gpu_slot_shared_greedy`, then measure real requests
-Resume condition: shipped return-provenance analysis admits a view rooted in a borrowed input resource while rejecting a view of a callee-owned resource
-Align commit or pull request: none; observed at consumer pin `b20429be50d6ab889496a0589143320683b29aeb` and sibling source `c2f32a2d213fcba6678f7c4dfeca5dac11e308a9`
-align-llm verification: the first `gmake build` refused `src/ggml_ffi.align:1922:12` with “cannot return a value containing a slice that views a local array”; the in-module scan compiles and passes real 2B/0.8B generation owners
+Resume condition: Align capability shipped; consumer may repin and verify the caller-rooted returned view
+Align commit or pull request: [PR #1181](https://github.com/sanohiro/align/pull/1181), merged as `768ad7ab21238ff78ce53c79dfb418b7910658d8`
+align-llm verification: pending repin, helper extraction and exact-logit/retained-session owners; the existing in-module scan remains the client path
 
 Classification: compiler borrow/return-provenance gap, not an inference API
 requirement. The rejected helper took `borrow owner: GpuDevice`, called the
@@ -17004,3 +17186,15 @@ the caller, and reject use after mutable owner access, move, replacement or
 drop. Keep the callee-owned-resource escape test rejecting. An align-llm helper
 may then return the checked view, and the exact-logit and retained-session
 owners must pass without broadening the view lifetime.
+
+Align shipped answer (2026-09-29): EscapeCheck excludes `else`, `if`, and `match`
+branches that exit before a value join from returned storage, region, and callable
+provenance. A `resource.view_from_raw` view rooted in a shared borrowed resource
+can now cross `Result::Ok`, `Option`, `?`, and an imported wrapper; it retains the
+caller owner's generation and allocates no new backing storage. Whole-program
+and per-unit owners execute the returned view against an exact byte and reject
+use after the owner is moved, mutably borrowed, or replaced. Reaching local
+storage alternatives and callee-owned resource views still reject. The full
+resource owner, release workspace build, final-SHA preflight, Linux x86_64/ARM64,
+macOS, and PostgreSQL CI passed. Align changed no align-llm code, tests, fixtures,
+or pin; helper adoption and real-model verification remain consumer-owned.
