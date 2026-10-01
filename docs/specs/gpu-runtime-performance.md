@@ -47,6 +47,180 @@ after observing failures.
 This section supersedes historical percentage-based admission/shipping prose
 elsewhere in this repository. Historical receipts must not be rewritten.
 
+### CUDA next-experiment design (2026-10-01)
+
+Status: **R1 diagnostic complete; owner-qualified and comprehensively reviewed**. The preceding
+investigation/design checkpoint is complete; the user explicitly authorized
+implementation on 2026-10-01. The starting application is `687acd3`, with Align pin
+`b20429be50d6ab889496a0589143320683b29aeb` and pinned ggml
+`bb4caa7540188872173c44d161602d9271386413`. This section is the single
+prospective contract; the historical trial ledgers below remain historical.
+The [investigation record](../cuda-native-optimization-log.md#2026-10-01-preimplementation-investigation)
+contains source inspection and compiler evidence. The
+[implementation receipt](../cuda-native-optimization-log.md#2026-10-01-cuda-q4-split-layout-implementation)
+records the local owners, paired timings and retained-trace D0 analysis.
+Runtime connection is not selected: cached savings did not establish a stable
+pressure benefit, and pressure kernel intervals did not improve.
+
+#### Evidence and experiment order
+
+The current evidence concerns Qwen3.5-2B, RTX 4070 Ti/sm_89, predominantly
+single-request greedy decode. The recorded 78% is a share of **summed decode
+kernel intervals**, not request latency. A cached final-layer FFN is smaller
+than the 48 MiB L2; the 128 MiB pressure diagnostic improves the comparison
+but does not reproduce a full model or prove eviction. Other Qwen/Gemma
+models, shapes and GPUs require their own selection and evidence.
+
+| Order | Hypothesis and evidence | Smallest discriminating work / decision |
+| --- | --- | --- |
+| D0, before selection | Identify available headroom and the actual critical path. Q6 is already near a simple full-weight-read estimate; counters were last refused with `ERR_NVGPUCTRPERM`. | Separate prefill, scalar decode, copies, host gaps and graph reconstruction in one retained request trace. Obtain DRAM traffic, L2 hit rate, load sectors and issue/stall evidence if Windows-host counter permission becomes available. Permission is an external prerequisite for counters only, not for source inspection or a bounded experiment. |
+| R1, first implementation candidate | Lossless Q4_0 split storage enables wider CUDA loads. The current gate/up has 18 static `LDG.E.U16` sites and down has five; neither spills. A Metal split-scale trial already failed to establish a stable gain. The new hypothesis is specifically sm_89 load-instruction reduction, not a new claim that scale separation always helps. | Preserve arithmetic, lane mapping and graph. Compare raw and split CUDA layouts with the exact final-layer weights, full intermediate/final rows, emitted load widths, and both cached and pressure controls. Stop this variant if loads do not widen or if a complete-FFN loss persists without a new explanatory mechanism. |
+| R2, conditional | Remove an intermediate CPU completion wait between ggml and the native Q6 head. Device-event ordering can preserve the dependency without a CPU round trip. The existing greedy optimization already removed a later wait. | First measure the interval from the last dependent ggml producer to native input quantization. The current public ggml API cannot hand its stream/event to the independent CUDA helper; require an explicit versioned backend bridge before an asynchronous trial. Advance ahead of R1 only if the measured gap offers a larger useful gain. |
+| R3, later | Reuse weights across multiple target rows with an appropriate matrix kernel. Marlin's layout/pipeline and GemLite's shape-specific kernels are relevant algorithm sources. | Screen actual `M=2,4,8` work, including dispatch/reduction and numerical changes, before claiming an advantage over the already tried four-column DP4A head. For speculative generation compare `E[draft + target + restore/replay + bookkeeping] / E[committed tokens]` with ordinary cost per token. Metal acceptance gains and rejection losses do not establish CUDA profitability. |
+| Deferred | Q6 repacking, more warp/cache-hint variants, persistent whole-forward kernels, long-context attention and reduced precision. | Reopen only with a new measured bottleneck or workload. The withdrawn final FFN tail is not the next experiment unchanged. Precision changes need their own accuracy contract; Blackwell FP4 and Hopper-only PDL do not apply to sm_89. |
+
+Useful-weight bytes divided by historical kernel time give 466.23 GB/s for
+the 417,177,600-byte Q6 head at 894.782 us, and 413.56 GB/s for the
+14,155,776-byte Q4 gate/up pair at 34.229 us. Using 504 GB/s from
+21 Gbit/s times 192 bits divided by eight gives full-read estimates of
+827.73 us and 28.09 us respectively. Under that assumption the Q6 difference
+is only 67.05 us and the gate/up difference 6.14 us per measured operation.
+These are analytical estimates, not measured DRAM traffic, hard lower bounds,
+or predictions of request speed: cache hits, extra transfers, clock variation,
+overlap and instruction issue change the model. Never multiply a final-layer
+result by 24; layers 0-2 have Q4_1 down weights in the existing capture.
+
+Primary sources consulted on 2026-10-01:
+[NVIDIA bandwidth definitions](https://docs.nvidia.com/cuda/cuda-c-best-practices-guide/#bandwidth),
+[4070 Ti memory specification](https://uk.msi.com/Graphics-Card/GeForce-RTX-4070-Ti-GAMING-TRIO-12G/Specification),
+[stream/event ordering](https://docs.nvidia.com/cuda/cuda-programming-guide/03-advanced/advanced-host-programming.html#more-on-streams-and-events),
+[WSL counter access](https://docs.nvidia.com/nsight-compute/ReleaseNotes/topics/system-requirements.html),
+[Marlin techniques](https://github.com/IST-DASLab/marlin#techniques), and
+[GemLite algorithms](https://github.com/dropbox/gemlite#deep-dive).
+Marlin's FP16/INT4 arithmetic and GemLite's packing/group/accumulation choices
+are not drop-in Q4_0/Q8_1 or Q6_K implementations. Their published speedups
+use other controls and must not be applied to this baseline. Product adoption
+would keep model semantics and selection in Align, with only device primitives
+and thin native integration in CUDA/C; no Python/Triton product dependency.
+
+#### R1 representation and execution design
+
+Keep the existing 2048-wide input, 6144-wide gated row and 2048-wide output.
+For one row-major Q4_0 matrix let `B = rows * columns / 32` and let raw block
+`b` contain two scale bytes followed by sixteen nibble payload bytes. The
+proposed **in-memory-only split-v1** allocation contains:
+
+```text
+payload: offset 0, length 16*B; payload[16*b+j] = raw[18*b+2+j], 0 <= j < 16
+scales:  offset 16*B, length 2*B; scales[2*b+j] = raw[18*b+j],   0 <= j < 2
+total:   18*B bytes; row and block order, scale bits and nibble order unchanged
+```
+
+For each of gate/up/down, `B=393216`: payload 6,291,456 bytes, scales
+786,432 bytes, total 7,077,888 bytes. All three total 21,233,664 bytes.
+CUDA allocation supplies the base alignment; payload block starts are
+16-byte aligned and the scale plane starts on a 16-byte boundary. No block
+padding, requantization, F16 matrix expansion, transposition or persistent
+GGUF/Alignpack change is proposed.
+
+Gate/up requests a 16-byte payload load per existing whole-block lane;
+down requests an 8-byte load for each existing half-block lane. Keep the
+existing Q8_1 quantizers, DP4A operations, zero-point correction, float sum
+order, two warps per gate/up row, four warps per down row, and four-node CUDA
+Graph. Confirm actual `LDG` widths in SASS; a vector type in source is not
+proof. Record registers, spills and complete-operation cost because wider
+loads can increase live values. RevSplit-K, tile interleaving, async shared
+copies and Tensor Core math are separate hypotheses, not extra changes in R1.
+
+The independent benchmark performs a bit-preserving host pack once before
+upload. It checks inverse reconstruction of every byte, including scale
+sign/zero bits, and verifies uploaded bytes outside timing. Host conversion,
+upload and first capture are reported separately. A later retained product
+owner must perform packing once per immutable weight identity, account for
+the original weights still needed by ggml prefill, and drain consumers before
+releasing either representation. This diagnostic packer is not a new product
+loader or permission to move Align's model policy into C++.
+
+#### R1 diagnostic contract ledger
+
+This ledger owns the R1 diagnostic implementation. Product connection remains
+deferred; the diagnostic does not change runtime routing.
+
+| Surface | Proposed contract |
+| --- | --- |
+| Consumer / CLI | Extend the existing `scripts/run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN [CAPTURE_DIR [BASELINE_SOURCE]]` with developer-only `ALIGN_CUDA_Q4_LAYOUT=raw|split`, default `raw`. Empty/unknown values refuse. Keep `ALIGN_CUDA_Q4_CACHE_PRESSURE=0|1` and existing positional meanings. `ALIGN_CUDA_Q4_TEST_FAILURES=0|1`, default `0`, builds the developer-only failure owner when `1`; this build emits no steady-state speed verdict. Empty/unknown values refuse. Normal timing objects contain no injected-failure state or branches. Optional `ALIGN_CUDA_Q4_SCREEN_OUTPUT` retains the exact sources, objects, SASS and executable in an absent/empty external directory; empty, non-directory, occupied or in-repository destinations refuse. The default removes temporary build artifacts. No product CLI, environment option, network result or default-route change (`N/A`: isolated diagnostic). |
+| Internal CUDA ABI | Add `void *align_native_cuda_q40_ffn_open_layout(int width, int hidden, int layout)` to the existing helper/header: layout `0` raw, `1` split; only width 2048 and hidden 6144; null on invalid admission/allocation. Existing `open(width, hidden)` keeps raw behavior. Existing `run/read/close` signatures remain; `run` interprets its three borrowed weight allocations according to the context's immutable layout. This constructor is a diagnostic C boundary, not a promised Align API. |
+| Admission order / errors | Runner: arity, layout, pressure, failure-test selector, loader-preload/audit refusal, resolved paths/capture directory, headers/libraries/plugin, output-directory admission, clean pinned ggml revision, identity reporting, optional baseline-source admission, compile. Benchmark: arity/selectors, exact schema/completion/file lengths and finite F32 rows, small packing/corruption self-check, loaded-file identity, plugin/device/L2 admission, allocate, per-matrix pack/reconstruction/upload verification, full numerical checks, warmup/timing. Pack and readback staging are reused one matrix at a time to respect the host ceiling. Device-independent errors precede device work. Invalid runner input exits 2; compile failures propagate nonzero; benchmark validation/CUDA/numeric failure exits nonzero before a performance summary. Each benchmark process is limited to 120 s. |
+| Ownership / lifetime | Benchmark owns disjoint ggml, raw-control and candidate weight allocations; input is immutable during each synchronized call. The helper owns stream, graph and 41,984 bytes of output/Q8 scratch and borrows weights/input through close. Packed weights are immutable and live until the borrowing graph is drained/destroyed. Changed pointers refuse captured replay and invalidate output readiness; a subsequent valid replay can restore readiness. CUDA capture/instantiate/launch/completion/read failures poison the context: further run/read refuse until close, which drains before destruction. A failed read may have completed its first host copy; discard both host rows. Different data/layout requires a new context. No global weight cache or concurrent use of one context. Separate processes may run independently, but measurement arms run serially. |
+| Allocation / cost ceiling | Split weights use the same 21,233,664 bytes as raw weights. Paired mode adds at most 21,233,664 device bytes relative to the current shared-weight paired harness to give the raw control disjoint weights; no timed allocation or repacking. Extra host packing/readback staging <=14,155,776 bytes, reused by matrix. Each helper retains its existing 41,984 bytes; pressure remains a separate 134,217,728-byte diagnostic allocation. Opaque CUDA graph/driver overhead is not an exact-byte claim. Preparation <=900 s and each five-pair local campaign <=120 s; capture, if required, <=180 s. |
+| Identity / format | Capture schema 1 is unchanged; split-v1 exists only in benchmark-owned resident memory. There is no persisted split file, serializer or cross-session cache (`N/A`). Record application/helper/compiler, baseline source, verified clean ggml revision, actual library/plugin and capture digests, plus compiled objects and executable. The runner supplies its resolved library directory to the harness as internal `ALIGN_CUDA_Q4_LIBRARY_DIR`, overrides loader search with that directory, and rejects loader preloads/audits. The harness verifies the loaded ggml/base/plugin path, device and inode through process mappings. This binds measured artifacts; hashes alone do not attest their original build recipe. Layout, shape and exact pointer identities belong to each graph context. |
+| Results / numerics | Compare all 6,144 gated and 2,048 final elements with captured outputs, same-pin ggml and preceding native control using unchanged `abs(delta) <= 0.005 + 0.0005*abs(reference)` and finiteness. Packed-byte inverse equality is exact. Report raw/split bit identity separately; do not loosen a failed bound. Return every pair, complete synchronized wall intervals, preparation costs, explicit resident bytes and kernel attribution when collected. |
+| Measurement controls | Synthetic and actual rows; cached and pressure conditions; ggml and preceding native controls. Twelve warmups, then five alternating pairs of twenty complete FFNs, preserving every pair. Both native arms use disjoint immutable weight copies even in raw/raw validation, preventing the current shared-pointer harness from giving the second arm a cache advantage. Pressure runs before each arm and outside both timers. Graph creation, packing and diagnostic readback are excluded from steady-state timing but reported. |
+| Qualification / terminal decision | First validate raw/raw controls, then raw/split. One repeat resolves an encouraging or noisy local result; unchanged failures do not trigger a parameter sweep. Numerical failure rejects the variant. No wider loads or repeatable loss without a new explanation closes R1 locally; a small reproducible gain can be retained without a universal floor. Credible correctness plus a mechanism is enough for guarded real-model integration, even if a local comparison trails ggml. Whole-request proof follows integration and decides routing. |
+
+The same-process preceding control must be the source at `687acd3` with helper
+SHA-256 `2b55714179b3dc8d6e98d7b4d531d68c9d09c28943bb75227f10f1a25beb46a3`.
+The five-argument runner can already compile its four renamed ABI symbols;
+the proposed constructor is used only by the candidate. The first raw/raw
+control must explain any change caused by separating allocations before its
+timings are used to judge split storage.
+
+#### Work sequence and closure
+
+The implementation owners are the existing runner, benchmark,
+`scripts/native_cuda_q40_ffn.h` and `scripts/native_cuda_q40_ffn.cu`.
+They form one useful diagnostic capability; local pack/load checkpoints are
+not separate publication milestones. No compiler, Align source, aggregate,
+model pack, or Python boundary changes are needed for R1.
+
+| Closure case | Implementation owner and exact planned evidence |
+| --- | --- |
+| Construction / malformed input | Passed: both legal layouts/default raw; empty/unknown layout, pressure and failure selector; wrong dimensions/layout integers and all four null dependencies; incomplete/wrong-sized capture. Runner refusal commands and `ALIGN_CUDA_Q4_TEST_FAILURES=1` own these cases. Output-path and exact-source/baseline refusals also pass; see the implementation receipt. |
+| Formation / transfer | Passed in raw/split synthetic/actual owners: all-byte reconstruction for three split matrices and GPU readback of every upload; payload/scale alignment. Packer self-check covers every half-scale bit pattern and rejects corrupted payload and scale bytes before device work. |
+| Success / repetition | Passed: complete finite rows before timing and after every pair, actual five-argument raw/raw and raw/split cached/pressure owners. Exact compiled objects are hashed and their SASS summarized; optional output retention permits independent inspection/profile. |
+| Failure / early exit | Passed in both layout failure builds: twelve injected stream/allocation/capture/instantiate/launch/completion/read operations; first and replay submission/completion; poisoned run/read refusal and full-row recovery with a new context. The developer-only build emits no steady-state speed verdict. |
+| Cleanup / identity | Passed: repeated open/run/close, partial-construction/failure close, all four changed-pointer refusals and restored valid replay; both directions of wrong expected/loaded library identity for regular and versioned-SONAME layouts. Canonical versioned targets behind `.so`/`.so.0` symlinks pass the normal full-row owner. Compute Sanitizer on the split failure owner reports zero errors and zero leaked allocations. Borrowed weights are freed after helper close. No timed allocation; byte ceilings are unchanged. |
+| Final product consumer | **Deferred explicitly:** settle the selected real-request boundary after R1/D0 evidence. Before coding that connection, extend this ledger with its exact Align selection, ABI, original/split weight lifetimes, budget, reset/failure owners and numerical contract. Existing `run-qwen35-native-q6-head-smoke` and `measure-qwen35-native-cuda` are starting owners, not claims that they already test a Q4 route. |
+
+The supported commands use the existing source/plugin/capture inputs and
+the layout selector. `SRC`, `LIB`,
+`PLUGIN`, `CAPTURE` and `RAW_SOURCE` below denote explicitly verified inputs;
+`OUT` is an external evidence directory. Preserve the per-run stdout/stderr,
+including identity, byte-verification, every pair and compiler/SASS receipts.
+
+```sh
+ALIGN_CUDA_Q4_LAYOUT=raw scripts/run-native-cuda-q4-ffn-screen "$SRC" "$LIB" "$PLUGIN"
+ALIGN_CUDA_Q4_LAYOUT=split scripts/run-native-cuda-q4-ffn-screen "$SRC" "$LIB" "$PLUGIN"
+ALIGN_CUDA_Q4_LAYOUT=raw scripts/run-native-cuda-q4-ffn-screen "$SRC" "$LIB" "$PLUGIN" "$CAPTURE" "$RAW_SOURCE"
+ALIGN_CUDA_Q4_LAYOUT=split scripts/run-native-cuda-q4-ffn-screen "$SRC" "$LIB" "$PLUGIN" "$CAPTURE" "$RAW_SOURCE"
+ALIGN_CUDA_Q4_CACHE_PRESSURE=1 ALIGN_CUDA_Q4_LAYOUT=split scripts/run-native-cuda-q4-ffn-screen "$SRC" "$LIB" "$PLUGIN" "$CAPTURE" "$RAW_SOURCE"
+ALIGN_CUDA_Q4_TEST_FAILURES=1 ALIGN_CUDA_Q4_LAYOUT=raw scripts/run-native-cuda-q4-ffn-screen "$SRC" "$LIB" "$PLUGIN" "$CAPTURE" "$RAW_SOURCE"
+ALIGN_CUDA_Q4_TEST_FAILURES=1 ALIGN_CUDA_Q4_LAYOUT=split scripts/run-native-cuda-q4-ffn-screen "$SRC" "$LIB" "$PLUGIN" "$CAPTURE" "$RAW_SOURCE"
+```
+
+Repeat raw/raw with pressure as well. Set `ALIGN_CUDA_Q4_SCREEN_OUTPUT="$OUT/build"`
+on one ordinary run to retain the exact measured executable and objects.
+The runner refuses loader injection, including Nsight's preload; profile the
+retained executable directly, with `ALIGN_CUDA_Q4_LIBRARY_DIR="$LIB"`,
+`LD_LIBRARY_PATH="$LIB"` and the same layout/pressure selectors:
+`nsys profile --trace=cuda --cuda-graph-trace=node --sample=none
+--cpuctxsw=none -o "$OUT/trace" "$OUT/build/bench-native-cuda-q4-ffn"
+"$PLUGIN" "$CAPTURE"`. Its instrumented wall intervals are diagnostic only.
+Hardware counters
+require Windows-host permission; retry only after that prerequisite changes.
+No profiler run is a substitute for uninstrumented paired wall time. Report
+incremental preparation cost and break-even uses as
+`ceil(max(0, split_prepare - raw_prepare) / paired_saving_per_use)` when the
+saving is positive; otherwise there is no measured amortization point.
+
+The eventual connected comparison uses the preserved greedy-head route,
+ordinary Align and pinned llama.cpp at actual 56/16, 200/32 and 330/64 work,
+with twenty retained requests per Align arm per pair and the established
+reference clock boundaries. Full logits, valid recurrent/KV state, retained
+reset, malformed/conflicting/budget refusals and forced failure must close
+before routing adoption. Startup/load and TTFT remain separate measurements;
+this work does not claim coding time-to-passing-patch improvement.
+
 ### Native CUDA Q4_0 FFN screen (2026-09-29)
 
 The CUDA host has an RTX 4070 Ti. At the start of this capability the Qwen3.5

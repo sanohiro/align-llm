@@ -2,6 +2,65 @@
 
 Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
+## Requested CUDA publication boundary (2026-10-01)
+
+Branch `agent/cuda-q4-split-screen`, base `687acd3`. The user now authorizes
+publication and integration of the completed CUDA work, followed by a stop.
+This independently usable diagnostic is the first publication capability;
+the completed B1/B2/B3 request-input, workspace and prefill-cache capability
+is published separately. No new optimization or roadmap work is authorized.
+Next: qualify and review this exact candidate, publish and merge it, then
+publish the completed runtime capability and stop after its merge.
+Historical no-publication instructions below are superseded by this request.
+
+## CUDA Q4 split-layout implementation (2026-10-01)
+
+Branch `agent/cuda-q4-repack-plan`, source/base `687acd3` (PR #334 is merged).
+The user explicitly authorized implementation after the design checkpoint.
+R1 diagnostic implementation, owner qualification and comprehensive review
+are complete. Runtime connection is not selected:
+cached savings do not establish a dependable pressure benefit.
+
+The proposed contract is "CUDA next-experiment design" in
+`docs/specs/gpu-runtime-performance.md`; the investigation and reproducible
+baseline SASS evidence are in `docs/cuda-native-optimization-log.md`.
+The first candidate is lossless Q4_0 split storage for wider sm_89 loads,
+with disjoint raw/split control allocations. Metal already has a negative
+split-layout result. Pinned ggml has no public CUDA stream/event accessor for
+the independent helper, so removing its intermediate CPU wait needs a separate
+backend bridge. No genuine Align gap was found.
+
+Implemented raw/split constructor, lossless pack/upload verification, disjoint
+raw control, identity binding, exact build/SASS retention and failure owners.
+Split gate/up emits two 128-bit loads with 32 registers; split down emits
+64-bit loads with 40 registers; no spills. Full actual rows are bit-identical
+to the preceding native helper. Initial cached paired gains are 3.241/2.866 us
+(5/5 each); pressure repeats are noisy and kernel intervals do not improve.
+An external no-unroll down check reduced registers but did not resolve that
+uncertainty; it is not retained. No new request-speed result.
+Counters remain unavailable in the last recorded attempt; Windows-host access
+is required before retrying them and does not block independent design work.
+
+Verification: cached/pressure raw/raw and raw/split actual owners, synthetic
+owners, both twelve-operation failure/recovery builds, malformed input/source/
+artifact/loader refusals, wrong loaded-library isolation in both directions,
+`bash -n scripts/run-native-cuda-q4-ffn-screen` and `git diff --check` pass.
+Compute Sanitizer split failure owner: zero errors and zero leaked allocations.
+Exact commands, hashes and every pair are in the implementation receipt.
+One fresh comprehensive implementation review found one P2 canonical-library
+compatibility issue. It is repaired; standard versioned SONAME symlinks pass,
+and both wrong-library directions still refuse. The two rounded receipt cells
+were corrected to the original printed medians. The repair did not change the
+kernel, layout, timing envelope or adoption decision; no finding remains open.
+
+No active work remains in this local diagnostic checkpoint. D0 inspected the retained greedy-head
+200/32 trace: decode ggml producer-to-head quantization median 52.803 us.
+R2 remains useful but requires a separate explicit ggml/CUDA ordering bridge.
+Whole-request connection and its exact product contract remain deferred.
+The eight source/documentation files in this branch are intentional uncommitted
+work; no publication is requested. The next useful design target is R2's
+explicit ggml/CUDA dependency bridge, not another unchanged FFN-tail attempt.
+
 ## Completed larger CUDA FFN/residual/norm/head trial (2026-09-30)
 
 Branch `agent/native-cuda-ffn-tail`, base `b4814fb`, archived experiment
