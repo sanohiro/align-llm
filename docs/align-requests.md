@@ -10168,12 +10168,45 @@ Resume condition: Align ships `array<T>.sort()` over `str` (and owned `string`) 
   (`crates/align_sema/src/lib.rs:50602-50603`, "a `sort(cmp)` overload is a follow-up"); align-llm then
   deletes the private `span_less`/`sort_spans` pair in `src/expert_trace.align` and reconsiders the
   packed-hash index in `src/model_ir.align`.
-Align commit or pull request: none
+Align commit or pull request: Copy-only provider capability merged in PR #1200
+  https://github.com/sanohiro/align/pull/1200, merge f4b6164ca2f870a09c5880b06722593ac47fc39c.
+  Owned-string elements/keys, general comparator sorting and consumer adoption remain pending.
 align-llm verification: pending — replace `span_less`/`sort_spans` in `src/expert_trace.align`
   (`src/expert_trace.align:656-730`) and the packed-42-bit-hash name index in `src/model_ir.align`
   (`src/model_ir.align:261-301`) with the shipped surface, and pass `make expert-trace-smoke
   model-ir-smoke`.
 ```
+
+### Align implementation answer (2026-10-02 — partial provider delivery)
+
+[PR #1200](https://github.com/sanohiro/align/pull/1200), merged as
+`f4b6164ca2f870a09c5880b06722593ac47fc39c`, implements direct `.sort()` for the
+existing scalar Copy Ord domain: numbers, `char` and borrowed `str`. It also
+admits `str` elements to `.sort_by_key(f)`. Both retain the existing stable
+ordering; strings compare UTF-8 bytes lexicographically, including NUL, prefixes
+and empty text. Key effects run exactly once per surviving element in input
+order. Generic Ord helpers recheck concrete Copy admission after instantiation.
+
+Results own shallow array spines and borrow the original string bytes; no
+implicit clone, byte allocation or string-element Drop is added. Byte-owner
+lifetimes and existing conservative bound-source generation loans remain. A
+physically fresh result spine does not promise that the source array can be
+replaced while the result remains live. Existing result, conditional merge
+scratch and keyed decoration allocations remain explicit terminal costs.
+
+Direct/keyed ordering, stable equal keys, exact effect counts, imported generics,
+whole/per-unit execution, lifetime/control/invalidation, shallow MIR storage and
+forged checked-HIR owners passed. The ordering-domain omission mutation is
+caught by its owner. Fresh independent code review, final SHA-bound preflight,
+Clippy, three-platform required CI and the literal release build passed.
+Plan 88 records the exact provider boundary.
+
+Request 27 remains PROPOSED for its broader remaining scope: Move `string`
+elements/keys and general comparator sorting are not shipped. Its original
+acceptance criterion 1 is delivered; criterion 2 and consumer criterion 3 are
+pending. Align-llm owns repinning, replacing any private sort/hash representation
+and running `make expert-trace-smoke model-ir-smoke`; no consumer code, tests,
+fixtures, branches, commits or adoption state were changed by this delivery.
 
 ### Motivation and current sibling evidence
 

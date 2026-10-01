@@ -4,11 +4,16 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Current request-register checkpoint (2026-10-02)
 
-Branch `agent/sync-merged-align-requests`, base `acec49c3`. Requests 21, 24, 26,
-30, 31, 35 and 121–123 now record their merged Align provider surfaces, exact
+Branch `agent/sync-align-request27`, base `6cb57e54`. Requests 21, 24, 26,
+30, 31, 35 and 121–123 were synchronized in PR #337 at `6cb57e54`, recording
+their merged Align provider surfaces, exact
 commits and remaining consumer acceptance. Provider PRs #1180–#1182 and
 #1194–#1199 are merged with successful required platform checks. Request 35
 ships only the capacity accessor; fallible construction remains deferred.
+Request 27 now records the partial Copy string-sort delivery in Align PR #1200
+at `f4b6164c`. Its broader status remains PROPOSED: owned-string elements/keys,
+general comparators and consumer acceptance remain pending. No consumer
+implementation is active.
 The managed pin remains `b20429be50d6ab889496a0589143320683b29aeb`, and no
 consumer adoption or ALIGN_LLM_VERIFIED/CLOSED transition is claimed.
 
