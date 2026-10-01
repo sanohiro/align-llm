@@ -22,6 +22,10 @@ extern "C" void baseline_close(void *);
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <fstream>
+#include <sstream>
+#include <sys/stat.h>
+#include <limits.h>
 #include <utility>
 #include <vector>
 
@@ -58,6 +62,68 @@ static std::vector<uint8_t> make_weights(size_t bytes, unsigned seed) {
         }
     }
     return data;
+}
+
+static std::vector<uint8_t> pack_split(const std::vector<uint8_t> &raw) {
+    if (raw.size() % 18) fail("invalid pack length");
+    const size_t blocks = raw.size() / 18;
+    std::vector<uint8_t> split(raw.size());
+    for (size_t b = 0; b < blocks; ++b) {
+        std::memcpy(split.data() + 16 * b, raw.data() + 18 * b + 2, 16);
+        std::memcpy(split.data() + 16 * blocks + 2 * b, raw.data() + 18 * b, 2);
+    }
+    return split;
+}
+
+static bool reconstructed(const std::vector<uint8_t> &raw,
+        const std::vector<uint8_t> &split) {
+    if (raw.size() != split.size() || raw.size() % 18) return false;
+    const size_t blocks = raw.size() / 18;
+    for (size_t b = 0; b < blocks; ++b)
+        if (std::memcmp(raw.data() + 18 * b + 2, split.data() + 16 * b, 16)
+            || std::memcmp(raw.data() + 18 * b, split.data() + 16 * blocks + 2 * b, 2))
+            return false;
+    return true;
+}
+
+// Bind the measured process to the exact files hashed by the runner, including
+// SONAME aliases. Never accept an ambient loader replacement as the control.
+static void check_loaded(const char *expected, const char *stem) {
+    struct stat wanted{};
+    char expected_path[PATH_MAX];
+    if (!expected || !realpath(expected, expected_path) || stat(expected, &wanted))
+        fail("expected library identity missing");
+    const std::string canonical_name = std::string(expected_path).substr(
+        std::string(expected_path).find_last_of('/') + 1);
+    const std::string version_prefix = std::string(stem) + ".";
+    std::ifstream maps("/proc/self/maps");
+    std::string line;
+    bool found = false;
+    while (std::getline(maps, line)) {
+        std::istringstream fields(line);
+        std::string address, permissions, offset, device, inode, path;
+        fields >> address >> permissions >> offset >> device >> inode;
+        std::getline(fields, path);
+        const size_t first = path.find_first_not_of(' ');
+        if (first == std::string::npos) continue;
+        path.erase(0, first);
+        const std::string name = path.substr(path.find_last_of('/') + 1);
+        // CMake's SONAME symlinks normally map a versioned canonical target.
+        // Also inspect other versions, so a wrong loaded file still refuses.
+        if (name != canonical_name && name != stem && name.rfind(version_prefix, 0) != 0)
+            continue;
+        struct stat actual{};
+        char actual_path[PATH_MAX];
+        if (!realpath(path.c_str(), actual_path) || std::strcmp(actual_path, expected_path)
+                || stat(path.c_str(), &actual) || actual.st_dev != wanted.st_dev
+                || actual.st_ino != wanted.st_ino
+                || std::stoull(inode) != uint64_t(wanted.st_ino))
+            fail("loaded library path/device/inode mismatch");
+        found = true;
+    }
+    if (!found) fail("expected library is not mapped");
+    std::printf("loaded_library=%s device=%llu inode=%llu\n", expected,
+        (unsigned long long)wanted.st_dev, (unsigned long long)wanted.st_ino);
 }
 
 static std::vector<uint8_t> read_exact(const char *directory, const char *name,
@@ -118,10 +184,95 @@ static float check_row(ggml_tensor *tensor, const std::vector<float> &actual,
     return compare(expected, actual, label);
 }
 
+#if defined(ALIGN_CUDA_Q4_TESTING)
+static void failure_owner(int layout, const void *gate, const void *up,
+        const void *down, const float *input, const std::vector<float> &reference_gated,
+        const std::vector<float> &reference_down) {
+    std::vector<float> gated(HIDDEN, 123.0f), output(WIDTH, 123.0f);
+    auto fresh = [&]() {
+        void *ctx = align_native_cuda_q40_ffn_open_layout(WIDTH, HIDDEN, layout);
+        if (!ctx) fail("recovery context allocation failed");
+        std::fill(gated.begin(), gated.end(), 123.0f);
+        std::fill(output.begin(), output.end(), 123.0f);
+        if (align_native_cuda_q40_ffn_read(ctx, gated.data(), HIDDEN, output.data(), WIDTH))
+            fail("read succeeded before completed execution");
+        if (!std::all_of(gated.begin(), gated.end(), [](float v) { return v == 123.0f; })
+            || !std::all_of(output.begin(), output.end(), [](float v) { return v == 123.0f; }))
+            fail("premature read modified caller output");
+        for (int dependency = 0; dependency < 4; ++dependency)
+            if (align_native_cuda_q40_ffn_run(ctx, dependency == 0 ? nullptr : gate,
+                    dependency == 1 ? nullptr : up, dependency == 2 ? nullptr : down,
+                    dependency == 3 ? nullptr : input)) fail("null dependency admitted");
+        if (!align_native_cuda_q40_ffn_run(ctx, gate, up, down, input)
+            || !align_native_cuda_q40_ffn_read(ctx, gated.data(), HIDDEN, output.data(), WIDTH))
+            fail("fresh-context recovery failed");
+        compare(reference_gated, gated, "recovery gated");
+        compare(reference_down, output, "recovery down");
+        if (align_native_cuda_q40_ffn_read(ctx, gated.data(), HIDDEN - 1, output.data(), WIDTH)
+            || align_native_cuda_q40_ffn_read(ctx, gated.data(), HIDDEN, output.data(), WIDTH - 1))
+            fail("read admitted wrong counts");
+        if (align_native_cuda_q40_ffn_read(ctx, nullptr, HIDDEN, output.data(), WIDTH)
+            || align_native_cuda_q40_ffn_read(ctx, gated.data(), HIDDEN, nullptr, WIDTH))
+            fail("read admitted null output");
+        // All four captured dependencies must remain bound, with recoverable
+        // admission refusal and no stale read. No changed address is dereferenced.
+        for (int dependency = 0; dependency < 4; ++dependency) {
+            const void *g = dependency == 0 ? static_cast<const uint8_t *>(gate) + 16 : gate;
+            const void *u = dependency == 1 ? static_cast<const uint8_t *>(up) + 16 : up;
+            const void *d = dependency == 2 ? static_cast<const uint8_t *>(down) + 16 : down;
+            const float *x = dependency == 3 ? input + 1 : input;
+            if (align_native_cuda_q40_ffn_run(ctx, g, u, d, x)
+                || align_native_cuda_q40_ffn_read(ctx, gated.data(), HIDDEN, output.data(), WIDTH))
+                fail("changed dependency admitted or exposed stale output");
+            if (!align_native_cuda_q40_ffn_run(ctx, gate, up, down, input))
+                fail("valid replay after admission refusal failed");
+        }
+        align_native_cuda_q40_ffn_close(ctx);
+    };
+    fresh();
+    for (int operation = 1; operation <= 12; ++operation) {
+        if (operation <= 5) {
+            align_native_cuda_q40_ffn_test_fail(operation);
+            if (align_native_cuda_q40_ffn_open_layout(WIDTH, HIDDEN, layout))
+                fail("forced acquisition failure succeeded");
+        } else {
+            // Submission/completion failures cover both first launch and replay.
+            const int attempts = operation == 9 || operation == 10 ? 2 : 1;
+            for (int attempt = 0; attempt < attempts; ++attempt) {
+                void *ctx = align_native_cuda_q40_ffn_open_layout(WIDTH, HIDDEN, layout);
+                if (!ctx) fail("fault context allocation failed");
+                if ((operation >= 11 || attempt == 1)
+                    && !align_native_cuda_q40_ffn_run(ctx, gate, up, down, input))
+                    fail("fault preparation failed");
+                align_native_cuda_q40_ffn_test_fail(operation);
+                const int accepted = operation >= 11
+                    ? align_native_cuda_q40_ffn_read(ctx, gated.data(), HIDDEN, output.data(), WIDTH)
+                    : align_native_cuda_q40_ffn_run(ctx, gate, up, down, input);
+                if (accepted
+                    || align_native_cuda_q40_ffn_run(ctx, gate, up, down, input)
+                    || align_native_cuda_q40_ffn_read(ctx, gated.data(), HIDDEN, output.data(), WIDTH))
+                    fail("failed context accepted execution or output");
+                align_native_cuda_q40_ffn_close(ctx);
+            }
+        }
+        fresh();
+    }
+    if (align_native_cuda_q40_ffn_run(nullptr, gate, up, down, input)
+        || align_native_cuda_q40_ffn_read(nullptr, gated.data(), HIDDEN, output.data(), WIDTH))
+        fail("null context admitted");
+    align_native_cuda_q40_ffn_close(nullptr);
+    std::printf("failure_owner=PASS operations=12 first_and_replay_launch_completion=1 recovery=1 changed_dependencies=4\n");
+}
+#endif
+
 int main(int argc, char **argv) {
     if (argc != 2 && argc != 3)
         fail("usage: bench-native-cuda-q4-ffn LIBGGML_CUDA_SO [CAPTURE_DIR]");
     const char *capture = argc == 3 ? argv[2] : nullptr;
+    const char *layout_mode = std::getenv("ALIGN_CUDA_Q4_LAYOUT");
+    if (layout_mode && std::strcmp(layout_mode, "raw") && std::strcmp(layout_mode, "split"))
+        fail("ALIGN_CUDA_Q4_LAYOUT must be raw or split");
+    const bool split = layout_mode && std::strcmp(layout_mode, "split") == 0;
     const char *pressure_mode = std::getenv("ALIGN_CUDA_Q4_CACHE_PRESSURE");
     if (pressure_mode && std::strcmp(pressure_mode, "0") != 0
             && std::strcmp(pressure_mode, "1") != 0)
@@ -143,8 +294,35 @@ int main(int argc, char **argv) {
         input = read_f32(capture, "input.bin", WIDTH);
         captured_gated = read_f32(capture, "gated.bin", HIDDEN);
         captured_down = read_f32(capture, "output.bin", WIDTH);
+    } else {
+        gate_weights = make_weights(WEIGHT_BYTES, 1);
+        up_weights = make_weights(WEIGHT_BYTES, 2);
+        down_weights = make_weights(WEIGHT_BYTES, 3);
+        for (int i = 0; i < WIDTH; ++i) input[i] = std::sin(i * 0.013f);
     }
+    // Include every half-scale bit pattern, independent of device admission.
+    std::vector<uint8_t> packing_probe(18 * 65536);
+    for (size_t b = 0; b < 65536; ++b) {
+        packing_probe[18 * b] = uint8_t(b);
+        packing_probe[18 * b + 1] = uint8_t(b >> 8);
+        for (int j = 0; j < 16; ++j) packing_probe[18 * b + 2 + j] = uint8_t(b + j);
+    }
+    auto packed_probe = pack_split(packing_probe);
+    if (!reconstructed(packing_probe, packed_probe)) fail("packing self-check failed");
+    packed_probe[0] ^= 1;
+    if (reconstructed(packing_probe, packed_probe)) fail("corrupt payload admitted");
+    packed_probe[0] ^= 1;
+    packed_probe[16 * 65536] ^= 1;
+    if (reconstructed(packing_probe, packed_probe)) fail("corrupt scale admitted");
+    std::vector<uint8_t>().swap(packing_probe);
+    std::vector<uint8_t>().swap(packed_probe);
+    const char *library_dir = std::getenv("ALIGN_CUDA_Q4_LIBRARY_DIR");
+    if (!library_dir) fail("run through the identity-binding screen runner");
+    check_loaded((std::string(library_dir) + "/libggml.so.0").c_str(), "libggml.so");
+    check_loaded((std::string(library_dir) + "/libggml-base.so.0").c_str(), "libggml-base.so");
     ggml_backend_reg_t registry = ggml_backend_load(argv[1]);
+    const std::string plugin_path(argv[1]);
+    check_loaded(argv[1], plugin_path.substr(plugin_path.find_last_of('/') + 1).c_str());
     if (registry == nullptr || ggml_backend_reg_dev_count(registry) != 1)
         fail("pinned ggml CUDA plugin must have exactly one device");
     ggml_backend_dev_t device = ggml_backend_reg_dev_get(registry, 0);
@@ -196,12 +374,6 @@ int main(int argc, char **argv) {
     ggml_backend_buffer_t ggml_buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
     if (ggml_buffer == nullptr) fail("ggml CUDA tensor allocation failed");
 
-    if (!capture) {
-        gate_weights = make_weights(ggml_nbytes(wg), 1);
-        up_weights = make_weights(ggml_nbytes(wu), 2);
-        down_weights = make_weights(ggml_nbytes(wd), 3);
-        for (int i = 0; i < WIDTH; ++i) input[i] = std::sin(i * 0.013f);
-    }
     if (ggml_nbytes(wg) != gate_weights.size() ||
         ggml_nbytes(wu) != up_weights.size() ||
         ggml_nbytes(wd) != down_weights.size()) fail("ggml Q4_0 geometry mismatch");
@@ -217,28 +389,60 @@ int main(int argc, char **argv) {
         || cudaMalloc(&dd, down_weights.size()) != cudaSuccess
         || cudaMalloc(&dx, input.size() * sizeof(float)) != cudaSuccess)
         fail("native CUDA input allocation failed");
-    if (cudaMemcpy(dg, gate_weights.data(), gate_weights.size(), cudaMemcpyHostToDevice)
-            != cudaSuccess
-        || cudaMemcpy(du, up_weights.data(), up_weights.size(), cudaMemcpyHostToDevice)
-            != cudaSuccess
-        || cudaMemcpy(dd, down_weights.data(), down_weights.size(), cudaMemcpyHostToDevice)
-            != cudaSuccess
-        || cudaMemcpy(dx, input.data(), input.size() * sizeof(float), cudaMemcpyHostToDevice)
+    double packing_ms = 0, candidate_upload_ms = 0, baseline_upload_ms = 0, verification_ms = 0;
+    auto upload = [&](void *destination, const std::vector<uint8_t> &raw, bool use_split,
+            double &upload_ms) {
+        auto start = std::chrono::steady_clock::now();
+        std::vector<uint8_t> packed;
+        if (use_split) {
+            packed = pack_split(raw);
+            if (!reconstructed(raw, packed)) fail("weight inverse-byte mismatch");
+            packing_ms += elapsed_ms(start);
+        }
+        const auto &bytes = use_split ? packed : raw;
+        if (reinterpret_cast<uintptr_t>(destination) % 16
+            || (16 * (bytes.size() / 18)) % 16) fail("weight payload/scale alignment failed");
+        start = std::chrono::steady_clock::now();
+        if (cudaMemcpy(destination, bytes.data(), bytes.size(), cudaMemcpyHostToDevice)
+                != cudaSuccess) fail("weight upload failed");
+        upload_ms += elapsed_ms(start);
+        start = std::chrono::steady_clock::now();
+        std::vector<uint8_t> readback(bytes.size());
+        if (cudaMemcpy(readback.data(), destination, readback.size(), cudaMemcpyDeviceToHost)
+                != cudaSuccess || readback != bytes) fail("uploaded weight byte mismatch");
+        verification_ms += elapsed_ms(start);
+    };
+    upload(dg, gate_weights, split, candidate_upload_ms);
+    upload(du, up_weights, split, candidate_upload_ms);
+    upload(dd, down_weights, split, candidate_upload_ms);
+    if (cudaMemcpy(dx, input.data(), input.size() * sizeof(float), cudaMemcpyHostToDevice)
             != cudaSuccess) fail("native CUDA input upload failed");
-    void *native = align_native_cuda_q40_ffn_open(WIDTH, HIDDEN);
+    void *native = align_native_cuda_q40_ffn_open_layout(WIDTH, HIDDEN, split);
     if (native == nullptr) fail("native CUDA FFN init failed");
     if (align_native_cuda_q40_ffn_open(WIDTH - 1, HIDDEN) != nullptr
+        || align_native_cuda_q40_ffn_open_layout(WIDTH, HIDDEN - 1, split) != nullptr
+        || align_native_cuda_q40_ffn_open_layout(WIDTH, HIDDEN, -1) != nullptr
+        || align_native_cuda_q40_ffn_open_layout(WIDTH, HIDDEN, 2) != nullptr
         || align_native_cuda_q40_ffn_run(native, nullptr, du, dd, dx)
         || align_native_cuda_q40_ffn_read(native, nullptr, HIDDEN,
             nullptr, WIDTH)) fail("native CUDA admission accepted invalid input");
 
 #if defined(ALIGN_CUDA_Q4_BASELINE)
+    void *bg = nullptr, *bu = nullptr, *bd = nullptr;
+    if (cudaMalloc(&bg, WEIGHT_BYTES) != cudaSuccess
+        || cudaMalloc(&bu, WEIGHT_BYTES) != cudaSuccess
+        || cudaMalloc(&bd, WEIGHT_BYTES) != cudaSuccess)
+        fail("disjoint baseline weight allocation failed");
+    upload(bg, gate_weights, false, baseline_upload_ms);
+    upload(bu, up_weights, false, baseline_upload_ms);
+    upload(bd, down_weights, false, baseline_upload_ms);
+    if (bg == dg || bu == du || bd == dd) fail("native arms share weight allocations");
     void *baseline = baseline_open(WIDTH, HIDDEN);
     if (baseline == nullptr) fail("baseline CUDA FFN init failed");
     auto run_baseline = [&]() -> double {
         apply_pressure();
         const auto start = std::chrono::steady_clock::now();
-        if (!baseline_run(baseline, dg, du, dd, dx)) fail("baseline CUDA FFN compute failed");
+        if (!baseline_run(baseline, bg, bu, bd, dx)) fail("baseline CUDA FFN compute failed");
         return elapsed_ms(start);
     };
     const char *control_label = "baseline";
@@ -274,6 +478,9 @@ int main(int argc, char **argv) {
         check_row(down, baseline_down, "baseline down");
         compare(baseline_gated, native_gated, "baseline/native gated");
         compare(baseline_down, native_down, "baseline/native down");
+        std::printf("baseline_native_bit_identical_gated=%d down=%d\n",
+            std::memcmp(baseline_gated.data(), native_gated.data(), HIDDEN * sizeof(float)) == 0,
+            std::memcmp(baseline_down.data(), native_down.data(), WIDTH * sizeof(float)) == 0);
         if (capture) {
             compare(captured_gated, baseline_gated, "captured baseline gated");
             compare(captured_down, baseline_down, "captured baseline down");
@@ -290,6 +497,31 @@ int main(int argc, char **argv) {
         }
         return {gated_error, down_error};
     };
+    const double first_ggml_ms = run_ggml();
+#if defined(ALIGN_CUDA_Q4_BASELINE)
+    const double first_baseline_ms = run_baseline();
+    std::printf("first_baseline_capture_launch_wait_ms=%.6f\n", first_baseline_ms);
+#endif
+    const double first_native_ms = run_native();
+    check_both();
+#if defined(ALIGN_CUDA_Q4_TESTING)
+    failure_owner(split, dg, du, dd, dx, native_gated, native_down);
+#endif
+    std::printf("layout=%s capture=%s packing_and_inverse_ms=%.6f candidate_weights_upload_ms=%.6f baseline_weights_upload_ms=%.6f upload_verification_ms=%.6f first_native_capture_launch_wait_ms=%.6f first_ggml_ms=%.6f\n",
+        split ? "split" : "raw", capture ? "actual" : "synthetic", packing_ms,
+        candidate_upload_ms, baseline_upload_ms, verification_ms,
+        first_native_ms, first_ggml_ms);
+    std::printf("candidate_weight_bytes=%zu paired_extra_device_bytes=%zu helper_scratch_bytes=41984 max_extra_host_staging_bytes=%zu timed_allocations=0\n",
+        3 * WEIGHT_BYTES,
+#if defined(ALIGN_CUDA_Q4_BASELINE)
+        3 * WEIGHT_BYTES,
+#else
+        size_t(0),
+#endif
+        2 * WEIGHT_BYTES);
+#if defined(ALIGN_CUDA_Q4_TESTING)
+    std::printf("test_build=1 diagnostic_no_speed_verdict=1\n");
+#else
     for (int i = 0; i < WARMUPS; ++i) {
         run_ggml();
 #if defined(ALIGN_CUDA_Q4_BASELINE)
@@ -300,6 +532,9 @@ int main(int argc, char **argv) {
     auto errors = check_both();
     if (align_native_cuda_q40_ffn_run(native, static_cast<uint8_t *>(dg) + 1,
             du, dd, dx)) fail("captured CUDA graph accepted a changed weight pointer");
+    if (align_native_cuda_q40_ffn_read(native, native_gated.data(), HIDDEN,
+            native_down.data(), WIDTH)) fail("read accepted stale output after refusal");
+    run_native();
     std::printf("gated_max_abs_diff=%g down_max_abs_diff=%g\n",
         errors.first, errors.second);
 
@@ -308,7 +543,7 @@ int main(int argc, char **argv) {
 #else
     auto run_control = run_ggml;
 #endif
-    std::vector<double> control_times, native_times;
+    std::vector<double> control_times, native_times, gains;
     for (int pair = 0; pair < PAIRS; ++pair) {
         double control_ms = 0.0, native_ms = 0.0;
         for (int i = 0; i < ITERATIONS; ++i) {
@@ -323,19 +558,25 @@ int main(int argc, char **argv) {
         check_both();
         control_times.push_back(control_ms / ITERATIONS);
         native_times.push_back(native_ms / ITERATIONS);
+        gains.push_back(control_times.back() - native_times.back());
         std::printf("pair=%d %s_ms=%.6f native_ms=%.6f\n",
             pair, control_label, control_times.back(), native_times.back());
     }
     std::printf("median_%s_ms=%.6f median_native_ms=%.6f\n",
         control_label, median(control_times), median(native_times));
+    std::printf("median_paired_gain_ms=%.6f candidate_pair_wins=%zu/%d\n",
+        median(gains), size_t(std::count_if(gains.begin(), gains.end(),
+            [](double gain) { return gain > 0; })), PAIRS);
+#endif
 #if defined(ALIGN_CUDA_Q4_BASELINE)
     baseline_close(baseline);
+    if (cudaFree(bg) != cudaSuccess || cudaFree(bu) != cudaSuccess
+        || cudaFree(bd) != cudaSuccess) fail("baseline weight release failed");
 #endif
     align_native_cuda_q40_ffn_close(native);
-    cudaFree(dx);
-    cudaFree(dd);
-    cudaFree(du);
-    cudaFree(dg);
+    if (cudaFree(dx) != cudaSuccess || cudaFree(dd) != cudaSuccess
+        || cudaFree(du) != cudaSuccess || cudaFree(dg) != cudaSuccess)
+        fail("native input release failed");
     ggml_backend_buffer_free(ggml_buffer);
     ggml_free(ctx);
     ggml_backend_free(backend);

@@ -5,17 +5,35 @@ if [ "$#" -ne 3 ] && [ "$#" -ne 4 ] && [ "$#" -ne 5 ]; then
   echo 'usage: run-native-cuda-q4-ffn-screen GGML_SOURCE GGML_LIB GGML_CUDA_PLUGIN [CAPTURE_DIR [BASELINE_SOURCE]]' >&2
   exit 2
 fi
+case "${ALIGN_CUDA_Q4_LAYOUT-raw}" in
+  raw|split) ;;
+  *) echo 'ALIGN_CUDA_Q4_LAYOUT must be raw or split' >&2; exit 2 ;;
+esac
 case "${ALIGN_CUDA_Q4_CACHE_PRESSURE-0}" in
   0|1) ;;
   *) echo 'ALIGN_CUDA_Q4_CACHE_PRESSURE must be 0 or 1' >&2; exit 2 ;;
 esac
+case "${ALIGN_CUDA_Q4_TEST_FAILURES-0}" in
+  0|1) ;;
+  *) echo 'ALIGN_CUDA_Q4_TEST_FAILURES must be 0 or 1' >&2; exit 2 ;;
+esac
+if [ -n "${LD_PRELOAD-}" ] || [ -n "${LD_AUDIT-}" ]; then
+  echo 'loader preloads and audits are not admitted for a bound comparison' >&2
+  exit 2
+fi
 root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
-source_dir=$(realpath -- "$1")
-lib_dir=$(realpath -- "$2")
-plugin=$(realpath -- "$3")
+if ! source_dir=$(realpath -e -- "$1") \
+  || ! lib_dir=$(realpath -e -- "$2") \
+  || ! plugin=$(realpath -e -- "$3"); then
+  echo 'ggml source, library directory, or plugin path missing' >&2
+  exit 2
+fi
 capture_dir=
 if [ "$#" -ge 4 ]; then
-  capture_dir=$(realpath -- "$4")
+  if ! capture_dir=$(realpath -e -- "$4"); then
+    echo 'actual-weight capture directory missing' >&2
+    exit 2
+  fi
   if [ ! -d "$capture_dir" ]; then
     echo 'actual-weight capture directory missing' >&2
     exit 2
@@ -24,43 +42,120 @@ fi
 if [ ! -f "$source_dir/ggml/include/ggml.h" ] \
   || [ ! -f "$lib_dir/libggml.so" ] \
   || [ ! -f "$lib_dir/libggml-base.so" ] \
+  || [ ! -f "$lib_dir/libggml.so.0" ] \
+  || [ ! -f "$lib_dir/libggml-base.so.0" ] \
   || [ ! -f "$plugin" ]; then
   echo 'pinned ggml source, libraries, or CUDA plugin missing' >&2
   exit 2
 fi
+screen_output=
+if [ "${ALIGN_CUDA_Q4_SCREEN_OUTPUT+x}" = x ]; then
+  if [ -z "$ALIGN_CUDA_Q4_SCREEN_OUTPUT" ] \
+    || ! screen_output=$(realpath -m -- "$ALIGN_CUDA_Q4_SCREEN_OUTPUT"); then
+    echo 'screen artifact directory must be a nonempty external path' >&2
+    exit 2
+  fi
+  case "$screen_output" in
+    "$root_dir"|"$root_dir"/*)
+      echo 'screen artifacts must remain outside the repository' >&2; exit 2 ;;
+  esac
+  if [ -e "$screen_output" ] && { [ ! -d "$screen_output" ] \
+      || [ -n "$(find "$screen_output" -mindepth 1 -maxdepth 1 -print -quit)" ]; }; then
+    echo 'screen artifact directory must be absent or empty' >&2
+    exit 2
+  fi
+fi
+expected_revision=bb4caa7540188872173c44d161602d9271386413
+if [ "$(git -C "$source_dir" rev-parse HEAD 2>/dev/null)" != "$expected_revision" ] \
+  || [ -n "$(git -C "$source_dir" status --porcelain --untracked-files=all -- ggml)" ]; then
+  echo 'ggml source must be the clean pinned revision' >&2
+  exit 2
+fi
+printf 'application_head=%s ggml_revision=%s\n' "$(git -C "$root_dir" rev-parse HEAD)" "$expected_revision"
+git -C "$root_dir" diff --binary HEAD -- scripts/native_cuda_q40_ffn.cu \
+  scripts/native_cuda_q40_ffn.h scripts/bench-native-cuda-q4-ffn.cu \
+  scripts/run-native-cuda-q4-ffn-screen | sha256sum
+nvcc --version
+sha256sum "$(command -v nvcc)" "$(command -v ptxas)" "$(command -v g++)" \
+  "$lib_dir/libggml.so" "$lib_dir/libggml.so.0" \
+  "$lib_dir/libggml-base.so" "$lib_dir/libggml-base.so.0" "$plugin"
+g++ --version | head -1
+if [ -f "$lib_dir/manifest.json" ]; then sha256sum "$lib_dir/manifest.json"; fi
 screen_dir=$(mktemp -d)
 trap 'rm -rf -- "$screen_dir"' EXIT
+cp "$root_dir/scripts/native_cuda_q40_ffn.cu" "$root_dir/scripts/native_cuda_q40_ffn.h" \
+  "$root_dir/scripts/bench-native-cuda-q4-ffn.cu" "$screen_dir/"
+sha256sum "$screen_dir/native_cuda_q40_ffn.cu" "$screen_dir/native_cuda_q40_ffn.h" \
+  "$screen_dir/bench-native-cuda-q4-ffn.cu" "$root_dir/scripts/run-native-cuda-q4-ffn-screen"
 paired_flags=()
 paired_objects=()
 if [ "$#" -eq 5 ]; then
-  baseline_source=$(realpath -- "$5")
+  if ! baseline_source=$(realpath -e -- "$5"); then
+    echo 'baseline CUDA helper source missing' >&2
+    exit 2
+  fi
   if [ ! -f "$baseline_source" ]; then
     echo 'baseline CUDA helper source missing' >&2
     exit 2
   fi
-  sha256sum "$baseline_source"
+  if [ "$(sha256sum "$baseline_source" | cut -d' ' -f1)" != \
+      2b55714179b3dc8d6e98d7b4d531d68c9d09c28943bb75227f10f1a25beb46a3 ]; then
+    echo 'baseline must be the raw Q4 helper at application 687acd3' >&2
+    exit 2
+  fi
+  cp "$baseline_source" "$screen_dir/baseline.cu"
+  sha256sum "$screen_dir/baseline.cu"
   nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 \
-    -I"$root_dir/scripts" \
+    -I"$screen_dir" \
     -Dalign_native_cuda_q40_ffn_open=baseline_open \
     -Dalign_native_cuda_q40_ffn_run=baseline_run \
     -Dalign_native_cuda_q40_ffn_read=baseline_read \
     -Dalign_native_cuda_q40_ffn_close=baseline_close \
-    -c "$baseline_source" -o "$screen_dir/baseline.o"
+    -c "$screen_dir/baseline.cu" -o "$screen_dir/baseline.o"
   paired_flags=(-DALIGN_CUDA_Q4_BASELINE=1)
   paired_objects=("$screen_dir/baseline.o")
 fi
+test_flags=()
+if [ "${ALIGN_CUDA_Q4_TEST_FAILURES-0}" = 1 ]; then
+  test_flags=(-DALIGN_CUDA_Q4_TESTING=1)
+fi
+nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 -Xptxas=-v \
+  "${test_flags[@]}" -c "$screen_dir/native_cuda_q40_ffn.cu" -o "$screen_dir/candidate.o"
+cuobjdump --dump-sass "$screen_dir/candidate.o" > "$screen_dir/candidate.sass"
+awk '
+  function emit() {
+    if (name != "") printf "sass_function=%s loads_u16=%d loads_32=%d loads_64=%d loads_128=%d local_load_store=%d\n", name, u16, word, wide, vector, local
+  }
+  /Function :/ { emit(); name=$3; u16=word=wide=vector=local=0 }
+  /LDG\./ {
+    for (i=1; i<=NF; i++) if ($i ~ /^LDG\./) {
+      if ($i ~ /\.U16/) u16++; else if ($i ~ /\.128/) vector++; else if ($i ~ /\.64/) wide++; else word++
+    }
+  }
+  /LDL\.|STL\./ { local++ }
+  END { emit() }
+' "$screen_dir/candidate.sass"
 nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 \
-  "${paired_flags[@]}" \
+  "${paired_flags[@]}" "${test_flags[@]}" \
   -I"$source_dir/ggml/include" \
-  "$root_dir/scripts/native_cuda_q40_ffn.cu" \
-  "$root_dir/scripts/bench-native-cuda-q4-ffn.cu" \
+  "$screen_dir/candidate.o" "$screen_dir/bench-native-cuda-q4-ffn.cu" \
   "${paired_objects[@]}" \
   -L"$lib_dir" -Xlinker "-rpath=$lib_dir" -lggml -lggml-base \
   -o "$screen_dir/bench-native-cuda-q4-ffn"
+sha256sum "$screen_dir/candidate.o" "$screen_dir/candidate.sass" \
+  "${paired_objects[@]}" "$screen_dir/bench-native-cuda-q4-ffn"
+if [ -n "$screen_output" ]; then
+  mkdir -p -- "$screen_output"
+  cp "$screen_dir"/* "$screen_output/"
+  printf 'screen_artifacts=%s\n' "$screen_output"
+fi
+export ALIGN_CUDA_Q4_LIBRARY_DIR="$lib_dir"
+export LD_LIBRARY_PATH="$lib_dir"
 if [ -n "$capture_dir" ]; then
-  sha256sum "$capture_dir/gate.bin" "$capture_dir/up.bin" "$capture_dir/down.bin" \
+  sha256sum "$capture_dir/geometry.txt" "$capture_dir/complete.txt" \
+    "$capture_dir/gate.bin" "$capture_dir/up.bin" "$capture_dir/down.bin" \
     "$capture_dir/input.bin" "$capture_dir/gated.bin" "$capture_dir/output.bin"
-  "$screen_dir/bench-native-cuda-q4-ffn" "$plugin" "$capture_dir"
+  timeout 120 "$screen_dir/bench-native-cuda-q4-ffn" "$plugin" "$capture_dir"
 else
-  "$screen_dir/bench-native-cuda-q4-ffn" "$plugin"
+  timeout 120 "$screen_dir/bench-native-cuda-q4-ffn" "$plugin"
 fi

@@ -467,6 +467,12 @@ whole request. Nsight Compute bandwidth counters remain unavailable.
 
 ## Deferred CUDA hypotheses from user-supplied advice (2026-09-30)
 
+This dated shortlist is historical. The greedy scheduling, pressure variants
+and larger final tail have since been tested below. The current investigation
+and proposed next experiment are in the
+[2026-10-01 design](specs/gpu-runtime-performance.md#cuda-next-experiment-design-2026-10-01);
+the user authorized preparation and design only.
+
 The user supplied a Claude analysis and explicitly requested recording useful
 ideas for later work. These are hypotheses, not new adoption gates or an
 instruction to start additional experiments in this capability. Prioritize
@@ -1424,3 +1430,286 @@ FFN nor complete request beat the preceding route repeatably. A future attempt
 needs a separately measured kernel/layout or persistent-workspace hypothesis
 before broader integration. No final-layer gain is multiplied by 24, and no
 new permanent gate or follow-up task is introduced by this failed screen.
+
+## 2026-10-01: preimplementation investigation
+
+The user requested planning, preparatory work and design, without implementing
+another optimization. Source baseline is `687acd3`, containing the withdrawal
+of the final FFN tail. The authoritative
+[next-experiment design](specs/gpu-runtime-performance.md#cuda-next-experiment-design-2026-10-01)
+owns the candidate order, byte layout, proposed diagnostic interface, cost
+ceiling, numerical conditions and future owner matrix. No candidate kernel,
+selector, model route or new request benchmark was implemented or run here.
+
+### Findings that change the next experiment
+
+- Lossless scale/payload separation is untried in the checked-in **CUDA**
+  helper, but was already tried on Metal. The
+  [Metal receipt](qwen35-q4-layout-screen.md) reports no stable split-layout
+  gain when rotating 24 actual gate matrices, and 40.75 ms CPU conversion.
+  That result supplies a negative control, not CUDA conversion cost. The
+  CUDA-specific mechanism to test is wider loads with unchanged DP4A/lane
+  arithmetic. Three early-layer down matrices are Q4_1; a Q4_0 specialization
+  cannot be applied indiscriminately to every FFN.
+- The current five-argument CUDA benchmark passes the same weight pointers
+  to both native arms. Cached paired runs can favor the second reader. R1
+  therefore specifies disjoint native weights and a raw/raw control before
+  judging repacking. Existing historical samples are preserved; the pressure
+  diagnostic still does not guarantee identical cache state.
+- In pinned ggml, `ggml/src/ggml-backend.cpp:ggml_backend_graph_compute`
+  calls the asynchronous entrypoint then synchronizes. The application calls
+  this function before `align_gpu_native_q6_head_commit`. Public
+  `ggml-backend.h` has asynchronous compute and backend-event operations;
+  `ggml-cuda.h` has no native stream/event accessor. `ggml_backend_event_wait`
+  accepts another ggml backend, not the independent helper's CUDA stream.
+  Removing the wait requires a designed backend bridge; swapping the compute
+  call alone would allow a producer/consumer race. This is application/backend
+  integration work, not an identified Align language or standard-library gap.
+- The 417,177,600-byte head and recorded 894.782 us imply 466.23 GB/s of
+  useful weight bytes per second. The 504 GB/s specification gives an
+  827.73 us full-read estimate. These are calculations from old measurements,
+  not new counters or a hard latency floor. The 48 MiB cache, other transfers
+  and scheduling prevent treating the difference as an exact speedup budget.
+
+### Rebuilt baseline instruction evidence
+
+Compile-only inspection on the RTX 4070 Ti host used CUDA 13.3.73, sm_89,
+`-O3 -std=c++17`, and unchanged helper SHA-256
+`2b55714179b3dc8d6e98d7b4d531d68c9d09c28943bb75227f10f1a25beb46a3`.
+The local GPU identity query reports driver 610.62; it is not a controlled
+clock measurement. No GPU workload was executed for this inspection.
+
+| Kernel | Registers/thread | Stack / spill load / spill store bytes | Static global load instruction sites |
+| --- | ---: | --- | --- |
+| `gate_up_swiglu` | 40 | 0 / 0 / 0 | 18 `LDG.E.U16`, 9 `LDG.E` |
+| `down_matvec` | 26 | 0 / 0 / 0 | 5 `LDG.E.U16`, 5 `LDG.E` |
+| `quantize_q81` | 19 | 0 / 0 / 0 | 1 `LDG.E` |
+
+The counts are static SASS sites, not dynamic executed instructions or DRAM
+transactions. Neither matrix kernel has a 64/128-bit global load in this
+object. Replacing its payload loads is plausible; throughput improvement is
+unmeasured. The object SHA-256 is
+`90a8107ea53515ad66f2c6ac59321a4d9e49da64a093b1ea48c0c2cc6c3507c1` and
+the SASS dump SHA-256 is
+`868965669b9d4992a977d207bb88984a83394b8c79cb565e869bd9b481a27d35`.
+Compiler-generated symbol names/object digests can change with compiler or
+build-path details; the reproduction contract is the source/flags and observed
+instruction properties. Raw outputs remain outside Git.
+
+Reproduce from the unchanged helper, with `OUT` an external evidence directory:
+
+```sh
+nvcc -O3 -std=c++17 -gencode arch=compute_89,code=sm_89 -Xptxas=-v \
+  -c scripts/native_cuda_q40_ffn.cu -o "$OUT/q4-baseline.o" 2> "$OUT/ptxas.log"
+cuobjdump --dump-sass "$OUT/q4-baseline.o" > "$OUT/q4-baseline.sass"
+```
+
+Nsight Compute's last recorded attempt remains `ERR_NVGPUCTRPERM`; permission
+was not changed or retried during this design task. NVIDIA's
+[WSL requirements](https://docs.nvidia.com/nsight-compute/ReleaseNotes/topics/system-requirements.html)
+place counter access in the Windows host control panel. The source review,
+compile-only inspection and future bounded numerical screen do not depend on
+obtaining counters. The design contains the first experiment and explicit
+deferrals; implementation requires the user to resume it.
+
+## 2026-10-01: CUDA Q4 split-layout implementation
+
+The user explicitly resumed implementation after the design checkpoint. R1
+now provides a complete diagnostic consumer: lossless host packing, raw/split
+CUDA graphs, disjoint preceding-control weights, full numerical owners,
+failure/recovery qualification and identity-bound measurements. The
+[contract ledger](specs/gpu-runtime-performance.md#r1-diagnostic-contract-ledger)
+owns its interface and limits. Runtime integration is **not selected**: the
+cached improvement did not establish a dependable pressure benefit, and the
+pressure GPU kernel intervals did not improve. This is not a generation-speed
+or coding-time claim. No new Align gap or Python change was required.
+
+### D0 retained-request analysis
+
+Read-only analysis of the retained greedy-head `prefetched-200x32.sqlite`
+(SHA-256 `9e83c1eb113df60f67352263b8b4b91a9b2b4ffbbf896d2d88cd7a657d16325a`)
+finds 32 native head quantizations and 32 eight-byte D2H copies. After the
+first head, the last dependent ggml RMS-norm producer to native quantization
+gap has min/median/max **40.258/52.803/111.556 us** over 31 scalar steps.
+The first head's gap is 3,855.417 us and includes initial setup; it is not
+steady-state synchronization headroom.
+
+Before the first head, summed kernel intervals are 17.610 ms within an
+80.803 ms first-to-last-kernel envelope. From the first head through the last
+kernel, the corresponding numbers are 110.309/223.746 ms, covering 32 heads
+and 31 scalar forward steps. Q4_0 matvec and native Q6 projection account for
+53.990/28.633 ms of that kernel sum. Large decode copies include 558 each
+of 73,728 and 1,048,576 bytes, taking 2.166/0.790 ms in summed intervals.
+Two ggml graph instantiations, two updates and 28 graph launches occur after
+the first head. Runtime API durations overlap GPU intervals; these numbers
+must not be added to make a request latency estimate.
+
+The roughly 53 us producer/consumer interval makes R2 a useful next design
+target. It also includes host dispatch/setup, so eliminating a wait cannot
+be assumed to recover the entire interval. The pinned public API still lacks
+a stream/event bridge to this independent helper. An asynchronous-call swap
+would race; the bridge and its failure/lifetime owner remain deferred.
+
+### Representation, compiler and correctness
+
+The helper uses split-v1's unchanged 21,233,664 weight bytes, the existing
+41,984 scratch bytes and the same four kernels, DP4A arithmetic and lane
+mapping. All captured gate/up/down bytes reconstruct exactly and every device
+upload is read back and compared. The packing self-check covers all 65,536
+half-scale bit patterns, including signed zeros and NaNs, without numerically
+interpreting them. Corrupted payload or scale bytes are rejected.
+
+CUDA 13.3.73, `-O3 -std=c++17`, sm_89, RTX 4070 Ti/driver 610.62:
+
+| Kernel/layout | Registers | Static loads: U16 / 32 / 64 / 128 bits | Stack/spill bytes |
+| --- | ---: | --- | --- |
+| Raw gate/up | 40 | 18 / 9 / 0 / 0 | 0 / 0 / 0 |
+| Split gate/up | 32 | 2 / 9 / 0 / 2 | 0 / 0 / 0 |
+| Raw down | 26 | 5 / 5 / 0 / 0 | 0 / 0 / 0 |
+| Split down | 40 | 7 / 35 / 7 / 0 | 0 / 0 / 0 |
+| Q8 quantizer | 19 | 0 / 1 / 0 / 0 | 0 / 0 / 0 |
+
+These counts come from the exact candidate object retained by the runner.
+The split down loop is compiler-unrolled, so static counts are not directly
+comparable to the raw loop's dynamic instruction count. The initial two
+stdout summaries mistakenly counted `.64` address operands as 64-bit loads;
+the owner was corrected to inspect the instruction opcode. The retained SASS
+and subsequent summaries above are authoritative.
+
+All 6,144 gated and 2,048 down values pass the unchanged finite mixed bound
+against captured and same-pin ggml rows. Actual maximum absolute errors are
+`1.78814e-6`/`9.53674e-7`; synthetic errors are `1.49012e-8`/`0`.
+All paired actual raw/raw and raw/split rows are also **F32 bit-identical**
+to the preceding native source, before timing and after every pair.
+
+Normal helper SHA-256:
+`3303e3330865261a5ef31d7d1995189884ddf6ffda39960fb57ae319d189b2dd`.
+Control helper is the source at `687acd3`, SHA-256
+`2b55714179b3dc8d6e98d7b4d531d68c9d09c28943bb75227f10f1a25beb46a3`.
+ggml is clean `bb4caa7540188872173c44d161602d9271386413`; loaded plugin/base/
+ggml hashes are `ec1ddd96247a97ba6f2a564301efca6a1e9b479f29b6bdb9d166ead2bbb4f774`,
+`58fe11fee93a0cf48e22af07d462fe9f2a2ef64272cf8d3c39af3093a7ddbfe0` and
+`b47b7760ba3a08aa2cc50cdfb718996eaa59a68e8961ccbb00becf119ad577e4`.
+Each run records compiler, source/header/benchmark/runner, capture, object,
+SASS and executable hashes and verifies loaded canonical path/device/inode.
+The build's temporary path affects compiler-generated namespace/object hashes;
+source, flags and the retained measured object identify each campaign.
+
+### Completed-operation measurements
+
+Each uninstrumented campaign uses 12 warmups and five alternating pairs of
+20 synchronized complete FFNs. Numbers below are microseconds; each cell is
+`preceding raw / candidate`. Positive median paired gain favors the candidate.
+Pressure stores 128 MiB outside both timers, versus the reported 48 MiB L2;
+this remains a diagnostic rather than proof of identical cache state.
+
+| Actual campaign | Pair 0 | Pair 1 | Pair 2 | Pair 3 | Pair 4 | Median paired gain / wins |
+| --- | --- | --- | --- | --- | --- | --- |
+| Raw/raw cached | 40.070/40.682 | 39.482/40.577 | 41.818/40.150 | 44.412/43.300 | 41.232/40.491 | +0.741; 3/5 |
+| Raw/raw pressure | 112.577/126.528 | 101.771/133.285 | 103.153/101.599 | 108.529/123.722 | 103.662/101.832 | -13.951; 2/5 |
+| Raw/raw pressure repeat | 107.054/139.306 | 108.398/109.073 | 104.893/133.201 | 136.397/106.913 | 111.131/107.379 | -0.675; 2/5 |
+| Final raw/raw cached | 41.412/40.581 | 45.479/49.442 | 41.283/41.155 | 40.274/40.231 | 38.157/38.142 | +0.042; 4/5 |
+| Final raw/raw pressure | 109.532/121.282 | 98.765/100.229 | 122.183/107.069 | 99.725/99.613 | 108.178/105.332 | +0.112; 3/5 |
+| Raw/split cached | 42.623/40.081 | 40.480/37.239 | 41.207/38.128 | 60.735/45.078 | 50.696/47.159 | +3.241; 5/5 |
+| Raw/split cached repeat | 38.610/35.642 | 39.613/36.747 | 40.174/36.989 | 41.557/38.912 | 40.698/37.927 | +2.866; 5/5 |
+| Final raw/split cached | 41.275/37.291 | 61.395/53.901 | 74.616/74.666 | 99.470/85.752 | 132.939/75.132 | +7.493; 4/5 |
+| Raw/split pressure | 107.923/102.787 | 119.328/101.051 | 107.341/135.785 | 100.749/103.953 | 122.552/103.908 | +5.136; 3/5 |
+| Raw/split pressure repeat | 106.904/122.086 | 123.071/100.405 | 101.467/100.762 | 131.496/107.205 | 101.254/102.003 | +0.704; 3/5 |
+| Retained-build raw/split pressure | 100.637/132.538 | 98.709/97.939 | 105.281/106.368 | 103.976/103.474 | 118.678/103.389 | +0.502; 3/5 |
+| Final raw/split pressure | 110.037/105.260 | 115.104/134.865 | 104.634/103.952 | 141.694/112.670 | 109.919/110.013 | +0.682; 3/5 |
+
+Final raw/raw controls are near zero, but the earlier -13.951 us pressure
+control and the final cached outliers show substantial wall-time uncertainty.
+No cause was established for that variation. The initial cached repeats are
+encouraging; pressure savings near 0.5-0.7 us and 3/5 wins do not establish a
+request benefit. The actual split/ggml pressure comparison has pairs
+110.744/103.864, 103.992/125.855, 101.863/97.597, 115.426/111.291,
+127.757/143.581 us, median paired gain +4.135 us, 3/5 wins; the independent
+pooled medians are 110.744/111.291 us. It also fails to establish superiority.
+Synthetic cached raw/split and pressure owners pass; their timing is not
+used to override the actual-weight result.
+
+In the retained paired pressure trace, the last 100 instances per arm are
+the timed operations. Raw/split median gate/up intervals are
+**41.778/41.954 us**, down **21.889/21.953 us**. Split gate/up has one
+412.693 us outlier; its mean is 45.757 us versus raw 41.977 us. No faster
+pressure-conditioned GPU operation is demonstrated. Trace SQLite SHA-256 is
+`275eb3477ca4b3344aefda7ebf97f4736d695a0131fe9fe526f7610da550fb1c`.
+Instrumented wall timings are excluded from the adoption assessment.
+
+One bounded explanatory check disables down-loop unrolling in an external
+candidate: registers fall from 40 to 23, with unchanged rows, but its pressure
+pairs are 136.369/118.510, 139.649/112.813, 107.485/107.096,
+112.514/135.429, 111.248/110.409 us, median paired gain +0.839 us, 4/5 wins.
+This does not resolve the pressure uncertainty; the pragma is not retained.
+No warp/cache-hint sweep follows.
+
+Packing plus inverse verification takes approximately 9-12 ms for all three
+matrices in these owners. Candidate and control upload and verification are
+reported separately by the final harness. First graph capture/launch/wait is
+also reported, outside the steady-state pairs. Ordinary complete runner
+invocations took 4-8 s in the first campaign, below the 900 s preparation and
+120 s owner ceilings. There is no reliable pressure saving to amortize against;
+no model break-even point is claimed. Diagnostic cached savings cannot be
+multiplied by layer count or treated as TTFT/startup improvement.
+
+### Failure owners and reproduction
+
+Both `ALIGN_CUDA_Q4_TEST_FAILURES=1` builds pass all twelve forced operations,
+including partial acquisition, capture/instantiate, first/replay launch and
+completion, and both output-copy failures. Failed contexts refuse further
+run/read; a fresh context recovers full correct rows. All four changed
+dependency pointers refuse without launch, stale read refuses, and valid
+replay restores readiness. Premature read preserves caller sentinels; wrong
+counts/null outputs refuse. Normal timing objects exclude fault state/branches.
+Compute Sanitizer `--tool memcheck --leak-check full --error-exitcode 1` on
+the retained split failure build reports **0 errors, 0 bytes/allocations leaked**.
+
+Empty/unknown layout, pressure and failure selectors, arity, missing paths,
+wrong source revision/control digest, loader preloads, invalid artifact
+destinations, schema/length/completion failures and injected compiler exit
+all refuse before device work or timing verdict. Both wrong expected-library
+and wrong loaded-library paths refuse; normal identity checks pass.
+`bash -n scripts/run-native-cuda-q4-ffn-screen` and `git diff --check` pass.
+No source aggregate, Python boundary or platform-publication profile is
+selected for this local diagnostic checkpoint.
+
+Use the exact commands and variables in the
+[ledger reproduction](specs/gpu-runtime-performance.md#work-sequence-and-closure).
+`RAW_SOURCE` is obtained with
+`git show 687acd3:scripts/native_cuda_q40_ffn.cu > "$OUT/raw-baseline.cu"`.
+The runner refuses any other baseline digest. Preserve one build with
+`ALIGN_CUDA_Q4_SCREEN_OUTPUT="$OUT/build"`; the direct retained executable
+supports the same selectors plus the runner's internal library-directory
+binding. Profile that executable, not the injection-refusing Bash runner.
+Raw captures, builds, traces and per-run stdout/stderr remain outside Git.
+
+One fresh comprehensive implementation review covered the entire eight-file
+candidate at HEAD/base/merge-base `687acd3312220742ad013595951e0d8c5b966e16`,
+patch SHA-256 `44c2720a36dd34308db464c3580fd5ff32ddb1d9217b08fc9186b72b83364807`,
+reviewer `/root/cuda_repack_implementation_review`, verdict **FINDINGS**.
+Its sole P2 finding is accepted and repaired: the mapping filter skipped
+ordinary canonical `.so.0.21.0` targets behind SONAME symlinks. It now
+recognizes the canonical expected target and other versioned candidates while
+still requiring exact canonical path/device/inode. The versioned symlink
+full-row owner and wrong expected/loaded identity owners in both directions
+pass; the regular-file full-row owner also passes. The two receipt median
+rounding corrections copy the original printed medians. No finding is rejected
+or unresolved. The consolidated repair changes identity admission/reporting
+only; kernel, timed execution and adoption assessment are unchanged, so another
+full review is not required. Full envelope and raw repair owners are retained
+outside Git. No commit, publication/preflight or hosted integration is claimed.
+
+The positive compatibility owner creates `.so -> .so.0 -> .so.0.21.0`
+links for byte-identical ggml/base copies in an external directory and runs
+the same five-argument screen with that directory and a copied CUDA plugin.
+Run the loaded-library negative owner with this versioned directory and the
+ordinary directory alternately as expected and actual loader locations; both
+must refuse. This is the focused regression owner for mapping-filter changes,
+not a new aggregate gate.
+
+The bounded lesson is that wider payload loads and a cached win did not
+establish a useful pressure-conditioned GPU improvement. Disjoint raw/raw
+controls exposed wall-time variance before adoption. Canonical dependency
+identity must support the pinned build's normal symlink topology; the repaired
+owner covers that topology while retaining wrong-file refusal.
