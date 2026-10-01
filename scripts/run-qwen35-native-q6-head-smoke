@@ -14,7 +14,7 @@ import struct
 import tempfile
 import time
 
-from gpu_session_client import Session
+from gpu_session_client import InvalidRequest, Session
 
 
 CASES = (("short", "Hello", 31), ("chunked", "hello " * 170, 200),
@@ -23,14 +23,25 @@ ROWS = 248320
 
 
 def run(binary: Path, model: Path, pack: Path, geometry: Path, options: Path,
-        trace: Path, work: Path, name: str, user: str, mode: str) -> tuple:
+        trace: Path, work: Path, name: str, user: str, mode: str,
+        batch: str | None = None, retain: str | None = None,
+        cache: str | None = None, copy: str = "0") -> tuple:
     dump = work / f"{name}-{mode}-logits"
     dump.mkdir()
     result_path = work / f"{name}-{mode}.json"
     environment = dict(os.environ, LD_PRELOAD=str(trace), ALIGN_STATE_COUNT="84",
                        ALIGN_GRAPH_LOGIT_BYTES=str(ROWS * 4),
                        ALIGN_LOGIT_DUMP_DIR=str(dump), ALIGN_LLM_NATIVE_Q6_HEAD=mode,
-                       ALIGN_LLM_NATIVE_STATE_COPY="0", ALIGN_LLM_PREFILL_CHUNK="512")
+                       ALIGN_LLM_NATIVE_STATE_COPY=copy, ALIGN_LLM_PREFILL_CHUNK="512")
+    if batch is not None:
+        environment.update(ALIGN_LLM_BATCH_DECODE_INPUTS=batch,
+                           ALIGN_LLM_NATIVE_Q6_HEAD="1", ALIGN_LLM_PREFILL_CHUNK="128")
+    if retain is not None:
+        environment.update(ALIGN_LLM_RETAIN_WORKSPACE=retain,
+                           ALIGN_LLM_NATIVE_Q6_HEAD=mode, ALIGN_LLM_PREFILL_CHUNK="128")
+    if cache is not None:
+        environment.update(ALIGN_LLM_PREFILL_GRAPH_CACHE=cache,
+                           ALIGN_LLM_RETAIN_WORKSPACE="1", ALIGN_LLM_PREFILL_CHUNK="128")
     command = [str(binary), "--provider", "align-runtime", str(model), str(pack),
                str(geometry), user, str(result_path), "3", "--runtime-options", str(options)]
     process = subprocess.run(command, env=environment, capture_output=True,
@@ -53,9 +64,10 @@ def run(binary: Path, model: Path, pack: Path, geometry: Path, options: Path,
             logits.append((row["ordinal"], row["sha256"]))
         elif line.startswith("Q35_ACCOUNT "):
             accounts.append(json.loads(line[len("Q35_ACCOUNT "):]))
-    if complete != [0, 1, 2] or len(states) != 252 or len(logits) != 3 \
+    graphs = (result["prompt_tokens"] + 127) // 128 + 2 if batch is not None or retain is not None else 3
+    if complete != list(range(graphs)) or len(states) != graphs * 84 or len(logits) != 3 \
             or [entry[0] for entry in logits] != [0, 1, 2] \
-            or [entry["ordinal"] for entry in accounts] != [0, 1, 2]:
+            or [entry["ordinal"] for entry in accounts] != list(range(graphs)):
         raise RuntimeError(f"{name} mode {mode}: incomplete real-model trace")
     budget = json.loads(options.read_text(encoding="utf-8"))["device_budget_bytes"]
     for entry in accounts:
@@ -131,6 +143,226 @@ def forced_failure(binary: Path, model: Path, pack: Path, geometry: Path,
         session.close(check=False)
 
 
+def batch_owner(binary: Path, model: Path, pack: Path, geometry: Path,
+                options: Path, trace: Path, workspace: bool = False,
+                cache: bool = False) -> None:
+    environment = {key: value for key, value in os.environ.items()
+                   if not key.startswith("ALIGN_LLM_")}
+    environment.update(ALIGN_LLM_NATIVE_Q6_HEAD="1", ALIGN_LLM_PREFILL_CHUNK="128")
+    selector = "ALIGN_LLM_PREFILL_GRAPH_CACHE" if cache else (
+        "ALIGN_LLM_RETAIN_WORKSPACE" if workspace else "ALIGN_LLM_BATCH_DECODE_INPUTS")
+    if workspace:
+        environment["ALIGN_LLM_BATCH_DECODE_INPUTS"] = "1"
+    if cache:
+        environment["ALIGN_LLM_RETAIN_WORKSPACE"] = "1"
+        environment.pop("GGML_CUDA_DISABLE_GRAPHS", None)
+        environment.pop("GGML_CUDA_GRAPH_OPT", None)
+    command = [str(binary), "--runtime-session", str(model), str(pack),
+               str(geometry), str(options), "0"]
+    request = dict(schema_version=1,
+                   system="You are a coding assistant. Return a concise patch-oriented answer.",
+                   user="Hello", max_tokens=3, temperature=0.0, seed=None)
+    failure = os.environ.get("QWEN35_PREFILL_GRAPH_CACHE_FAILURE" if cache else (
+        "QWEN35_WORKSPACE_RETAIN_FAILURE" if workspace else "QWEN35_INPUT_BATCH_FAILURE"))
+    if failure is not None:
+        if failure not in (("open", "publish") if cache else (
+                ("reserve", "bind") if workspace else ("submit", "complete"))):
+            raise RuntimeError("invalid selected owner failure")
+        with Session(command, timeout=180, env=dict(environment, **{selector: "0"})) as session:
+            if session.generate(request)["completion_tokens"] != 3:
+                raise RuntimeError("batch failure build changed the ordinary control")
+        if cache and failure == "open":
+            failed = subprocess.run(command, env=dict(environment, **{selector: "1"}),
+                                    input=b"", capture_output=True, timeout=180, check=False)
+            if failed.returncode != 2 or failed.stdout \
+                    or b"prefill_cache forced context-open failure" not in failed.stderr:
+                raise RuntimeError(f"cache construction fault published invalid envelope: {failed.stdout!r} {failed.stderr[-1200:]!r}")
+            print("prefill-cache open: disabled control passes; construction fails without ready/output", flush=True)
+            return
+        session = Session(command, timeout=180, env=dict(environment, **{selector: "1"}))
+        try:
+            data = json.dumps(request, separators=(",", ":")).encode()
+            frame = struct.pack("<I", len(data)) + data
+            if os.write(session.process.stdin.fileno(), frame) != len(frame):
+                raise RuntimeError("short batch failure request write")
+            response = session._read(time.monotonic() + 180)
+            if response != {"schema_version": 1, "status": "failed"} or session.process.wait(timeout=180) != 2:
+                raise RuntimeError(f"batch fault published a partial success: {response}")
+            session.log.seek(0)
+            diagnostic = session.log.read().decode("utf-8", "replace")
+            label = "completion" if failure == "complete" else failure
+            expected_fault = (f"prefill_cache forced {'context-open' if failure == 'open' else 'publication'} failure"
+                              if cache else (f"workspace_retain forced {failure} failure" if workspace
+                              else f"input_batch forced {label} failure after drain"))
+            if expected_fault not in diagnostic:
+                raise RuntimeError(f"batch fault was not reached: {diagnostic[-1800:]}")
+        finally:
+            session.close(check=False)
+        print(f"{selector} {failure}: disabled control passes; selected request fails without output")
+        return
+    with tempfile.TemporaryDirectory(prefix="qwen35-input-batch-") as temporary:
+        work = Path(temporary)
+        cases = (*CASES, ("maximum-mask", "hello " * 2018, 2048))
+        if workspace:
+            cases += tuple((f"boundary-{n}", "hello " * (n - 30), n)
+                           for n in (127, 128, 129, 255, 256, 257, 511, 512, 513))
+        if cache:
+            cases += (("boundary-1024", "hello " * 994, 1024),
+                      ("equal-length-other", "World", 31))
+        for name, user, token_count in cases:
+            control = run(binary, model, pack, geometry, options, trace, work,
+                          name + "-off" if workspace else name, user,
+                          "1" if workspace else "0", "1" if workspace else "0",
+                          "1" if cache else ("0" if workspace else None), "0" if cache else None)
+            candidate = run(binary, model, pack, geometry, options, trace, work, name, user,
+                            "1", "1", "1" if workspace else None, "1" if cache else None)
+            for result in (control[0], candidate[0]):
+                if result["status"] != "ok" or result["prompt_tokens"] != token_count or result["completion_tokens"] != 3:
+                    raise RuntimeError(f"{name}: unexpected actual work {result}")
+            if control[0]["output"] != candidate[0]["output"] or control[1] != candidate[1]:
+                raise RuntimeError(f"{name}: input batch changed output or any state plane")
+            if [row["model_ops"] for row in control[3]] != [row["model_ops"] for row in candidate[3]]:
+                raise RuntimeError(f"{name}: input batch changed model work")
+            worst = max(compare_logits(a, b) for a, b in zip(control[2], candidate[2], strict=True))
+            if worst != 0:
+                raise RuntimeError(f"{name}: unchanged arithmetic must produce identical logits")
+            print(f"{selector} {name}: 3 bit-identical full logits and {len(candidate[1])} state planes; "
+                  f"allocated/peak device bytes {candidate[3][-1]['allocated_device']}/{candidate[3][-1]['device_peak']}", flush=True)
+        if workspace:
+            for head in ("0", "1"):
+                for batch in ("0", "1"):
+                    name = f"combination-{head}-{batch}"
+                    control = run(binary, model, pack, geometry, options, trace, work,
+                                  name + "-off", CASES[1][1], head, batch,
+                                  "1" if cache else "0", "0" if cache else None)
+                    candidate = run(binary, model, pack, geometry, options, trace, work,
+                                    name + "-on", CASES[1][1], head, batch, "1", "1" if cache else None)
+                    if any(control[0][key] != candidate[0][key]
+                           for key in ("output", "prompt_tokens", "completion_tokens")) or control[1] != candidate[1] \
+                            or any(a != b for a, b in zip(control[2], candidate[2], strict=True)):
+                        raise RuntimeError(f"{name}: retention changed exact logits/state")
+                    print(f"{selector} head={head} batch={batch}: exact logits/state PASS", flush=True)
+        retained, retained_states, retained_logits = {}, {}, {}
+        for mode in (None, "0", "1"):
+            arm = environment.copy()
+            if mode is not None:
+                arm[selector] = mode
+            dump = work / f"retained-{mode}"
+            dump.mkdir()
+            arm.update(LD_PRELOAD=str(trace), ALIGN_STATE_COUNT="84",
+                       ALIGN_GRAPH_LOGIT_BYTES=str(ROWS * 4), ALIGN_LOGIT_DUMP_DIR=str(dump))
+            with Session(command, timeout=180, env=arm) as session:
+                retained[mode] = []
+                sequence = (("short", "chunked", "chunked", "wider-attention", "wider-attention",
+                             "boundary-513", "boundary-513", "boundary-1024", "boundary-1024",
+                             "maximum-mask", "maximum-mask", "short", "equal-length-other",
+                             "equal-length-other", "short", "short") if cache else
+                            ("short", "wider-attention", "short", "maximum-mask", "short")) if workspace \
+                           else ("short", "wider-attention", "short")
+                for label in sequence:
+                    user = next(value for name, value, _ in cases if name == label)
+                    result = session.generate(dict(request, user=user))
+                    retained[mode].append((result["output"], result["prompt_tokens"], result["completion_tokens"]))
+                try:
+                    session.generate(dict(request, temperature=0.3, seed=42))
+                except InvalidRequest:
+                    pass
+                else:
+                    raise RuntimeError("batch session accepted unsupported sampling")
+                first = session.generate(dict(request, max_tokens=1))
+                again = session.generate(request)
+                if first["completion_tokens"] != 1 or not again["output"].startswith(first["output"]):
+                    raise RuntimeError("batch session single-token exit or subsequent reset differs")
+                retained[mode].append((again["output"], again["prompt_tokens"], again["completion_tokens"]))
+                stopped = session.generate(dict(request, user="Reply only OK.", max_tokens=127))
+                if not 0 < stopped["completion_tokens"] < 127:
+                    raise RuntimeError("EOG owner did not stop before the output limit")
+                retained[mode].append((stopped["output"], stopped["prompt_tokens"], stopped["completion_tokens"]))
+                session.log.seek(0)
+                rows = [json.loads(line[len("Q35_STATE "):])
+                        for line in session.log.read().decode().splitlines()
+                        if line.startswith("Q35_STATE ")]
+                if any(row["event"] in ("error", "graph_failed") for row in rows):
+                    raise RuntimeError("retained input batch graph failed")
+                retained_states[mode] = [(row["ordinal"], row["index"], row["sha256"])
+                                         for row in rows if row["event"] == "plane"]
+                if not retained_states[mode] or len(retained_states[mode]) % 84:
+                    raise RuntimeError("incomplete retained state trace")
+                retained_logits[mode] = [hashlib.sha256(path.read_bytes()).hexdigest()
+                                         for path in sorted(dump.glob("*.bin"), key=lambda p: int(p.stem))]
+                # The single-token request and the terminal EOG logit each add one vector.
+                if len(retained_logits[mode]) != sum(entry[2] for entry in retained[mode]) + 2:
+                    raise RuntimeError("incomplete retained full-logit trace")
+        if retained[None] != retained["0"] or retained["0"] != retained["1"]:
+            raise RuntimeError("default/off/on retained reset differs")
+        if retained_states[None] != retained_states["0"] or retained_states["0"] != retained_states["1"] \
+                or retained_logits[None] != retained_logits["0"] or retained_logits["0"] != retained_logits["1"]:
+            raise RuntimeError("default/off/on retained full logits or state differs")
+        for mode in ("", "2", "yes"):
+            result_path = work / "refused.json"
+            refused = subprocess.run([str(binary), "--provider", "align-runtime", str(model),
+                                      str(pack), str(geometry), "Hello", str(result_path), "1",
+                                      "--runtime-options", str(options)],
+                                     env=dict(environment, **{selector: mode}),
+                                     capture_output=True, timeout=180, check=False)
+            result = json.loads(result_path.read_text())
+            if refused.returncode != 2 or result["status"] != "error" or result["output"]:
+                raise RuntimeError(f"invalid batch selector {mode!r} was accepted")
+        tight = json.loads(options.read_text())
+        tight["device_budget_bytes"] = 1048576
+        tight_path = work / "tight-options.json"
+        tight_path.write_text(json.dumps(tight))
+        for mode in ("0", "1"):
+            result_path = work / "budget-refused.json"
+            refused = subprocess.run([str(binary), "--provider", "align-runtime", str(model),
+                                      str(pack), str(geometry), "Hello", str(result_path), "3",
+                                      "--runtime-options", str(tight_path)],
+                                     env=dict(environment, **{selector: mode}),
+                                     capture_output=True, timeout=180, check=False)
+            result = json.loads(result_path.read_text())
+            if refused.returncode != 2 or result["status"] != "error" or result["output"]:
+                raise RuntimeError("input batch bypassed budget admission")
+        print(f"{selector} default/off/on retained full logits/state, reset, invalid input/selector, early exit/EOG and budget: PASS")
+        if cache:
+            conflicts = ({"ALIGN_LLM_RETAIN_WORKSPACE": "0"},
+                         {"ALIGN_LLM_PREFILL_CHUNK": "256"},
+                         {"ALIGN_LLM_PREFILL_CHUNK": "512"},
+                         {"ALIGN_LLM_PREFILL_FINAL_LOGITS": "0"},
+                         {"ALIGN_LLM_PREFILL_LAST_FFN_ROW": "1"},
+                         {"GGML_CUDA_DISABLE_GRAPHS": "0"},
+                         {"GGML_CUDA_GRAPH_OPT": ""},
+                         {"GGML_CUDA_GRAPH_OPT": "1"},
+                         {"GGML_CUDA_GRAPH_OPT": "other"})
+            for conflict in conflicts:
+                result_path = work / "conflict.json"
+                refused = subprocess.run([str(binary), "--provider", "align-runtime", str(model),
+                                          str(pack), str(geometry), "Hello", str(result_path), "1",
+                                          "--runtime-options", str(options)],
+                                         env=dict(environment, **{selector: "1"}, **conflict),
+                                         capture_output=True, timeout=180, check=False)
+                result = json.loads(result_path.read_text())
+                if refused.returncode != 2 or result["status"] != "error" or result["output"]:
+                    raise RuntimeError(f"cache conflict accepted: {conflict}")
+            print("prefill-cache conflicting configuration/environment: PASS", flush=True)
+            for host_bytes in (210829311, 210829312):
+                host_options = dict(json.loads(options.read_text()), host_budget_bytes=host_bytes)
+                host_path = work / "host-budget.json"
+                host_path.write_text(json.dumps(host_options))
+                result_path = work / "host-result.json"
+                checked = subprocess.run([str(binary), "--provider", "align-runtime", str(model),
+                                          str(pack), str(geometry), "Hello", str(result_path), "1",
+                                          "--runtime-options", str(host_path)],
+                                         env=dict(environment, **{selector: "1"}),
+                                         capture_output=True, timeout=180, check=False)
+                result = json.loads(result_path.read_text())
+                if host_bytes == 210829311:
+                    if checked.returncode != 2 or result["status"] != "error" or result["output"]:
+                        raise RuntimeError("cache accepted below its exact host minimum")
+                elif checked.returncode != 0 or result["status"] != "ok" or result["completion_tokens"] != 1:
+                    raise RuntimeError(f"cache refused its exact host minimum: {checked.stderr[-1200:]!r}")
+            print("prefill-cache exact host minimum and one-byte-below: PASS", flush=True)
+
+
 def main() -> None:
     model = Path(os.environ["QWEN35_GGUF"]).resolve()
     pack = Path(os.environ["QWEN35_ALIGNPACK"]).resolve()
@@ -144,6 +376,15 @@ def main() -> None:
             raise RuntimeError("GGUF differs from the recorded real-model source")
     if not binary.is_file() or not trace.is_file():
         raise RuntimeError("real CUDA binary or state tracer is missing")
+    if os.environ.get("QWEN35_PREFILL_GRAPH_CACHE_OWNER") == "1":
+        batch_owner(binary, model, pack, geometry, options, trace, workspace=True, cache=True)
+        return
+    if os.environ.get("QWEN35_WORKSPACE_RETAIN_OWNER") == "1":
+        batch_owner(binary, model, pack, geometry, options, trace, workspace=True)
+        return
+    if os.environ.get("QWEN35_INPUT_BATCH_OWNER") == "1":
+        batch_owner(binary, model, pack, geometry, options, trace)
+        return
     failure = os.environ.get("QWEN35_NATIVE_Q6_FAILURE")
     if failure is not None:
         if failure not in ("submit", "complete", "greedy"):

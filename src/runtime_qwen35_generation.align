@@ -278,6 +278,38 @@ fn update_decode(borrow owner: ggml_ffi.GpuDevice, token: i64,
   return Ok(())
 }
 
+fn write_decode_batch(token: i64, position: i64, width: i64,
+  borrow mut descriptors: slice<u8>, borrow mut payload: slice<u8>) -> Result<(), Error> {
+  if width < 1 || width > 2304 || descriptors.len() != 128
+    || payload.len() < 24 + width * 4 || token < 0 || token > 2147483647
+    || position < 0 || position >= width { return Err(Error.Invalid) }
+  payload.set_u32_le(0, token as u32)
+  payload.set_u32_le(4, position as u32)
+  payload.set_u32_le(8, position as u32)
+  payload.set_u32_le(12, position as u32)
+  payload.set_u32_le(16, 0 as u32)
+  payload.set_u32_le(20, position as u32)
+  mut at := 0
+  loop {
+    if at >= width { break }
+    payload.set_u32_le(24 + at * 4,
+      if at <= position { 0 as u32 } else { MASKED as u32 })
+    at = at + 1
+  }
+  at = 0
+  loop {
+    if at >= 4 { break }
+    descriptors.set_i64_le(at * 32, 3 + at)
+    descriptors.set_i64_le(at * 32 + 8, 0)
+    descriptors.set_i64_le(at * 32 + 16,
+      if at == 0 { 0 } else if at == 1 { 4 } else if at == 2 { 24 } else { 20 })
+    descriptors.set_i64_le(at * 32 + 24,
+      if at == 1 { 16 } else if at == 2 { width * 4 } else { 4 })
+    at = at + 1
+  }
+  return Ok(())
+}
+
 fn update_lookup_target(borrow owner: ggml_ffi.GpuDevice,
   borrow candidates: array<i64>, borrow g: runtime_qwen35_geometry.Geometry,
   position: i64, width: i64,
@@ -330,6 +362,11 @@ pub Session {
   native_state_copy: bool,
   native_prefill_state_copy: bool,
   native_copy_greedy: bool,
+  batch_decode_inputs: bool,
+  prefill_graph_cache: bool,
+  prefill_slots: buffer,
+  decode_descriptors: buffer,
+  decode_payload: buffer,
   decode_a_slots: buffer,
   decode_b_slots: buffer,
   decode_a_key: string,
@@ -391,6 +428,10 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
   probe_prompt: i64, capacity: i64, config: runtime_qwen35_execution.Config,
 ) -> Result<i64, Error> {
   if (options.backend != "metal" && options.backend != "cuda")
+    || (config.batch_decode_inputs && options.backend != "cuda")
+    || (config.retain_workspace && options.backend != "cuda")
+    || (config.prefill_graph_cache && (options.backend != "cuda" || !config.retain_workspace
+        || config.prefill_chunk != 128 || !config.final_prefill_logits || config.last_ffn_row))
     || (config.native_q6_head && (options.backend != "cuda"
         || g.n_embd != 2048 || g.n_vocab != 248320))
     || (options.backend == "cuda" && (config.mapped_weights || config.shared_logits
@@ -402,6 +443,12 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
         || !ggml_ffi.gpu_ingraph_argmax_supported(owner)))
     || probe_prompt < 1 || probe_prompt > MAX_PROMPT
     || capacity < probe_prompt || capacity > g.context_length { return Err(Error.Invalid) }
+  ggml_ffi.gpu_workspace_retain_select(owner, config.retain_workspace) else {
+    return Err(Error.Invalid)
+  }
+  ggml_ffi.gpu_prefill_graph_cache_select(owner, config.prefill_graph_cache) else {
+    return Err(Error.Invalid)
+  }
   ggml_ffi.gpu_native_state_copy_select(owner, config.native_state_copy) else {
     return Err(Error.Invalid)
   }
@@ -438,13 +485,16 @@ fn prepare(borrow owner: ggml_ffi.GpuDevice,
   }
   workspace := options.device_budget_bytes - storage_bytes - plan.kv_bytes
     - native_head_bytes
-  if workspace < 536870912 || options.host_budget_bytes < 134217728 {
+  metadata_bytes := if config.prefill_graph_cache { 176160768 } else { 100663296 }
+  application_bytes := if config.prefill_graph_cache { 33619968 } else { 33554432 }
+  minimum_host := metadata_bytes + application_bytes + 1048576
+  if workspace < 536870912 || options.host_budget_bytes < minimum_host {
     return Err(Error.Invalid)
   }
-  ggml_ffi.gpu_host_reserve(owner, 33554432) else { return Err(Error.Invalid) }
+  ggml_ffi.gpu_host_reserve(owner, application_bytes) else { return Err(Error.Invalid) }
   runtime_memory.admit(owner, runtime_memory.MemoryPlan {
       weights_bytes: storage_bytes, kv_bytes: plan.kv_bytes,
-      workspace_bytes: workspace, metadata_bytes: 100663296,
+      workspace_bytes: workspace, metadata_bytes: metadata_bytes,
       staging_bytes: 1048576, legacy_cache_bytes: 0,
     })?
   if config.mapped_weights {
@@ -520,6 +570,11 @@ pub fn create_session(owner: ggml_ffi.GpuDevice,
       native_state_copy: config.native_state_copy,
       native_prefill_state_copy: config.native_prefill_state_copy,
       native_copy_greedy: config.native_copy_greedy,
+      batch_decode_inputs: config.batch_decode_inputs,
+      prefill_graph_cache: config.prefill_graph_cache,
+      prefill_slots: buffer.filled(SLOT_BYTES * if config.prefill_graph_cache { 4 } else { 1 }, 0 as u8),
+      decode_descriptors: buffer.filled(if config.batch_decode_inputs { 128 } else { 0 }, 0 as u8),
+      decode_payload: buffer.filled(if config.batch_decode_inputs { 24 + mask_capacity * 4 } else { 0 }, 0 as u8),
       decode_a_slots: buffer.filled(SLOT_BYTES, 0 as u8),
       decode_b_slots: buffer.filled(SLOT_BYTES, 0 as u8),
       decode_a_key: "".clone(), decode_b_key: "".clone(),
@@ -600,10 +655,6 @@ fn execute(borrow mut session: Session,
   native_target_greedy: bool,
   borrow mut stats: LookupTrialStats,
 ) -> Result<array<i64>, Error> {
-  mut prefill_storage := buffer.filled(SLOT_BYTES, 0 as u8)
-  mut prefill_slots := prefill_storage.bytes()
-  mut decode_a_slots := session.decode_a_slots.bytes()
-  mut decode_b_slots := session.decode_b_slots.bytes()
   mut token_storage := buffer.filled(session.prefill_chunk * 4, 0 as u8)
   mut position_storage := buffer.filled(session.prefill_chunk * 16, 0 as u8)
   mut mask_storage := buffer.filled(session.mask_capacity * session.prefill_chunk * 4, 0 as u8)
@@ -622,24 +673,41 @@ fn execute(borrow mut session: Session,
     if offset >= prompt.len() { break }
     count := if prompt.len() - offset < session.prefill_chunk { prompt.len() - offset } else { session.prefill_chunk }
     width := runtime_inputs.attention_width(offset + count, session.geometry.context_length)?
-    if prefill_key.len() > 0 {
-      runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
-    }
-    ctx := ggml_ffi.gpu_graph_context_lookup(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)
-    if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
-    graph := ggml_ffi.graph_new(ctx)
-    if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
-    bind_prefill(session.owner, ctx, count, width, prefill_slots)?
     emit_logits := !session.final_prefill_logits || offset + count == prompt.len()
     final_row := session.last_ffn_row && emit_logits && count > 1
       && offset + count == prompt.len()
-    runtime_qwen35_model.build_tokens_final_row_greedy(session.owner, session.geometry, state,
-      offset, count, ggml_ffi.GPU_GRAPH_PREFILL, 7, ctx, graph, prefill_slots,
-      emit_logits, final_row, session.graph_greedy && emit_logits)?
-    prefill_key = key(session.owner, session.options, session.geometry_text,
+    current_key := key(session.owner, session.options, session.geometry_text,
       ggml_ffi.GPU_GRAPH_PREFILL, offset, count, width, state.active, emit_logits, final_row,
       session.graph_greedy && emit_logits)
-    runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, graph)?
+    entry := if session.prefill_graph_cache { (offset / 128) % 4 } else { 0 }
+    hit := if session.prefill_graph_cache {
+      runtime_execution.prefill_activate(session.owner, entry, current_key)?
+    } else { false }
+    if !session.prefill_graph_cache && prefill_key.len() > 0 {
+      runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
+    }
+    mut all_prefill_slots := session.prefill_slots.bytes()
+    mut prefill_slots := all_prefill_slots[entry * SLOT_BYTES..(entry + 1) * SLOT_BYTES]
+    ctx := ggml_ffi.gpu_graph_context_lookup(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)
+    if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
+    graph := if hit {
+      ggml_ffi.gpu_graph_lookup(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, current_key)
+    } else { ggml_ffi.graph_new(ctx) }
+    if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
+    if !hit {
+      mut clear_at := 0
+      loop {
+        if clear_at >= SLOT_BYTES { break }
+        prefill_slots.set_u64_le(clear_at, 0 as u64)
+        clear_at = clear_at + 8
+      }
+      bind_prefill(session.owner, ctx, count, width, prefill_slots)?
+      runtime_qwen35_model.build_tokens_final_row_greedy(session.owner, session.geometry, state,
+        offset, count, ggml_ffi.GPU_GRAPH_PREFILL, 7, ctx, graph, prefill_slots,
+        emit_logits, final_row, session.graph_greedy && emit_logits)?
+      runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, current_key, graph)?
+    }
+    prefill_key = current_key
     update_prefill(session.owner, prompt, session.geometry, offset, count, width,
       token_bytes, position_bytes, mask_bytes)?
     runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, graph)?
@@ -678,6 +746,8 @@ fn execute(borrow mut session: Session,
     if step >= max_tokens || (forced.len() == 0 && contains(eog, token)) { break }
     position := prompt.len() + step - 1
     width := runtime_inputs.attention_width(position + 1, session.geometry.context_length)?
+    mut decode_a_slots := session.decode_a_slots.bytes()
+    mut decode_b_slots := session.decode_b_slots.bytes()
     kind := if state.active == 1 {
       ggml_ffi.GPU_GRAPH_DECODE
     } else { ggml_ffi.GPU_GRAPH_DECODE_ALT }
@@ -714,21 +784,33 @@ fn execute(borrow mut session: Session,
         session.decode_b_width = width
       }
     }
+    decode_input_token := if forced.len() > 0 { forced[step - 1] } else { token }
+    if session.batch_decode_inputs {
+      mut descriptors := session.decode_descriptors.bytes()
+      mut payload := session.decode_payload.bytes()
+      write_decode_batch(decode_input_token, position, width, descriptors, payload)?
+      descriptor_view := session.decode_descriptors.bytes()
+      payload_view := session.decode_payload.bytes()
+      data := payload_view[0..24 + width * 4]
+      runtime_inputs.update_many(session.owner, descriptor_view, data)?
+    } else {
+      update_decode(session.owner, decode_input_token, position, width,
+        scalar, decode_positions, decode_mask_bytes)?
+    }
     current_key: str := if kind == ggml_ffi.GPU_GRAPH_DECODE {
       session.decode_a_key
     } else { session.decode_b_key }
-    decode_input_token := if forced.len() > 0 { forced[step - 1] } else { token }
-    update_decode(session.owner, decode_input_token, position, width,
-      scalar, decode_positions, decode_mask_bytes)?
     active_graph := ggml_ffi.gpu_graph_lookup(session.owner, kind, current_key)
     if ggml_ffi.handle_absent(active_graph) { return Err(Error.Invalid) }
     runtime_execution.compute(session.owner, kind, current_key, active_graph)?
+    current_a_slots := session.decode_a_slots.bytes()
+    current_b_slots := session.decode_b_slots.bytes()
     token = if kind == ggml_ffi.GPU_GRAPH_DECODE {
-      read_choice(session.owner, decode_a_slots, session.shared_logits,
+      read_choice(session.owner, current_a_slots, session.shared_logits,
         session.neon_greedy, session.graph_greedy, session.native_copy_greedy,
         session.geometry.n_vocab, logits, "q35_provider_decode_logits")?
     } else {
-      read_choice(session.owner, decode_b_slots, session.shared_logits,
+      read_choice(session.owner, current_b_slots, session.shared_logits,
         session.neon_greedy, session.graph_greedy, session.native_copy_greedy,
         session.geometry.n_vocab, logits, "q35_provider_decode_logits")?
     }
@@ -740,7 +822,9 @@ fn execute(borrow mut session: Session,
     step = step + 1
   }
   runtime_device.synchronize(session.owner)?
-  runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
+  if session.prefill_graph_cache {
+    runtime_execution.prefill_release(session.owner, false)?
+  } else { runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)? }
   return Ok(generated.build())
 }
 
@@ -1019,8 +1103,6 @@ pub fn begin_stream(borrow mut session: Session,
     runtime_qwen35_load.zero_resident(session.owner, session.geometry, session.capacity)?
   }
   session.first_request = false
-  mut prefill_storage := buffer.filled(SLOT_BYTES, 0 as u8)
-  mut prefill_slots := prefill_storage.bytes()
   mut token_storage := buffer.filled(session.prefill_chunk * 4, 0 as u8)
   mut position_storage := buffer.filled(session.prefill_chunk * 16, 0 as u8)
   mut mask_storage := buffer.filled(session.mask_capacity * session.prefill_chunk * 4, 0 as u8)
@@ -1038,24 +1120,41 @@ pub fn begin_stream(borrow mut session: Session,
     if offset >= prompt.len() { break }
     count := if prompt.len() - offset < session.prefill_chunk { prompt.len() - offset } else { session.prefill_chunk }
     width := runtime_inputs.attention_width(offset + count, session.geometry.context_length)?
-    if prefill_key.len() > 0 {
-      runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
-    }
-    ctx := ggml_ffi.gpu_graph_context_lookup(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)
-    if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
-    graph := ggml_ffi.graph_new(ctx)
-    if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
-    bind_prefill(session.owner, ctx, count, width, prefill_slots)?
     emit_logits := !session.final_prefill_logits || offset + count == prompt.len()
     final_row := session.last_ffn_row && emit_logits && count > 1
       && offset + count == prompt.len()
-    runtime_qwen35_model.build_tokens_final_row_greedy(session.owner, session.geometry, state,
-      offset, count, ggml_ffi.GPU_GRAPH_PREFILL, 7, ctx, graph, prefill_slots,
-      emit_logits, final_row, session.graph_greedy && emit_logits)?
-    prefill_key = key(session.owner, session.options, session.geometry_text,
+    current_key := key(session.owner, session.options, session.geometry_text,
       ggml_ffi.GPU_GRAPH_PREFILL, offset, count, width, state.active, emit_logits, final_row,
       session.graph_greedy && emit_logits)
-    runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, graph)?
+    entry := if session.prefill_graph_cache { (offset / 128) % 4 } else { 0 }
+    hit := if session.prefill_graph_cache {
+      runtime_execution.prefill_activate(session.owner, entry, current_key)?
+    } else { false }
+    if !session.prefill_graph_cache && prefill_key.len() > 0 {
+      runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
+    }
+    mut all_prefill_slots := session.prefill_slots.bytes()
+    mut prefill_slots := all_prefill_slots[entry * SLOT_BYTES..(entry + 1) * SLOT_BYTES]
+    ctx := ggml_ffi.gpu_graph_context_lookup(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)
+    if ggml_ffi.handle_absent(ctx) { return Err(Error.Invalid) }
+    graph := if hit {
+      ggml_ffi.gpu_graph_lookup(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, current_key)
+    } else { ggml_ffi.graph_new(ctx) }
+    if ggml_ffi.handle_absent(graph) { return Err(Error.Invalid) }
+    if !hit {
+      mut clear_at := 0
+      loop {
+        if clear_at >= SLOT_BYTES { break }
+        prefill_slots.set_u64_le(clear_at, 0 as u64)
+        clear_at = clear_at + 8
+      }
+      bind_prefill(session.owner, ctx, count, width, prefill_slots)?
+      runtime_qwen35_model.build_tokens_final_row_greedy(session.owner, session.geometry, state,
+        offset, count, ggml_ffi.GPU_GRAPH_PREFILL, 7, ctx, graph, prefill_slots,
+        emit_logits, final_row, session.graph_greedy && emit_logits)?
+      runtime_execution.prepare(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, current_key, graph)?
+    }
+    prefill_key = current_key
     update_prefill(session.owner, prompt, session.geometry, offset, count, width,
       token_bytes, position_bytes, mask_bytes)?
     runtime_execution.compute(session.owner, ggml_ffi.GPU_GRAPH_PREFILL, prefill_key, graph)?
@@ -1132,30 +1231,40 @@ pub fn stream_next(borrow mut session: Session) -> Result<Option<i64>, Error> {
       session.decode_b_width = width
     }
   }
-  // Write positions before borrowing other session fields: a mutable view call
-  // conservatively invalidates sibling views at the pinned compiler.
-  mut positions := session.stream_positions.bytes()
-  runtime_qwen35_geometry.write_text_positions(position, 1, positions)?
-  mut scalar := session.stream_scalar.bytes()
-  mut mask := session.stream_mask.bytes()
-  if session.stream_token < 0 || session.stream_token > 2147483647
-    || position < 0 || position >= width || mask.len() < width * 4 {
-    return Err(Error.Invalid)
+  if session.batch_decode_inputs {
+    mut descriptors := session.decode_descriptors.bytes()
+    mut payload := session.decode_payload.bytes()
+    write_decode_batch(session.stream_token, position, width, descriptors, payload)?
+    descriptor_view := session.decode_descriptors.bytes()
+    payload_view := session.decode_payload.bytes()
+    data := payload_view[0..24 + width * 4]
+    runtime_inputs.update_many(session.owner, descriptor_view, data)?
+  } else {
+    // Write positions before borrowing other session fields: a mutable view call
+    // conservatively invalidates sibling views at the pinned compiler.
+    mut positions := session.stream_positions.bytes()
+    runtime_qwen35_geometry.write_text_positions(position, 1, positions)?
+    mut scalar := session.stream_scalar.bytes()
+    mut mask := session.stream_mask.bytes()
+    if session.stream_token < 0 || session.stream_token > 2147483647
+      || position < 0 || position >= width || mask.len() < width * 4 {
+      return Err(Error.Invalid)
+    }
+    scalar.set_u32_le(0, session.stream_token as u32)
+    runtime_inputs.update(session.owner, 3, 0, scalar)?
+    positions_view := session.stream_positions.bytes()
+    runtime_inputs.update(session.owner, 4, 0, positions_view)?
+    mut at := 0
+    loop {
+      if at >= width { break }
+      mask.set_u32_le(at * 4, if at <= position { 0 as u32 } else { MASKED as u32 })
+      at = at + 1
+    }
+    mask_view := mask[0..width * 4]
+    runtime_inputs.update(session.owner, 5, 0, mask_view)?
+    scalar.set_u32_le(0, position as u32)
+    runtime_inputs.update(session.owner, 6, 0, scalar)?
   }
-  scalar.set_u32_le(0, session.stream_token as u32)
-  runtime_inputs.update(session.owner, 3, 0, scalar)?
-  positions_view := session.stream_positions.bytes()
-  runtime_inputs.update(session.owner, 4, 0, positions_view)?
-  mut at := 0
-  loop {
-    if at >= width { break }
-    mask.set_u32_le(at * 4, if at <= position { 0 as u32 } else { MASKED as u32 })
-    at = at + 1
-  }
-  mask_view := mask[0..width * 4]
-  runtime_inputs.update(session.owner, 5, 0, mask_view)?
-  scalar.set_u32_le(0, position as u32)
-  runtime_inputs.update(session.owner, 6, 0, scalar)?
   current_key: str := if kind == ggml_ffi.GPU_GRAPH_DECODE {
     session.decode_a_key
   } else { session.decode_b_key }
@@ -1186,7 +1295,9 @@ pub fn stream_finish(borrow mut session: Session) -> Result<(), Error> {
   if !session.stream_active || session.healthy { return Err(Error.Invalid) }
   session.stream_active = false
   runtime_device.synchronize(session.owner)?
-  runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
+  if session.prefill_graph_cache {
+    runtime_execution.prefill_release(session.owner, false)?
+  } else { runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)? }
   session.healthy = true
   return Ok(())
 }
@@ -1194,7 +1305,9 @@ pub fn stream_finish(borrow mut session: Session) -> Result<(), Error> {
 pub fn recover_failed_request(borrow mut session: Session) -> Result<(), Error> {
   // A failed graph may still own queued work. Clear it before admitting a new request.
   runtime_device.synchronize(session.owner)?
-  runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)?
+  if session.prefill_graph_cache {
+    runtime_execution.prefill_release(session.owner, true)?
+  } else { runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_PREFILL)? }
   if session.decode_a_key.len() > 0 {
     runtime_execution.invalidate(session.owner, ggml_ffi.GPU_GRAPH_DECODE)?
     session.decode_a_key = "".clone()

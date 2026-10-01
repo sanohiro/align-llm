@@ -1524,7 +1524,11 @@ cached improvement did not establish a dependable pressure benefit, and the
 pressure GPU kernel intervals did not improve. This is not a generation-speed
 or coding-time claim. No new Align gap or Python change was required.
 
-### D0 retained-request analysis
+### D0 preserved cold-request analysis
+
+Classification corrected by the later warm-request investigation below: the
+binary was preserved, but this trace is a one-shot provider invocation,
+including cold setup. It is not a warmed retained-session request.
 
 Read-only analysis of the retained greedy-head `prefetched-200x32.sqlite`
 (SHA-256 `9e83c1eb113df60f67352263b8b4b91a9b2b4ffbbf896d2d88cd7a657d16325a`)
@@ -1544,8 +1548,9 @@ Two ggml graph instantiations, two updates and 28 graph launches occur after
 the first head. Runtime API durations overlap GPU intervals; these numbers
 must not be added to make a request latency estimate.
 
-The roughly 53 us producer/consumer interval makes R2 a useful next design
-target. It also includes host dispatch/setup, so eliminating a wait cannot
+The roughly 53 us producer/consumer interval originally nominated R2 as a next
+design target; the later warm-request investigation supersedes that priority.
+It also includes host dispatch/setup, so eliminating a wait cannot
 be assumed to recover the entire interval. The pinned public API still lacks
 a stream/event bridge to this independent helper. An asynchronous-call swap
 would race; the bridge and its failure/lifetime owner remain deferred.
@@ -1713,3 +1718,1202 @@ establish a useful pressure-conditioned GPU improvement. Disjoint raw/raw
 controls exposed wall-time variance before adoption. Canonical dependency
 identity must support the pinned build's normal symlink topology; the repaired
 owner covers that topology while retaining wrong-file refusal.
+
+## 2026-10-01 warm-request bottleneck investigation
+
+The user requested bottleneck work beyond kernels, explicitly stopping before
+implementation. This checkpoint only inspects source, executes preserved
+binaries/settings and records a plan. No optimization, default, kernel, or
+checked-in measurement code changed. The preceding R1 implementation remains
+intentional uncommitted work. The
+[request-bottleneck plan](specs/gpu-runtime-performance.md#cuda-request-bottleneck-plan-2026-10-01)
+is authoritative for the new priority, prospective cost/ownership and owners.
+
+### Inputs and reproducibility
+
+Host: RTX 4070 Ti/sm_89, driver 610.62, CUDA 13.3.73, WSL2,
+Nsight Systems 2026.1.3. No clock lock or isolation from desktop activity;
+hardware counters remain unavailable under the recorded Windows-host permission
+constraint. Application source/base is `687acd3`, ggml/llama pin is
+`bb4caa7540188872173c44d161602d9271386413`. This is not a comparison against
+current upstream llama.cpp or a time-to-passing-patch measurement.
+
+Preserved greedy-head executable SHA-256:
+`5b474ca53c23881cc9c876df5cc0497e4007ffd84a020a3eff5912a989df9574`;
+its shim: `58bbf96330a59c362b8287ad81a4c4952e687c9c2790cae2d3da870f930560a4`.
+Each timed session checks the actual shim mapping's path/device/inode and file
+hash. Model SHA-256 is
+`cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1`;
+Alignpack is `b4b418ebef9f83f911e4d604bdcce03e589fb7d2afa35f7e3bbdff3111b810b1`.
+Geometry/options and source bundle libraries are recorded in the external
+`input-identities.json`; the CUDA plugin remains
+`ec1ddd96247a97ba6f2a564301efca6a1e9b479f29b6bdb9d166ead2bbb4f774`.
+
+External evidence bundle: `bottleneck-plan-20261001`, alongside the earlier
+native CUDA evidence. Its drivers are independent `BENCHMARK_OR_MEASUREMENT`
+artifacts using the existing `gpu_session_client.Session` and measurement
+request/identity functions; they contain no model inference or product policy.
+The NVTX shim only brackets caller requests. Key evidence digests:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `profile_retained.py` | `1abbfc4e9805891922360eeb820ae832fc265e30e0a8a05e5822ae636e65c6eb` |
+| `screen_serial.py` | `efd3c450013ae1b637a47684ebb87dd2a393e86f126cdf5d239e4523ab99ebbe` |
+| `retained-200x32.sqlite` | `ab58fc5c4c9263ff2d66c72a4050e648464cff7e935b94682beab232d49301d3` |
+| `chunk-serial.jsonl` | `5905ff7abcd739575757410d3ce1e2bbc9bc40fea087400c5519170ea332c883` |
+| `llama-200x32.sqlite` | `e94b88a32022d77a166282dd2a075dba611df92c2d9069fe242edf048445942f` |
+
+Use the retained scripts with their explicit local artifact bindings, or rebind
+them to the same authenticated files. `EVIDENCE` is this external directory:
+
+```sh
+g++ -shared -fPIC -O2 -I/usr/local/cuda/include "$EVIDENCE/mark.cc" -o "$EVIDENCE/mark.so" -ldl
+PROFILE_LABEL=unprofiled python3 "$EVIDENCE/profile_retained.py"
+PROFILE_LABEL=trace nsys profile --trace=cuda,nvtx,osrt --sample=process-tree \
+  --backtrace=dwarf --cuda-graph-trace=node -o "$EVIDENCE/retained-200x32" \
+  python3 "$EVIDENCE/profile_retained.py"
+nsys export --type=sqlite --output="$EVIDENCE/retained-200x32.sqlite" \
+  "$EVIDENCE/retained-200x32.nsys-rep"
+python3 "$EVIDENCE/analyze.py"
+python3 "$EVIDENCE/screen_serial.py"
+```
+
+Use fresh output names when reproducing. The worker command is the preserved
+binary's `--runtime-session MODEL PACK GEOMETRY OPTIONS 0`, with native Q6 head
+enabled and other native copy modes disabled. Requests are the existing
+measurement cases, temperature zero. NVTX wraps two warmups followed by three
+200/32 requests; model loading has a separate range. The serial setting screen
+uses five pairs, reversing 128/512 process order each pair, with two warmups and
+five timed requests per case/arm. Only one GPU session is alive at once. All
+150 timed requests and 60 warmups match their case's text/counts. No logits or
+state dump is enabled during timing.
+
+### Warm critical path
+
+The three NVTX request wall intervals are 163.116/190.343/191.052 ms. A separate
+uninstrumented three-request probe gives 181.566/158.269/158.124 ms, so trace
+wall times are attribution, not adoption evidence. For every warm trace:
+zero graph instantiations/updates, 31 decode graph launches and 32 native
+heads/eight-byte readbacks. The 12.4 ms graph-instantiation cost in the earlier
+D0 cold trace therefore cannot be counted as recurring overhead.
+
+| Per 200/32 request | Request 0 | Request 1 | Request 2 |
+| --- | ---: | ---: | ---: |
+| Before first native head: wall, ms | 33.011 | 60.323 | 51.243 |
+| Same phase: union of GPU kernels/copies/memsets, ms | 16.987 | 16.442 | 16.407 |
+| First head through response: wall, ms | 130.105 | 130.019 | 139.809 |
+| Same phase: GPU activity union, ms | 111.984 | 110.450 | 111.805 |
+| Completed choice to next backbone start, sum over 31, ms | 9.588 | 9.215 | 12.499 |
+| Last backbone producer to next head, sum over 31, ms | 1.804 | 2.171 | 2.108 |
+| Same producer/head gap, median us | 52.644 | 53.091 | 58.628 |
+
+The last two rows describe different boundaries. Source inspection explains
+four per-token input updates: token, four positions, mask, KV index.
+`align_gpu_input_update` calls `ggml_backend_tensor_set`; pinned CUDA implements
+each as memcpy on its per-thread stream followed by stream synchronization.
+Clipping API intervals to the choice-to-backbone windows gives
+1.191/1.340/1.877 ms memcpy and 3.805/3.447/4.723 ms synchronization time.
+These subsets overlap their containing windows and must not be added again.
+One batch-completion barrier can target part of this cost without changing the
+separate ggml-to-native output-head dependency.
+
+Before the first head there are 1,955 individual `cudaLaunchKernel` calls in
+each warm request. `execute` reconstructs each prefill graph; prepare and
+invalidate rebuild the shared allocator. Every warm request has four CUDA
+malloc/free pairs. CPU sampling reaches ggml graph allocation/fusion checks,
+but the samples do not give a precise exclusive CPU budget. Mask building,
+tokenization and JSON/framing cannot be blamed for every uncovered interval.
+Caller wall minus the worker's elapsed field is only 0.354–0.407 ms in the
+three traces; this bounds the additional measured caller/protocol envelope,
+not all tokenizer/detokenizer work inside the worker.
+
+The apparent approximately 31 ms `cudaMemcpyAsync` time for 32 eight-byte
+readbacks includes waiting for the producer on the pageable D2H path; actual
+GPU copy time is about 0.030 ms. It is not a 31 ms copying opportunity.
+Likewise a graph-launch correlation is shared by its nodes: joining every
+graph copy to the launch and summing that API duplicates launch time.
+
+### Existing prefill setting screen
+
+This is a configuration-only diagnostic on the unchanged executable. No
+environment/default is persisted. Values below are medians of the five
+per-arm five-request means; gains are paired control minus candidate.
+
+| Actual prompt/output | Chunk 128, ms | Chunk 512, ms | Median paired saving, ms | Wins |
+| --- | ---: | ---: | ---: | --- |
+| 56/16 | 76.613 | 73.136 | 3.708 | 4/5 |
+| 200/32 | 163.618 | 142.395 | 21.223 | 5/5 |
+| 330/64 | 303.672 | 276.845 | 26.827 | 5/5 |
+
+Every paired saving in ms:
+
+- 56/16: `3.784647, 3.708101, 6.740874, 1.554805, -4.042609`.
+- 200/32: `16.612661, 21.222929, 18.387149, 25.180235, 22.316955`.
+- 330/64: `26.826989, 30.777278, 29.822579, 19.446588, 25.629105`.
+
+Middle/wider arm medians are 12.97%/8.83% shorter than the same campaign's
+chunk-128 control. Both execute one prefill chunk at 512 instead of two/three;
+the short workload still has one, so its small noisy difference is not
+evidence for chunk reduction. The mechanism remains a combination of host
+preparation, workspace lifetime and GPU shape changes. Output equality does
+not establish full-state/numeric parity, first-use cost or broader adoption.
+
+A separate pinned llama benchmark, executable SHA-256
+`0aabc02758cf34b086d253d6b164cb6027a2aa2188b17fd66c42f483e608ae29`,
+ran three 200/32 iterations under node-level CUDA tracing, without CPU sampling.
+Its final warm iteration is 176.787 ms (18.660 prefill, 158.126 decode), with
+32 IDs and decoded output matching the native request. This is not a paired
+performance campaign and must not replace the preceding saved comparison.
+Reproduction: `nsys profile --trace=cuda --sample=none --cpuctxsw=none
+--cuda-graph-trace=node -o OUT LLAMA_BENCH MODEL RENDERED_PROMPT IDS 32`.
+The existing `prepare_reference` function produced the 200 input IDs.
+
+### Limits, failures and next boundary
+
+The initial multi-session chunk screen stopped during second-session admission
+with code 2 and produced no timing verdict. A subsequent isolated chunk-256
+probe passed and returned the expected 200/32 output. The completed campaign
+therefore runs arms serially; the failed admission does not show that chunk
+256 is unsupported. Its exact cause was not diagnosed.
+
+The optional chunk-512 trace later failed when the filesystem reached `ENOSPC`;
+partial files are excluded from the evidence. Its stalled profiler was stopped.
+Only that run's own unmapped temporary backend bundle was removed; existing
+models, source and successful receipts were preserved. At that checkpoint,
+external scratch/evidence capacity was a prerequisite for retrying. The later
+authorized cleanup and successful additional traces below close that blocker.
+The partial trace remains excluded; a second uninstrumented campaign is still open.
+
+The next action is B0 qualification of the existing setting, then B1's bounded
+synchronous input batch. Prefill workspace reuse is conditional on the remaining
+profile; the output-head bridge moves below these candidates. No new Align gap
+was found. The reusable lesson is to separate warm request phases and test
+existing execution settings before selecting another kernel experiment.
+This documentation checkpoint has an author consistency/diff check only; the
+earlier R1 comprehensive review does not cover this new plan. No publication,
+merge, implementation or new whole-request adoption claim is made.
+
+### Additional traces after authorized disk cleanup
+
+The user explicitly requested freeing disk space and completing the additional
+trace. The sibling Align checkout's ignored Cargo `target/debug/incremental`
+cache was removed after confirming no compiler/build process was active.
+Source, compiler executables, models, managed toolchains and existing receipts
+were preserved. Measured available space increased from 176,214,016 to
+5,588,570,112 bytes, freeing **5,412,356,096 bytes (5.41 GB / 5.04 GiB)**.
+This was bounded cache cleanup, not deletion of arbitrary temporary directories.
+The external `cleanup-receipt.json` records the operation.
+
+The unchanged `profile_chunk.py` first ran chunk 512, then a fresh chunk-128
+control, serially with the same CUDA/NVTX/OSRT/DWARF/node tracing options.
+Both completed two warmups and three measured 200/32 requests. All ten output
+texts/counts match the preceding native/reference result; actual shim mapping
+identity is checked in each process. The partial earlier profile was not reused.
+New evidence in `bottleneck-plan-20261001`:
+
+| Artifact | SHA-256 |
+| --- | --- |
+| `profile_chunk.py` | `f25e077b4d5c46713b4ef16251606468c8255b6926a840bbc17c13e9c8ef7faf` |
+| `analyze_retry.py` | `a2aba8e60c29e820885dc98e5325089ece42360f6e00a9f2ed37351383179eaf` |
+| `chunk512-retry-200x32.sqlite` | `603f876eab1adcf6f9150f7b74e8a22c011a097e8c22e98cb3e7e13f998e446d` |
+| `chunk128-retry-200x32.sqlite` | `bb704936598c7a8529e4b1da1553cab488cbfe62907c3fa609628ac8c3912028` |
+
+The `.nsys-rep`, profiler stdout, worker stderr/maps, phase JSON and
+`retry-boundaries.json` are retained alongside these files. Reproduce with
+fresh output names, using the same external evidence directory and bindings:
+
+```sh
+for prefill_chunk in 512 128; do
+  SCREEN_CHUNK="$prefill_chunk" PROFILE_LABEL="chunk${prefill_chunk}-retry" \
+    nsys profile --trace=cuda,nvtx,osrt --sample=process-tree --backtrace=dwarf \
+    --cuda-graph-trace=node --force-overwrite=false \
+    -o "$EVIDENCE/chunk${prefill_chunk}-retry-200x32" \
+    python3 "$EVIDENCE/profile_chunk.py"
+  nsys export --type=sqlite \
+    --output="$EVIDENCE/chunk${prefill_chunk}-retry-200x32.sqlite" \
+    "$EVIDENCE/chunk${prefill_chunk}-retry-200x32.nsys-rep"
+  python3 "$EVIDENCE/analyze_retry.py" "chunk${prefill_chunk}-retry-200x32"
+done
+python3 "$EVIDENCE/summarize_retry.py"
+```
+
+All three post-warmup samples are reported, including the first chunk-512
+capture; the last two are separately identified as replay observations.
+Times below are instrumented phase attribution, not a new speedup campaign.
+
+| Chunk / request | Request wall, ms | Before first head, ms | Same phase GPU activity union, ms | Individual launch API calls before head | Prefill graph launches / instantiations |
+| --- | ---: | ---: | ---: | ---: | --- |
+| 128 / 0 | 165.861 | 34.793 | 16.333 | 1,955 | 0 / 0 |
+| 128 / 1 | 176.500 | 44.117 | 16.412 | 1,954 | 0 / 0 |
+| 128 / 2 | 183.134 | 37.351 | 16.790 | 1,955 | 0 / 0 |
+| 512 / 0, first capture | 161.837 | 31.000 | 13.168 | 996 | 1 / 1 |
+| 512 / 1, replay | 146.308 | 16.156 | 12.580 | 4 | 1 / 0 |
+| 512 / 2, replay | 150.298 | 16.724 | 12.582 | 2 | 1 / 0 |
+
+Chunk 128 executes **1,951 prefill GPU kernels**, all individually launched;
+chunk 512 executes **992 prefill GPU kernels**, all in its captured graph
+in the three measured requests. API counts include ancillary launch calls
+and, during capture, node construction; they are not device kernel counts.
+Matrix kernels fall from 367 to 186 and recurrent kernels from 36 to 18,
+consistent with two prompt chunks becoming one. Full-request CUDA malloc/free
+pairs fall from four to two. These observations establish fewer GPU operations,
+less allocation churn and prefill graph replay as mechanisms behind the earlier
+setting screen; they do not assign every saved millisecond to one mechanism.
+
+The first chunk-512 prefill instantiation takes **8.086 ms** and occurs in the
+third caller request despite two warmups. Its first cold request is also slower
+than the control in these instrumented runs (362.413 versus 268.918 ms).
+Keep cold/first-use cost separate and do not silently discard the capture
+sample. Pinned ggml only enables capture after stable graph properties; source
+inspection corroborates delayed capture, but allocator-address changes were
+not independently traced.
+
+The new control also corrects any generalization from the first trace's zero
+warm graph updates. Its third request performs **two decode recaptures/updates**,
+29 graph launches and 2,508 individual launch API calls in the decode-tail phase,
+versus 31 graph launches and 124/125 individual calls in the first two requests.
+There is no new decode instantiation. Shared-workspace rebuilding is a plausible
+cause of unstable properties, not a proven pointer-level attribution. All three
+chunk-512 decode tails retain 31 graph launches and zero recaptures/updates.
+
+After chunk-512 capture, pre-head time uncovered by GPU activity is only
+3.577/4.142 ms in the two replay samples. Decode choice-to-next-backbone
+windows still total 9.577/9.200/11.636 ms, of which memcpy/synchronization
+API intersections occupy 4.807/4.552/5.127 ms. Thus B0 qualification remains
+first, B1 input completion batching remains the first new-code candidate, and
+new prefill caching is conditional on measured varied-shape misses. The existing
+backend already replays this same-shape prefill graph.
+
+No optimization implementation or default change was made. Full-logit/state,
+varied-shape, first-use/memory qualification and a repeat uninstrumented campaign
+remain required before adopting the setting. The disk blocker and additional
+trace are complete; the historical incomplete profile is retained as excluded
+failure evidence. Documentation consistency/digest checks and `git diff --check`
+pass; source hashes remain those of the earlier R1 checkpoint.
+
+## 2026-10-01 synchronous CUDA decode-input batch
+
+The user explicitly resumed implementation. B0's existing chunk-512 setting
+fails its numeric gate: the 31-token owner has identical full logits/valid state,
+but at 200 tokens logit 0 is 11.1827116013 with chunk 128 and 11.2366828918
+with chunk 512. The 0.0539712906 difference exceeds the unchanged 0.01 bound.
+The diagnostic stops at that failure; no wider-prompt state qualification,
+boundary campaign or B0 adoption is claimed. B1 therefore uses chunk 128.
+
+B1 is connected to ordinary and streaming Qwen3.5 scalar decode behind
+`ALIGN_LLM_BATCH_DECODE_INPUTS=0|1`, absent = 0. Align writes a reused session
+payload, then borrows immutable views through the new synchronous batch ABI.
+The shim validates every descriptor, accounting and dependent row position
+before any transfer, queues the four unchanged uploads on the existing backend
+stream, waits once, and only then accepts row metadata/accounting. Recoverable
+post-submit faults drain and poison the owner. ggml's void/fatal CUDA API does
+not supply a recoverable hardware-error status. The additional host buffers total
+9,368 bytes at maximum mask width; native descriptors occupy 320 stack bytes.
+There is no extra explicit device allocation or new timed buffer allocation.
+The non-blocking borrowed-resource/scratch limitation is the already-recorded
+Align Request 121; the pin is unchanged and no proposed surface is consumed.
+
+The external evidence bundle is `input-batch-20261001` beside the preserved
+Qwen3.5 inputs. It contains `inputs.env`, source/binary/shim identities, every
+raw paired request, both mapping receipts, full owner logs, native traces,
+SQLite reducers and the B0 failure witness. No generated artifact enters Git.
+Source/base is `687acd3312220742ad013595951e0d8c5b966e16`; Align pin is
+`b20429be50d6ab889496a0589143320683b29aeb`. Model, pack, IR, CUDA plugin and
+llama reference retain the authenticated identities from the preceding receipt.
+
+| Artifact | SHA-256 |
+| --- | --- |
+| Candidate `main` | `80210ab545e720f342bb570ab430578c06f2202c541107a293c54acf314a3fab` |
+| Candidate shim | `a9f52ffacb76d94574881e07f68cb08f6bf4bd3a7a687384a8564f414d14e2a0` |
+| Submit-failure shim | `69084d1fc28f2c5b7802676d40a5c44d58beaa2d0927ef7effb8cc5a4aceaa87` |
+| Completion-failure shim | `e1934aa90084a839a4c10b5fdda4dccdc5ab9fccef7b10a470ab2b8053d868af` |
+| Batch-off SQLite | `7c9ae51bad5e7ffef4eea3de87782b3842c8dfe07a64efb9d2eb2348f9c21698` |
+| Batch-on SQLite | `1148b9c5cf0107fe53acdf5cc9e55384b0151ae870f49e985a55f390d085bec0` |
+
+Build with the authenticated pinned `ggml/include`, library directory, and
+`ALIGN_LLM_NATIVE_CUDA=1`, setting an external `ALIGN_LLM_GGML_SHIM_DIR`, then
+`make build`. Qualification commands and results:
+
+- `make check`: PASS, 169 per-unit modules; the narrow generation owner also
+  passes 38 units. `make fmt`, shell syntax, Python syntax, Python boundary and
+  `git diff --check` pass. No broad aggregate or publication preflight is claimed.
+- `scripts/run-gpu-input-batch-smoke GGML_SOURCE GGML_LIB GPU_PLUGIN`: all three
+  real-GPU builds pass. Covers unaligned little-endian golden bytes, framing,
+  signed/overflow/extent/duplicate/accounting refusals, malformed last records,
+  dependent row positions, unchanged GPU bytes and metadata on refusal,
+  1/4/8 transfers with one completion, post-submit/completion poison and cleanup.
+- `QWEN35_INPUT_BATCH_OWNER=1 scripts/run-qwen35-native-q6-head-smoke`: PASS.
+  All three complete logit vectors per 31/200/330/2048-token input are bit-identical;
+  all 252/336/420/1,512 state planes match. Device peaks stay within 8 GB,
+  reaching 1,289,242,328 bytes at the maximum mask. Default/off/on retained
+  short/wide/short full logits/state, invalid-input recovery, single-token
+  early exit, EOG, empty/unknown selectors and tight-budget refusal pass.
+- Real-shim `ALIGN_LLM_GGML_FORCE=input-batch-submit` / `input-batch-complete`
+  builds, preloaded for `QWEN35_INPUT_BATCH_FAILURE=submit` / `complete` with
+  the same owner: disabled controls succeed, selected requests publish only
+  the failed envelope and exit 2; diagnostics confirm the forced drain boundary.
+- Submit-failure focused C owner under `compute-sanitizer --tool memcheck
+  --leak-check full --error-exitcode 1`: zero errors, zero leaked bytes/allocations.
+- `ALIGN_LLM_NATIVE_Q6_HEAD=1 ALIGN_LLM_PREFILL_CHUNK=128
+  ALIGN_LLM_BATCH_DECODE_INPUTS=1 scripts/run-openai-serving-smoke`: pinned
+  oracle parity, HTTP/SSE, refusals, disconnect/recovery and shutdown/restart pass.
+  A separate ordinary-head, fixed-chunk-512 comparison has three bit-identical
+  logits and 252 identical state planes; it does not qualify 128-versus-512.
+
+An additional legacy `gpu_workspace_allocation_smoke.c` attempt aborts at its
+F32 KV fixture admission on line 228, before exercising the changed input path.
+Rebuilding it with the exact HEAD shim reproduces the same failure. It is
+excluded from successful qualification and deferred as a pre-existing fixture
+issue; the new focused batch owner and real-model owners are the B1 evidence.
+No unrelated workspace/test repair was added.
+
+### Complete retained request measurements
+
+Two serial campaigns on RTX 4070 Ti / CUDA 13.3.73 / WSL2 use
+`QWEN35_CUDA_MEASURE_MODE=input-batch QWEN35_CUDA_PAIR_REQUESTS=20
+scripts/measure-qwen35-native-cuda` with the recorded inputs. Each case has two
+warmup rounds: two batch-off, four batch-on and two preserved-binary requests,
+then five alternating pairs; every arm/pair averages
+20 requests and retains all individual samples, including outliers. The native
+head is fixed on, chunk is fixed at 128, and only the batch selector changes
+between same-binary arms. A third arm is the digest-bound preserved greedy-head
+binary/shim. All three loaded mappings match path/device/inode/hash receipts.
+There are 1,800 timed Align requests across both campaigns; all output/count
+checks and the pinned llama comparisons pass. Campaign files span 196/195 s,
+within the 900 s ceiling. No benchmark overlaps a compiler or another GPU owner.
+
+The llama benchmark uses the same pin/model/prompt IDs and reports the third
+warm prefill-plus-decode interval per pair, excluding model load and detokenization.
+Align includes worker round trip and detokenization, excluding model load.
+The clocks retain this established asymmetry. No new kernel-speed claim follows
+from the whole-request comparison.
+
+| Campaign; prompt/output | Batch off; on; preserved; llama median pair means (ms) | Median paired saving vs off (wins) | vs preserved (wins) | vs llama (wins) |
+| --- | --- | --- | --- | --- |
+| 1; 56/16 | 73.050; 71.646; 72.598; 92.471 | 1.198 (5/5) | 1.264 (5/5) | 20.618 (5/5) |
+| 1; 200/32 | 160.108; 158.475; 158.873; 167.828 | 2.269 (4/5) | -0.056 (2/5) | 13.029 (5/5) |
+| 1; 330/64 | 306.652; 300.262; 306.822; 323.330 | 6.390 (5/5) | 7.667 (4/5) | 23.585 (5/5) |
+| 2; 56/16 | 72.427; 70.340; 71.587; 88.664 | 2.087 (5/5) | 1.561 (5/5) | 18.324 (5/5) |
+| 2; 200/32 | 161.565; 154.773; 156.366; 167.030 | 5.996 (5/5) | 2.550 (5/5) | 12.009 (5/5) |
+| 2; 330/64 | 302.823; 297.859; 305.329; 322.252 | 1.969 (4/5) | 5.906 (4/5) | 25.017 (5/5) |
+
+Every paired off-minus-on saving in milliseconds, preserving pair order:
+
+| Campaign/case | Five paired savings |
+| --- | --- |
+| 1 short | 3.298, 0.929, 4.525, 0.797, 1.198 |
+| 1 chunked | 2.728, 3.348, 2.269, -1.224, 1.633 |
+| 1 wider | 5.264, 7.978, 6.390, 9.316, 5.435 |
+| 2 short | 2.490, 1.674, 2.511, 0.206, 2.087 |
+| 2 chunked | 7.449, 7.778, 5.996, 3.100, 3.174 |
+| 2 wider | 7.936, -0.475, 6.485, 1.969, 0.683 |
+
+Raw previous/llama pairs and all 20-request vectors remain in both campaign logs
+and `campaign-summary.json`. Llama pair times are printed to 0.001 ms; the
+reducer's reconstructed llama differences inherit that rounding. The table uses
+the original benchmark's printed median saving (20.618 ms for campaign 1 short),
+rather than the reducer's rounded-pair reconstruction of 20.619 ms.
+The same-binary mechanism improves all three paired
+medians in both runs. Short/wide improvements also survive the preserved-binary
+comparison; 200/32's incremental gain against that route is still uncertain.
+Retain the qualified opt-in trial with default 0; do not claim uniform gains,
+default adoption, other GPU/model qualification or all llama savings as B1 gains.
+
+### Trace mechanism and retained first-use evidence
+
+Serial `SCREEN_BATCH=0` / `1` runs use `profile_batch.py` with
+`nsys profile --trace=cuda,nvtx,osrt --sample=process-tree --backtrace=dwarf
+--cuda-graph-trace=node --force-overwrite=false`, then SQLite export. The driver
+checks the exact candidate binary/shim mappings. All ten responses agree at
+200/32, and both SQLite integrity checks pass. In each of three measured
+requests, input transfers remain 124 with unchanged byte shapes (4/16/1024/4
+per scalar step), while input completion waits become **124 to 31**.
+Total decode-tail stream synchronizations become **192 to 99**, exactly 93 fewer.
+The per-kernel name/count multisets match: 1,951 prefill and 18,604 decode-tail
+kernels, 31 graph launches, zero measured instantiations/updates in both arms.
+This confirms wait removal without changing arithmetic or replayed work; it
+does not prove graph reuse is stable for all shapes/requests.
+
+Choice-to-next-backbone window sums are 11.192/13.755/9.608 ms off and
+10.096/8.226/8.812 ms on. Memcpy/synchronization API intersections occupy
+6.019/6.502/4.251 ms off and 4.461/2.828/3.055 ms on. These are instrumented
+opportunity measurements, not values to subtract from the uninstrumented benchmark.
+Instrumented load takes 1,503/1,650 ms; first request takes 317.138/317.032 ms.
+Both warmups and all subsequent requests are retained; first-use samples are
+not silently replaced by steady-state timing. Hardware counters remain unavailable
+under the previously recorded permission restriction; no unchanged retry was made.
+
+Bounded retrospective: full-vector qualification rejected an attractive chunk
+change that text parity missed. The completed batch trial removes the predicted
+wait count, but host variation still dominates a small preserved-binary difference
+at 200/32. B2 workspace retention and R2 stream bridging remain separate,
+conditional work; neither is implemented in this capability.
+
+One fresh independent comprehensive review of the stable B1 candidate found only
+the two P3 receipt corrections above (warmup counts and original summary precision).
+Both are accepted and corrected together. Code, owners, benchmark selections,
+timing samples, ABI and adoption assessment are unchanged; no rerun or expanded
+review is required for that documentation repair. The external review envelope
+binds HEAD/base/merge base `687acd3` to candidate manifest SHA-256
+`cf2c6f8079059ce123ede2b6e9c6d6785b465b772d38cb1bfc3557bc016433c9`, reviewer
+`/root/cuda_input_batch_review`, complete findings/dispositions and final file
+identities. No finding remains open. This is a local checkpoint, with no commit,
+publication preflight, pull request or merge requested.
+
+## 2026-10-01 post-B1 profile and next design
+
+The user requested a fresh profile of remaining headroom and preparation through
+the point before implementation. This checkpoint changes documentation only;
+the preceding B1 and R1 source/artifact identities remain unchanged. It selects
+the implementation-ready B2 retained-workspace contract in
+`docs/specs/gpu-runtime-performance.md`, without implementing that contract.
+
+### Subject, scope and reproducibility
+
+Branch/head/base: `agent/cuda-q4-repack-plan` / `687acd3312220742ad013595951e0d8c5b966e16`.
+Managed Align pin remains `b20429be50d6ab889496a0589143320683b29aeb`.
+RTX 4070 Ti, CUDA 13.3.73, driver 610.62, WSL2 and Nsight Systems 2026.1.3;
+Qwen3.5-2B Q4_0, pinned ggml `bb4caa7540188872173c44d161602d9271386413`.
+The existing B1 artifact is the subject, not a rebuild:
+
+| Identity | SHA-256 |
+| --- | --- |
+| B1 executable | `80210ab545e720f342bb570ab430578c06f2202c541107a293c54acf314a3fab` |
+| B1 shim | `a9f52ffacb76d94574881e07f68cb08f6bf4bd3a7a687384a8564f414d14e2a0` |
+| Loaded CUDA plugin | `ec1ddd96247a97ba6f2a564301efca6a1e9b479f29b6bdb9d166ead2bbb4f774` |
+| GGUF | `cd70221bebaee0503e0f6717e174250cd7825aa88438b3aabec9ad55731d9bb1` |
+| First accepted SQLite | `5d0b6cdc01604dea71e285590423adb8364e468884c6fbfdc1a133729f22f9a8` |
+| Second accepted SQLite | `c7154e06323bbd642ab28492a4c9c984cbd95cb895d6fe40ef9178b72dca0448` |
+
+External bundle `post-b1-profile-20261001` retains scripts, compiled diagnostic
+interposers, every response, raw reports, SQLite, logs, loaded mappings and
+`manifest.json`. The second trace's `plain-verified-loaded-identities.json`
+verifies mapped path/device/inode/digest for the actual binary, shim and staged
+backend artifacts while the worker is alive, including the plugin digest above.
+The first trace and host diagnostic verify the loaded shim and executable, retain
+maps, and use the same admitted bundle; they do not independently hash every staged
+mapping. Model/pack/IR/options and unchanged B1/R1 source hashes are in the manifest.
+
+The driver clears inherited `ALIGN_LLM_*` selections, then sets native Q6 head
+and decode-input batch to 1, prefill chunk to 128, and state/conv/prefill-copy and
+copy-greedy modes to 0. It uses the existing resident CUDA0 options with 4 GiB
+host / 8,000,000,000-byte device ceilings and prefetch off. The system and integer
+listing prompt are the existing measurement fixture. The fixed serial sequence is:
+
+1. Three requests each at 56/16, 200/32, 330/64, 56/16, 200/32.
+2. One four-output request each at 127/128/129, 255/256/257 and 511/512/513 inputs.
+3. 2048/3, then 56/16 again.
+
+All first uses and every repetition are retained. Rows 1/2 in each three-request
+group are called repeated requests below; group row 0 is not silently discarded
+from the raw data. This is not a steady-state paired speed campaign. Each capture
+had a 180-second ceiling and a 1-GiB trace-storage ceiling; actual retained trace
+storage is well below that and existing disk capacity sufficed without further
+cache cleanup. After profiling, three unused plugin staging directories left by
+the failed load attempts were verified against the original artifacts and removed,
+recovering 511,184,208 bytes. `cleanup-receipt.json` retains the identities and
+no-live-reference checks; models, original plugins and profiling evidence remain.
+
+With `PROFILE_DIR` set to that external bundle, the completed commands are:
+
+```sh
+PROFILE_LABEL=baseline-1 python3 "$PROFILE_DIR/profile_shapes.py"
+PROFILE_LABEL=baseline-2 python3 "$PROFILE_DIR/profile_shapes.py"
+PROFILE_LABEL=plain nsys profile --trace=cuda,nvtx,osrt \
+  --sample=process-tree --backtrace=dwarf --cuda-graph-trace=node \
+  --force-overwrite=false --duration=180 --output="$PROFILE_DIR/plain" \
+  python3 "$PROFILE_DIR/profile_shapes.py"
+PROFILE_LABEL=plain-verified nsys profile --trace=cuda,nvtx,osrt \
+  --sample=process-tree --backtrace=dwarf --cuda-graph-trace=node \
+  --force-overwrite=false --duration=180 --output="$PROFILE_DIR/plain-verified" \
+  python3 "$PROFILE_DIR/profile_shapes.py"
+nsys export --type=sqlite --force-overwrite=false \
+  --output="$PROFILE_DIR/plain.sqlite" "$PROFILE_DIR/plain.nsys-rep"
+nsys export --type=sqlite --force-overwrite=false \
+  --output="$PROFILE_DIR/plain-verified.sqlite" "$PROFILE_DIR/plain-verified.nsys-rep"
+PROFILE_LABEL=clock-host LIFECYCLE=1 python3 "$PROFILE_DIR/profile_shapes.py"
+TRACE_LABEL=plain-verified python3 "$PROFILE_DIR/reduce.py"
+python3 "$PROFILE_DIR/reduce_cpu.py"
+```
+
+Stdout/stderr are retained in correspondingly named JSONL/driver logs. A replay
+needs a fresh output destination/labels because reports must not be overwritten.
+`lifecycle-clock.so` is built from retained `lifecycle-clock.c` using `cc -shared
+-fPIC -O2 -Wall -Wextra -Werror -Wno-misleading-indentation -I "$GGML_SOURCE/ggml/include"
+"$PROFILE_DIR/lifecycle-clock.c" -o "$PROFILE_DIR/lifecycle-clock.so" -ldl`;
+it only times original prepare/invalidate/compute/zero calls and reads
+graph pointer fingerprints and allocation counters. It performs no GPU computation,
+allocator mutation or model readback. Its intervals come from a separate run and
+must not be subtracted from or added to Nsight durations.
+
+Both accepted SQLite integrity checks pass. Every one of the **130** successful
+responses has the expected prompt/output counts and identical output for its
+fixture across both baselines, both traces and the host diagnostic. This confirms
+diagnostic behavior, not a new full-logit qualification; B1's previous exact
+logit/state qualification remains applicable to its unchanged source/artifacts.
+
+### Remaining cost and attribution
+
+| Input/output | Repeated CUDA malloc/free pairs per request | Combined malloc/free API duration across the two traces | Separate host prepare + invalidate duration |
+| --- | ---: | ---: | ---: |
+| 56/16 | 2 | 1.282–1.432 ms | 2.416–3.026 ms |
+| 200/32 | 4 | 2.355–2.734 ms | 4.556–4.830 ms |
+| 330/64 | 6 | 3.648–3.925 ms | 6.945–7.432 ms |
+| 2048/3; one per run, changed shape | 36 | 20.774 / 21.886 ms | 39.828 ms |
+
+Prepare/invalidate includes allocator sizing, binding and waits as well as the
+physical allocation calls. The columns overlap in purpose and were measured
+separately; they are not additive savings. For 2048, 32 prepare/invalidate calls
+belong to its 16 prefill chunks and four more to replacing the two decode shapes.
+
+The C owner path confirms recurring capacity oscillation: the observable input +
+workspace + native-head allocation drops to 3,310,040 bytes after every prefill
+invalidation. At 200 tokens it grows to 13,730,008 for the full chunk, falls back,
+then grows to 8,683,736 for the partial chunk and falls back again. It reaches
+16,613,592 during the 2048 case. Retaining that high water can hold an additional
+13,303,552 bytes between requests on this sequence; it is not zero-cost residency.
+The proposal keeps this charged against admission and does not reserve the entire
+multi-gigabyte workspace ceiling.
+
+Repeated 200/32 requests have 1,951 pre-head kernels and only the 31 decode graph
+launches. Repeated 330/64 has 2,880 pre-head kernels and 63 decode launches. In
+both traces short prefill eventually captures/replays, while alternating chunks
+keep prefill on individual launches. Changed-shape calls show decode recapture;
+even the second short-return request in the first trace recaptures two graphs.
+It is incorrect to require zero recaptures for all retained requests.
+
+The pinned `ggml_cuda_graph_get_key` uses `cgraph->nodes[0]`; the update predicate
+compares node properties, input data pointers/shapes/strides, and warmup requires
+a consecutive unchanged invocation. `execute` and `stream_begin` use one prefill
+context, invalidating it at every chunk and after the request. The host diagnostic
+observes one stable prefill key address but two/three alternating pointer
+fingerprints at 200/330, consistent with those differing topologies. This explains
+why workspace retention alone cannot provide multi-chunk prefill graph replay.
+No full prefill cache, graph UID override or ggml graph-policy patch is implemented.
+
+Representative first-trace `chunk-2` decode spans 126.681 ms with 110.773 ms of
+GPU-active interval union. Quantized matvec kernels sum to 60.970 ms and native
+projection to 29.172 ms; the remaining kernels, copies and launch gaps also matter.
+These figures use different aggregation boundaries and must not be summed into a
+request-time decomposition. Repeated producer-to-head gaps total 1.666–2.222 ms
+at 200/32 and 3.521–4.620 ms at 330/64 across the traces. They justify retaining
+the stream-bridge hypothesis, with a smaller measured envelope than a prefill
+rewrite and a separate backend-lifetime prerequisite.
+
+Repeated 200/32 choice-to-next-backbone windows total 7.004–8.860 ms. One example
+contains 1.036 ms of stream-synchronize API intersections, 1.128 ms of memcpy
+intersections and 2.293 ms of graph-launch intersections. The full window is not
+one removable input wait. CPU user-space samples resolve CUDA submission/wait,
+allocator planning and graph preparation; many driver frames are unresolved or
+have broken backtraces. CPU kernel stacks were refused at `perf_event_paranoid=2`.
+No precise tokenizer/IPC percentage or universal CPU ceiling follows from this.
+
+Both uninstrumented baselines remain fully retained, including load times of
+4,720.529/1,158.341 ms and first requests of 223.524/190.322 ms. Repeated short,
+chunked and wide request ranges are respectively 69.093–80.231, 148.940–184.780
+and 289.590–303.536 ms. These are unchanged-binary baselines with retained noise,
+not improvement measurements. No fresh llama.cpp speedup is claimed.
+
+### Decision, limitations and verification
+
+There is observed application/backend headroom; the evidence does not establish
+that all remaining kernels are at a ceiling. Select B2's single-allocator capacity
+retention first, including explicit accounting, output-generation validity,
+drain/poison/cleanup and independent off/on qualification. Its contract, exact
+planned entrypoints and owner matrix are in the performance specification.
+Prefill topology retention follows only after profiling the resulting residual
+cost; R2 stream bridging and fused input-plus-compute remain conditional.
+
+Three attempted combined Nsight/interposer captures (`annotated`, `app`, `clock`)
+abort during loading before any request completes. The first two terminate under
+NVTX interposition; the third records `Expected shared object name, found a path
+delimiter`. Their reports and diagnostics are preserved and excluded. Plain
+Nsight succeeds twice; the separate C clock interposer succeeds. This is a
+profiling-combination limitation, not evidence of a product failure or gain.
+CUDA hardware counters still need the previously recorded Windows-host permission
+change; the unchanged refusal was not retried and host security settings were not
+changed.
+
+Author verification: both trace integrity checks, complete request/graph count and
+status assertions, five-run output/count comparison and unchanged product/source
+identity checks pass. Documentation consistency, `git diff --check` and the Python
+boundary guard are the checkpoint owners; source builds/tests and publication
+preflight are not rerun for this documentation-only delta. The old workspace C
+owner's F32 KV fixture failure is explained by its 64-byte budget versus the
+pinned CUDA buffer's 128-byte alignment; it is not passing B2 evidence. Planned
+retention owners must use backend-aligned allocation accounting from construction.
+
+One fresh independent comprehensive review of this five-document checkpoint
+found one P2 design issue and no measurement issue: existing native Q6 admission
+can allocate its helper during dry planning, while finish/cancel resets the owner
+without closing that helper. The accepted repair makes retain-mode dry planning
+refuse native-helper combinations before side effects, covers both selection
+orders and preserves cleanup ownership. The closure matrix now names finish,
+cancel and partial-construction qualifications. This is a design correction;
+the legacy mode 0 combination is unqualified, and no source fix is claimed here.
+The reviewed candidate, complete finding, disposition and final file identities
+are retained in `review-candidate.json`/`review-result.json`; the original evidence
+manifest is preserved as `reviewed-evidence-manifest.json`. No finding remains open.
+
+The useful lesson from this bounded investigation is to profile shape transitions
+and first uses as well as warmed identical requests. The two successful traces
+retain graph-capture variability, and source inspection distinguishes allocation
+reuse from topology reuse. No additional permanent repository gate is introduced.
+
+## 2026-10-01 B2 retained workspace implementation
+
+The user authorized implementation of the reviewed post-B1 design. The retained
+Qwen3.5 session now exposes `ALIGN_LLM_RETAIN_WORKSPACE=0|1`, absent = 0;
+empty/unknown selections refuse before admission. Align admits mode 1 only on
+CUDA, for ordinary and HTTP/SSE consumers. Head and decode-input batch selection
+remain independent. No default change or publication is selected.
+
+### Implementation and ownership
+
+The native owner keeps its existing single gallocr across graph invalidation,
+including the state with no prepared graphs. Rebuild still drains helpers,
+clears workspace bindings, measures every live graph, checks the admitted budget,
+reserves the actual topology and rebinds all live graphs. The larger retained
+capacity is counted against admission. No second device arena, copied weights,
+prefill cache or ggml patch is added.
+
+A checked content generation invalidates all old results before rebind or compute;
+only successful compute stamps the current graph. Failed/unprepared/stale reads,
+including the cached slot fast path, refuse. Native-head readiness is cleared.
+Graph execution/reuse counters retain their existing meaning. Device close frees
+one allocator after draining. The mode-1 helper/dry-planning exclusion covers
+both selection orders, defensive admission/reset refusal, finish/cancel and
+partial construction, as settled by the design review.
+
+The C owner adds **40 bytes** versus the preceding state layout, within the
+64-byte scalar ceiling. The separate host diagnostic measures gallocr-owned
+malloc usable extents using declarations extracted from the exact pinned source:
+peak **524,432 bytes** in both arms; final **506,832 / 524,432 bytes** off/on.
+This covers the allocator, hash/node/leaf arrays, virtual buffer and dynamic
+allocator/chunks; it excludes backend-private CUDA/runtime host storage. It is
+not an addition to the fixed metadata observation or an RSS decomposition.
+`layout.json`, the probe and diagnostic source preserve the layout provenance.
+
+### Qualification and replay
+
+Branch/head/base remain `agent/cuda-q4-repack-plan` / `687acd3`; Align remains
+`b20429be50d6ab889496a0589143320683b29aeb`, ggml
+`bb4caa7540188872173c44d161602d9271386413`. Host, model and admitted budgets
+are the same RTX 4070 Ti/Qwen3.5-2B Q4_0 subjects as the post-B1 profile.
+External bundle `workspace-retain-20261001` preserves the exact prior working-tree
+snapshot, B2 diff, source/artifact hashes, inputs, raw traces/responses and logs.
+
+With `B2_DIR` set to that bundle and its authenticated `inputs.env` loaded, the
+completed owners are:
+
+```sh
+make check
+scripts/alignc check-per-unit src/runtime_qwen35_generation.align
+make fmt
+make build
+WORKSPACE_RETAIN_NATIVE_SHIM="$B2_DIR/shim" \
+  scripts/run-gpu-workspace-retention-smoke \
+  "$QWEN35_LLAMA_SOURCE" "$ALIGN_LLM_GGML_LIB" "$GPU_PLUGIN"
+QWEN35_WORKSPACE_RETAIN_OWNER=1 scripts/run-qwen35-native-q6-head-smoke
+ALIGN_LLM_RETAIN_WORKSPACE=1 ALIGN_LLM_NATIVE_Q6_HEAD=1 \
+  ALIGN_LLM_BATCH_DECODE_INPUTS=1 ALIGN_LLM_PREFILL_CHUNK=128 \
+  scripts/run-openai-serving-smoke
+python3 scripts/check-python-boundary
+git diff --check
+```
+
+Build uses the explicitly named pinned ggml include/library directories and
+`ALIGN_LLM_NATIVE_CUDA=1`, with its shim in the external bundle. `make check`
+checks 169 units; the narrow owner checks 38. C11/O2/warnings-as-errors owners
+pass ordinary, reserve, bind and first-allocation-failure builds. They use real
+backend-aligned weights/KV/input extents, three distinct graph layouts, known
+output values, repeated growth/shrink and both decode kinds, exact/below budgets,
+malformed key/selector/state, checked generation exhaustion, cached stale-output
+refusal, empty retained capacity and exactly-once allocator release. Partial-bind
+failure occurs after the first binding while another live graph remains pending.
+Native Q6/copy construction is exercised in both selector orders and after
+finish/cancel, including partial metadata and initial allocation failure.
+
+The real owner compares exact complete logits and valid state at 31, 127/128/129,
+200, 255/256/257, 330, 511/512/513 and 2048 inputs, then all four head/batch
+combinations. Default/off/on retained short/wide/short/max/short, invalid-request
+recovery, one-token exit, early EOG and tight-budget refusal pass. HTTP/SSE pinned
+oracle parity, disconnect/recovery, refusals, shutdown and restart pass.
+
+Both real `workspace-retain-reserve|bind` shim builds pass their disabled controls
+and produce a failed worker envelope without partial output in mode 1. Selected
+native-head and native-copy completion faults also pass with retention enabled,
+using freshly built B2 shims, not ABI-incompatible older state layouts. The
+existing CUDA copy owner plus the external paired copy validator qualifies
+native-state-copy interoperability; its legacy chunk-512 fixture is not a new
+B0 chunk-size adoption qualification. Focused Compute Sanitizer memcheck/leak-check
+on ordinary growth and partial bind reports **0 errors and 0 leaked allocations**.
+Fault-build, model-fault, helper, copy and `memcheck-*` logs retain exact results.
+Shell/Python syntax, real/unavailable stub builds and Python boundary checks pass;
+there is no new Align gap. Publication preflight is N/A: no commit or publication
+is requested. All product execution/allocation decisions remain in Align/the shim.
+
+### Allocation and memory result
+
+Two 26-request off/on node traces and two separate 26-request host diagnostics
+replay the complete post-B1 shape sequence. All **104** output/count comparisons,
+SQLite integrity checks and host status/compute counts pass. All 26 pre-head and
+decode kernel-name/count multisets agree off/on. Nsight uses the same CUDA/NVTX
+node tracing, with CPU sampling disabled for this allocation comparison; the
+host clock/metadata interposer is never combined with Nsight. Replay commands are:
+
+```sh
+PROFILE_LABEL=retain0 RETAIN_MODE=0 nsys profile --trace=cuda,nvtx,osrt \
+  --sample=none --cuda-graph-trace=node --force-overwrite=false --duration=180 \
+  --output="$B2_DIR/retain0" python3 "$B2_DIR/profile_shapes.py"
+PROFILE_LABEL=retain1 RETAIN_MODE=1 nsys profile --trace=cuda,nvtx,osrt \
+  --sample=none --cuda-graph-trace=node --force-overwrite=false --duration=180 \
+  --output="$B2_DIR/retain1" python3 "$B2_DIR/profile_shapes.py"
+PROFILE_LABEL=host0 RETAIN_MODE=0 LIFECYCLE=1 python3 "$B2_DIR/profile_shapes.py"
+PROFILE_LABEL=host1 RETAIN_MODE=1 LIFECYCLE=1 python3 "$B2_DIR/profile_shapes.py"
+```
+
+| Request | CUDA malloc/free calls off → on |
+| --- | ---: |
+| Repeated 56/16 | 4 → 0 |
+| Repeated 200/32 | 8 → 0 |
+| Repeated 330/64 | 12 → 0 |
+| First 2048/3 after shape growth | 72 → 6 |
+
+A call is one malloc or free; the earlier profile reports pairs. Growth still
+requires replacement. Input + workspace + native-head peak remains **16,613,592
+bytes** over the complete identical shape sequence. Its final residency changes
+from **3,310,040 to 16,613,592 bytes**, an extra **13,303,552 bytes**; small requests
+after a larger one can have higher individual residency. Both graph-launch and
+changed-shape recapture behavior remain: representative repeats have 15/31/63
+decode launches; short-after-max recaptures two decode graphs in both arms.
+Prefill topology reuse is not supplied by retaining allocation capacity.
+
+### Complete-request performance and decision
+
+Two campaigns each contain five alternating pairs of twenty requests per arm
+at 56/16, 200/32 and 330/64: **1,800 measured Align requests** total across
+same-binary off/on and the preserved B1 binary. Exactly two warmup requests per
+arm/case are kept; the new mode does not repeat the candidate warmup when
+checking the preserved arm. Binary/shim and staged CUDA mapping identities are
+verified in all three workers in both campaigns. Every measured output/count
+agrees. Original logs and all sample vectors are retained without exclusions.
+
+Positive values below mean candidate saving. The same-binary/prior figures are
+checked against exact integer-nanosecond sample vectors. Llama figures retain the
+original printed summary, rather than reconstructing it from rounded pair text.
+
+| Input/output | Same-binary saving, campaign 1 / 2 | Off/on wins | Saving vs preserved B1, campaign 1 / 2 | Saving vs pinned llama, campaign 1 / 2 |
+| --- | ---: | --- | ---: | ---: |
+| 56/16 | 2.292 / 2.277 ms | 5/5; 5/5 | 2.274 / 1.771 ms | 22.266 / 20.620 ms |
+| 200/32 | 2.922 / -1.632 ms | 5/5; 2/5 | 3.054 / 0.563 ms | 20.714 / 13.019 ms |
+| 330/64 | 1.737 / 1.777 ms | 4/5; 5/5 | 4.131 / 1.114 ms | 24.693 / 29.993 ms |
+
+Preserved-B1 wins are 3/5 then 5/5, 5/5 then 4/5, and 3/5 then 3/5; the wider
+preserved-binary comparison remains noisy. All six llama comparisons win 5/5.
+The established comparison is asymmetric: Align measures complete retained
+JSON request/response wall time; llama's reference interval covers prefill/decode
+inside its loaded benchmark, with tokenizer/render/transport work outside it.
+No equal-boundary llama speed claim, load gain or hardware-counter claim follows.
+Both captures retain first use and changing-shape behavior separately; profile
+wall times are not the uninstrumented adoption campaign.
+
+Run each campaign with `QWEN35_CUDA_MEASURE_MODE=workspace-retain`,
+`QWEN35_CUDA_PAIR_REQUESTS=20` and the authenticated B1 baseline. The retained
+`run_campaign.py campaign-1|campaign-2` adds mapping attestation to the checked-in
+`scripts/measure-qwen35-native-cuda` owner; each invocation is bounded by 900 s.
+`campaign-summary.json`, `allocation-summary.json`, trace/host summaries and
+raw logs own the full samples and uncertainty.
+
+Allocation removal and exact correctness are established. Short and wider
+same-binary gains repeat, while the 200/32 timing result does not. Keep the
+qualified opt-in trial with default 0; do not claim a uniform/default adoption or
+extend it into another optimization. Conditional prefill metadata/topology reuse
+and backend stream bridging remain outside this capability.
+
+One fresh independent comprehensive adversarial review of all 15 B2 delta files
+against the exact prior start-tree snapshot is **CLEAN**, with complete findings
+**none**. Reviewer `/root/workspace_retention_review` verified candidate bytes and
+modes, all 107 manifested artifact hashes, campaign reductions, all 104
+output/count comparisons and all 26 paired kernel multisets. Reviewed head, base
+tip and merge base are `687acd3312220742ad013595951e0d8c5b966e16`; candidate
+manifest SHA256 is
+`af79b7306191b49fa9298b18a52fb33ec6423a36a855d50b8028769b876f26a5`,
+diff SHA256 is
+`514b5d94ed326056775696dbdd3fcb1d27f3b5a3074efc30d3b68559734e5a94`,
+and evidence manifest SHA256 is
+`7c8a30314418a1d698fb1418b2b4a3a4e75aaab332598f7b8487cd94df56e543`.
+Inspection did not edit files or run GPU workloads. `review-result.json` retains
+the full envelope and final file identities; no finding or implementation repair
+remains. The post-review delta only records completion here and in `HANDOFF.md`;
+documentation consistency and diff checks pass without repeating source owners.
+
+The bounded lesson is that removing physical allocations establishes the
+mechanism, while complete-request gains still need repeated same-binary pairs
+and the preserved baseline. Shape transitions and increased retained residency
+must remain in the evidence. This adds no permanent gate or follow-on scope.
+
+## 2026-10-01 B3 prefill graph-cache diagnosis and design
+
+The user requested preparation through the point before implementation for
+prefill graph reuse. This checkpoint changes five developer documents and runs
+external measurement only. The authoritative B3 ledger and closure matrix are
+in `docs/specs/gpu-runtime-performance.md`. Product source, the B2 artifact,
+compiler/backend pins and the preceding B1/R1 work remain unchanged. No B3
+implementation, speedup, publication or default adoption is claimed.
+
+### Subject and evidence
+
+Branch/head/base remain `agent/cuda-q4-repack-plan` /
+`687acd3312220742ad013595951e0d8c5b966e16`. The subject is the authenticated
+B2 binary SHA256
+`93c4e39ee61845710b4233ee13eb90d538ade55bc1ff4de4c5e38dc7a4d730f7`
+and shim
+`09fbeb900e8e29404a70f9ad5709f69baceb4cabe5c3e60a28ad140f841f20c3`,
+with the same RTX 4070 Ti, Qwen3.5-2B Q4_0 model, CUDA 13.3.73/driver 610.62,
+WSL2, managed Align pin and pinned ggml as B2. Loaded binary/shim paths and
+device/inode/digest mappings are checked while each worker is alive, including
+the staged CUDA plugin
+`ec1ddd96247a97ba6f2a564301efca6a1e9b479f29b6bdb9d166ead2bbb4f774`.
+The six inspected allocator/CUDA/header sources match the named ggml commit.
+The checkout's pre-existing `common/debug.cpp` and eval-callback diagnostic
+edits are recorded separately; no fresh backend build is used for this evidence.
+
+The existing `retain1` B2 node trace supplies GPU launch evidence; it is not
+recaptured or represented as a new trace. Two additional 26-request host
+diagnostics use B2 with head/batch/retention 1, chunk 128 and the other native
+copy modes 0. The exact sequence is B2's three requests each at 56/16, 200/32,
+330/64, 56/16 and 200/32, then 127/128/129, 255/256/257, 511/512/513 with four
+outputs, 2048/3 and short-after-maximum 56/16. Every first use is retained.
+
+The diagnostic forwards `align_ggml_graph_new` and `align_gpu_graph_prepare`
+unchanged, brackets construction and preparation separately, and reads context
+use/capacity, exact key, first-node offset, node count and structural/pointer
+fingerprints. The structural FNV fingerprint covers type/op, dimensions,
+strides, op parameters, view offsets and source dimensions/strides; it is a
+diagnostic, not a replacement for ggml's complete property comparison or the
+product's SHA256 key. No metadata, binding, input or graph policy is mutated.
+The first run inherits the ggml environment; the confirmation explicitly removes
+both `GGML_CUDA_DISABLE_GRAPHS` and `GGML_CUDA_GRAPH_OPT` from the child and
+records that selection. All structural/key/metadata observations agree across
+both runs. All **52** outputs/counts agree with the prior B2 fixture responses.
+This is diagnostic parity, not fresh full-logit/state qualification.
+
+External `prefill-reuse-plan-20261001` contains the start-tree snapshot, diagnostic
+sources/binaries, both raw responses/stderr/mappings, reducer, source identities
+and evidence manifest. With `B3_DIR` set to a fresh bundle and `GGML_SOURCE` to
+the exact pinned checkout, replay is:
+
+```sh
+cc -shared -fPIC -O2 -Wall -Wextra -Werror -I "$GGML_SOURCE/ggml/include" \
+  "$B3_DIR/topology-clock.c" -o "$B3_DIR/topology-clock.so" -ldl
+PROFILE_LABEL=topology RETAIN_MODE=1 LIFECYCLE=1 timeout 180 \
+  python3 "$B3_DIR/profile_topology.py" \
+  > "$B3_DIR/topology.jsonl" 2> "$B3_DIR/topology-driver.log"
+PROFILE_LABEL=topology-confirm RETAIN_MODE=1 LIFECYCLE=1 timeout 180 \
+  python3 "$B3_DIR/profile_topology.py" \
+  > "$B3_DIR/topology-confirm.jsonl" 2> "$B3_DIR/topology-confirm-driver.log"
+python3 "$B3_DIR/reduce_topology.py"
+cc -O2 -Wall -Wextra -Werror -I "$GGML_SOURCE/ggml/include" \
+  "$B3_DIR/layout-probe.c" -o "$B3_DIR/layout-probe"
+"$B3_DIR/layout-probe"
+```
+
+Stdout/stderr are retained under each label's JSONL/driver log; the caller writes
+the matching worker stderr/mapping files. The retained current caller explicitly
+sets the ggml flags for both replay runs; the original first run's inherited
+environment is not retrospectively attested. Storage was 4.2 GiB free before
+work; the diagnostic adds no Nsight report/model copy and stays below the
+1-GiB evidence ceiling. No cleanup or hardware-counter permission change was
+needed. Product builds/tests were not rerun for this design-only delta.
+
+### Residual cost and cache choice
+
+The following are rows 1/2 of each initial three-request group. Host columns
+come from the separate first diagnostic; GPU columns come from the existing B2
+node trace. They must not be added or treated as uninstrumented savings.
+
+| Input/output | Host graph construction, two repeats | Host preparation, two repeats | Pre-head GPU kernels | Pre-head graph launches |
+| --- | ---: | ---: | ---: | ---: |
+| 56/16 | 0.459 / 0.405 ms | 0.790 / 0.669 ms | 992 / 992 | 0 / 1 |
+| 200/32 | 0.832 / 0.867 ms | 1.400 / 1.318 ms | 1,951 / 1,951 | 0 / 0 |
+| 330/64 | 1.395 / 1.157 ms | 2.143 / 1.933 ms | 2,880 / 2,880 | 0 / 0 |
+
+The short-return group already replays prefill in both repeated requests; the
+200-token return group still does not. Thus B3's principal launch opportunity
+is multi-chunk prefill, while short inputs primarily offer metadata reuse.
+In the 200/32 repeats, traced pre-head wall time is 34.040/25.738 ms and GPU
+union is 16.412/16.453 ms; tracing and unavoidable work occupy the difference.
+It is not a prediction that the difference can be removed. The launch API can
+overlap GPU work, and its instrumented duration is not an additive opportunity.
+
+Each diagnostic observes **68** prefill builds and **28** exact keys. All
+first-node offsets are **82,640 bytes** before and after optimize, and each key
+has one structural fingerprint. Maximum context use is **509,488 bytes** and
+maximum graph size is **1,159 nodes**. Each decode context's first-node offset
+is 83,008 bytes. These support fixed-slot feasibility but do not prove stable
+bindings or CUDA replay after implementation.
+
+| Fixed slots, ordinal modulo capacity | Simulated hits / misses over 68 chunks |
+| --- | ---: |
+| 3 | 29 / 39 |
+| **4, selected** | **33 / 35** |
+| 8 | 34 / 34 |
+| 16 | 34 / 34 |
+
+This is offline exact-key simulation on the observed sequence, not a benchmark
+of cache implementations. Four slots cover every chunk of the main 56/200/330
+workloads and sacrifice one modeled hit versus sixteen in this sequence. With
+fixed chunk 128, the complete <=2048 prompt space has 2,063 possible final or
+nonfinal topology keys under the selected final-logits policy; prebuilding them
+would be inappropriate. The design keys exact offset/count/KV width/parity and
+output form, not just the four-way index or padded width.
+
+Keep the existing **24 MiB** per-context capacity. The observed 0.49 MiB is not a
+safe general upper bound: unreferenced construction tensors occupy context
+storage, and existing Qwen geometry admits more layers. A smaller arena would
+need a separate allocation bound or checked-construction change because pinned
+ggml metadata exhaustion is fatal. Four slots raise metadata admission from
+96 to **168 MiB**, an added 72 MiB, versus 456 MiB for sixteen. Added bookkeeping is capped at
+64 KiB, including one **4,160-byte** Align slot buffer; the exact minimum host
+admission is **210,829,312 bytes** with existing staging/application allowances.
+This is reserved/allocated capacity; no physical RSS increase is established yet.
+
+The pinned layout probe reports `sizeof(ggml_tensor)=336` and CUDA
+`node_properties=1056` bytes. Six possible backend graph identities bound the
+number of vectors/graph executables, not their allocated byte sizes. Vector
+capacity and CUDA graph/driver memory must be measured during implementation.
+The authoritative ledger fixes explicit reservation, +128-MiB RSS and +64-MiB
+backend-device qualification ceilings before coding. No budget discount is made
+for presumed lazy page residency, and no opaque allocation is called tensor
+workspace.
+
+### Implementation boundary and completion conditions
+
+The selected capability adds an explicit default-off graph-cache selector,
+four native metadata entries, checked activation and release, persistent Align
+slot tables, and the same reuse branch for ordinary and streaming consumers.
+Cache hits refresh every input and execute the full graph. Successful request
+release clears result/readiness grants while retaining topology; failure recovery
+clears all entries, and poisoned owners require teardown. Slot collisions and
+workspace growth must rebind every parked graph before it becomes usable.
+
+Before optimization, all four prefill and both decode contexts must retain their
+first-node identity; nonzero graph UID shortcuts remain unused. The initial
+trial requires ggml graphs enabled and its concurrent graph optimizer disabled.
+Backend TTL recapture is allowed. Capture warmup comes from subsequent real
+requests, never an extra execution that would mutate recurrent/KV state.
+The pinned backend needs no new deletion/stream bridge for this bounded design.
+Existing borrowed-buffer and FFI surfaces suffice; no new Align gap was found.
+
+Implementation acceptance explicitly covers both head/batch selections, decode
+state-copy interoperability, full logits/state, equal-shape different-content
+requests, 513/1024/2048 collisions, growth/stale-result/failure owners, SSE
+disconnect/recovery, first use, idle return and complete-request measurements
+against same-binary off/on, authenticated B2 and pinned llama. The ledger names
+the exact future owner commands; none are claimed run at this checkpoint.
+Repeated long prompts can thrash four slots, and unqualified memory overhead
+blocks adoption. R2 and further kernel tuning are outside this capability.
+
+Author verification passes: both diagnostic exits, all 52 response/count
+comparisons, both runs' exact key/structural/metadata agreement, offline slot
+simulation, pinned layout probe, subject/source authentication, ledger/receipt
+memory arithmetic, Python boundary and `git diff --check`. Only five Markdown
+files differ from the preserved start tree. Source owners and publication
+preflight are N/A for this uncommitted design-only checkpoint. The fresh
+comprehensive review binds that exact delta and the external evidence manifest.
+
+The bounded lesson is to preserve a proven per-graph allocation allowance and
+limit entry count, while measuring actual use separately. A small observed
+context does not justify shrinking its safety capacity. No permanent gate or
+unrelated optimization is added.
+
+One fresh independent comprehensive adversarial review of the five-document B3
+delta and supporting evidence is **CLEAN**, complete findings **none**. Reviewer
+`/root/prefill_cache_design_review` independently reproduced the delta/reducer,
+verified candidate modes and all manifested/referenced identities, and checked
+all 52 output/count/status results and 82 cross-run topology events. Reviewed
+head, base tip and merge base are
+`687acd3312220742ad013595951e0d8c5b966e16`; candidate SHA256 is
+`bd4cd1e38ea2911719d6f91c4e3c0b05ac5d060a715c8eaed499698068ede067`,
+diff SHA256 is
+`91203374f9adbf2cd5077d51da829d6359b316eb1541c372afbd7d1d7c2b9166`,
+and evidence-manifest SHA256 is
+`aedc16b2fe52d6dbf6748a1d27d2411e64271f39f1fc4b3c21172cd11080e6ec`.
+`review-result.json` retains the full envelope and final identities. Only
+completion/status records in this receipt, the ledger and handoff changed after
+review; no contract repair or implementation change was required. Final
+documentation consistency and diff checks pass. All named implementation
+qualifications remain future work, and this user-requested checkpoint stops here.
+
+## 2026-10-01 B3 prefill graph-cache implementation
+
+The user authorized the reviewed four-entry B3 contract. Implementation connects
+ordinary retained generation and streaming through the same native cache owner;
+selection remains default off. The B3 ledger in
+`docs/specs/gpu-runtime-performance.md` remains authoritative. No kernel,
+arithmetic, chunk size, model artifact, compiler pin or HTTP format changes.
+The existing intentional B1/R1/B2 working-tree changes remain preserved context.
+
+External `prefill-cache-20261001` retains the initial diff/reconstructed start
+tree, source identities, native binaries/shims, mapping attestations, every raw
+sample, complete state/logit qualification, separate host diagnostics and Nsight
+reports. `inputs.env` names the authenticated artifacts; use its recorded values
+with the commands below. HEAD/base/merge base remain
+`687acd3312220742ad013595951e0d8c5b966e16` on `agent/cuda-q4-repack-plan`.
+
+### Implementation and closure
+
+The three new native/Align ABI surfaces select, activate and release four fixed
+24-MiB contexts. Entries copy exact keys and retain graph/native-head/row metadata;
+the active PREFILL fields are aliases. Hits drain/advance content generation,
+restore topology and invalidate results, then receive fresh 0/1/2/7 inputs. Misses
+reset only the selected entry and publish after support/anchor/binding checks.
+Rebuild includes every parked entry and both decode graphs, once in stable order.
+Successful request release preserves bindings; recovery clears every entry.
+Poisoned input/weight/KV/observation/workspace states refuse activation, graph
+lookup/compute and release. Partial construction poisons and retains ownership
+for exactly-once teardown. Both decode anchors survive invalidation, bounding
+backend keys to six without assigning graph UIDs or modifying pinned ggml.
+
+| Contract/closure owner | Passing focused evidence |
+| --- | --- |
+| Native selector, context spans, copied keys, malformed/pending state, collisions, hit counters, anchors, inactive/stale reads, clear and cleanup | `scripts/run-gpu-prefill-graph-cache-smoke "$GGML_SOURCE" "$GGML_LIB" "$GPU_PLUGIN"`: ordinary/open/publish/reserve/bind variants; all four partial construction positions, shifted first nodes in prefill/both decode, generation/poison refusal, six live bindings and partial bind with parked entries. `final-abi-owner.log` owns the reviewed source run; `repair-abi-owner.log` includes reverse selector/planning preservation and registered-index hit refusals. |
+| Complete real-model arithmetic/state and all consumers' shared cache rules | `QWEN35_PREFILL_GRAPH_CACHE_OWNER=1 scripts/run-qwen35-native-q6-head-smoke`: exact full logits/state at 31, 127/128/129, 200, 255/256/257, 330, 511/512/513, 1024/2048; both head/batch values, retained capture/replay/churn and equal-length different text, single output/EOG/reset/refusals, exact host minimum and one byte below. `review-model.log` owns final artifact evidence. |
+| Failure and helper interoperability | Fresh real `prefill-cache-open\|publish`, B2 reserve/bind and Q6/copy completion shims; disabled controls pass and selected construction/request fails without ready/partial output. Construction failure uses the existing empty-output startup envelope; runtime failure uses the framed failed envelope. External `qualify_faults.py` / `qualify_copy.py`, `final-fault-owner.log` / `final-copy-owner.log` retain six faults and exact CUDA decode-copy logits/state at 31/200/330. |
+| Streaming, disconnect, recovery and shutdown | `ALIGN_LLM_PREFILL_GRAPH_CACHE=1 ALIGN_LLM_RETAIN_WORKSPACE=1 ALIGN_LLM_PREFILL_CHUNK=128 ALIGN_LLM_NATIVE_Q6_HEAD=1 ALIGN_LLM_BATCH_DECODE_INPUTS=1 scripts/run-openai-serving-smoke`: pinned oracle parity, HTTP/SSE, refusals, post-first-token disconnect/recovery, shutdown/restart pass in `final-serving-owner.log`. External `qualify_cancel.py` runs this oracle plus traced pre-first-token cancellation and subsequent ordinary/stream parity; `repair-serving-owner.log` and `repair-cancel-proof.json` qualify both disconnect timings. No serving implementation change is needed. |
+| Resource lifetime and malformed allocation paths | Focused `compute-sanitizer --tool memcheck --leak-check full --error-exitcode 99` on ordinary growth/collision/partial construction and parked partial-bind owners: **0 errors, 0 bytes leaked in 0 allocations**. `final-memcheck-ordinary.log` / `final-memcheck-bind.log` identify their exact reviewed owner; `repair-memcheck-ordinary.log` repeats the expanded selector/index owner with the same zero-error/zero-leak result. |
+| Compiler/developer boundary | `make check` 169 units; generation `check-per-unit` 38 units; native `make build`, `make fmt`, unavailable static stub build, shell/Python syntax, Python boundary and `git diff --check` pass. No new Align gap or pin adoption. Publication preflight is N/A: no commit/publication requested. |
+
+### Mechanism and cost
+
+Four separate 37-request diagnostics preserve **148** outputs/counts, including
+all shape boundaries, repeated 512/513/1024/2048 and an 11-second idle return.
+Nsight off/on request, pre-head and decode kernel-name/count multisets match for
+all 37 requests; SQLite integrity passes. Instrumentation is excluded from
+adoption timing. Host diagnostics show 140 prefill invocations: off rebuilds all
+140; cache mode has **50 hits / 90 misses** and 90 prepares. Decode prepares stay
+11 per kind. Actual metadata use remains at most 509,488 bytes per context.
+
+| Repeated request's pre-head work | Cache off | Cache on |
+| --- | ---: | ---: |
+| 56/16, third request | 992 kernels, 1 launch + first capture | 992 kernels, 1 launch, no new capture |
+| 200/32, third request | 1,951 kernels, 0 graph launches | 1,951 kernels, 2 graph launches, no new capture |
+| 330/64, third request | 2,880 kernels, 0 graph launches | 2,880 kernels, 3 graph launches, no new capture |
+| Repeated 1024/2048 | 0 prefill graph launches | 0 prefill graph launches; slots thrash |
+
+The second requests can pay initial capture; idle return can pay TTL warmup and
+recapture. Preserve these and adverse changed-shape samples rather than deriving
+a request gain from traced intervals. `cache-cost.cu` reads the exact pinned
+backend layout without changing it: peak keys/captures rise 3->6; allocated node
+property vector capacity rises 4,722,432->7,237,824 bytes, +2,515,392. Fixed arena
+reservation adds **72 MiB**, not that small observed used extent. Native state
+grows 8,104->9,216 bytes (+1,112); the four-entry table is 4,160 bytes, for 5,272
+added explicit bytes before Align handle/allocator overhead, below the 64-KiB
+allowance. Exact admitted host minimum remains **210,829,312 bytes**.
+
+Host peak RSS is 527,446,016->556,793,856 bytes, **+29,347,840** (<128 MiB).
+Raw CUDA device-used peak is 2,654,470,144->2,677,538,816 bytes,
+**+23,068,672** (<64 MiB). CUDA reports shared device use; same-process
+peak-minus-after-close is **1,302,331,392 in both arms**, cancelling the 22-MiB
+baseline offset. The serial GPU interval has no other compute worker, but display
+use/driver context caches remain limits; these are controlled observations,
+not a universal opaque allocation guarantee. Explicit tensor accounting and
+all model/input payload stay within the unchanged B2 workload admission/peak.
+
+The mechanism traces/first host screen use the identified initial B3 shim;
+subsequent closure work only strengthens failure/poison refusal. Final performance
+and qualification authenticate the final shim separately. All initial artifacts
+and samples remain retained; no failed or slower run is removed.
+
+### Whole-request assessment
+
+Final `main` SHA256 is
+`6b9608b6b12f1e64178bac1abe07d627b1435d4bc86a678c54ab0aba8163f44a`;
+final shim SHA256 is
+`dc440d998a4100b08d77387f68daa5f0d5f7198924ffbcc3c434c60da120cc4a`.
+Campaigns 3/4 authenticate both and actual loaded CUDA mappings. Each keeps
+900 timed Align requests (three arms), exactly two warmups per arm/case, five
+alternating pairs of twenty requests and one loaded llama interval per pair.
+All actual work/output checks pass. Campaigns 1/2 are retained exploratory
+evidence before final failure-guard consolidation; they are not substituted
+for the final 1,800-request result. `reduce_campaigns.py` reproduces every exact
+same-binary/B2 median from all 3,600 retained samples and checks printed precision.
+
+| Prompt/output work | Same-binary off minus on, campaigns 3 / 4 | Preserved B2 minus on, campaigns 3 / 4 | Pinned llama minus on, campaigns 3 / 4 |
+| --- | ---: | ---: | ---: |
+| 56 / 16 | 2.541 / 1.658 ms | 1.888 / 1.787 ms | 20.486 / 22.773 ms |
+| 200 / 32 | 10.548 / 11.355 ms | 12.690 / 13.320 ms | 30.751 / 28.978 ms |
+| 330 / 64 | 15.503 / 18.008 ms | 16.905 / 19.513 ms | 43.153 / 47.645 ms |
+
+Every comparison wins **5/5 pairs** in both final campaigns. These are paired
+median **savings**, not execution durations. Median pair-mean final on latencies
+are 67.420/68.010, 143.490/143.296 and 279.773/280.957 ms. Same-binary controls
+are 69.707/69.488, 154.361/153.408 and 295.276/298.965 ms; preserved B2 is
+69.274/69.798, 154.774/157.504 and 297.835/300.311 ms. Do not subtract unrelated
+aggregate medians to recreate the paired statistic. Align measures inclusive
+retained JSON request wall time; llama measures its existing loaded inner
+prefill/decode interval, excluding rendering/tokenization/transport. No equal-CLI
+boundary or first-load/TTFT claim is made.
+
+Final host-screen repetition (`host-final-*`) preserves another 74 outputs/counts,
+again 50 hits/90 misses, six keys/captures and identical property-vector bounds.
+RSS is 527,171,584->556,318,720 bytes, **+29,147,136**; raw device peak delta is
+again 23,068,672 bytes and close-normalized delta zero. Final native failure/copy,
+serving and expanded ABI logs are `final-*-owner.log`; final sanitizer logs
+cover the frozen lifecycle owner. The Align-only oversized-index execution
+fixture is explicitly deferred in the ledger; its checked wrapper and bounded
+product derivation are inspected. Native malformed index/key/foreign graph and
+exact/below workspace boundaries execute against the real backend.
+
+Retain the qualified default-off opt-in: all three named warm-request benefits
+repeat within the trial cost screen, while long-input thrashing, initial capture,
+TTL return, other models/hosts and shared driver attribution remain limits.
+The sole comprehensive implementation review is complete. Its two P2 findings
+identify missing acceptance evidence, not a demonstrated product defect: reverse
+selector/planning and invalid cached row indices; and pre-first-token disconnect.
+Both are accepted and resolved together in a local owner/validation repair.
+No commit/publication is requested. The bounded lesson is to retain topology only after result/row grants
+are invalidated, and audit every failed-state family across activation, lookup,
+compute and recovery; four failure-family fixtures prevent partial poison checks.
+
+The repair native owner verifies refusals preserve the entire owner state in
+both selection orders. CUDA cannot select the excluded Metal-only helpers;
+the fixture checks that early refusal and separately injects selected policy
+flags to execute the backend-neutral cache guard. This is not Metal execution
+evidence. A real indexed KV graph registers four I32 rows, consumes them once,
+then refuses missing, malformed/short/offset and stale grants on repeated cache
+hits; a fresh refresh computes known changed values with one prepare/two reuses.
+All five owner variants pass. The first new fixture invocation exceeded its
+64-byte upload staging limit; `repair-abi-initial-fixture.log` is preserved and
+the corrected owner uploads in four bounded chunks. No product repair was needed.
+
+External `cancel-trace.c` forwards activation/compute/release unchanged and
+records monotonic completion times. `qualify_cancel.py` extends the existing
+HTTP/SSE oracle with a long legal prompt, waits for activation in the independent
+trace, then resets the socket before reading any response. The proof records
+reset before final prefill completion, no decode execution, successful clear-0
+release, and exact following ordinary/stream output. The original post-content
+disconnect and complete serving owner also pass. Instrumentation is used only
+for this qualification, never performance. Product source/binary/shim and every
+measurement sample remain byte-identical to the reviewed candidate. The repair
+delta stays within the two recorded acceptance cells; no second comprehensive
+review is required under the narrow-repair rule.
+
+The fresh independent reviewer is `/root/prefill_cache_implementation_review`;
+kind/scope is a comprehensive high-effort adversarial inspection of the complete
+16-file B3 implementation/performance delta. Reviewed head, base tip and merge
+base are `687acd3312220742ad013595951e0d8c5b966e16`. Original verdict is
+**FINDINGS**, with exactly the two P2 evidence findings above and no other
+finding; both dispositions are **accepted/resolved**. Candidate SHA256 is
+`9925aab05dca260a1cfb846c777788762b5895ced5556ac042cf69808daf43a2`,
+diff SHA256 is
+`caa682f19c615130d7ed3cc90fd8a4ccdf939139071ffd16d3df7f10b90409fb`,
+and original evidence-manifest SHA256 is
+`4b7a3753a73462f2c70106c15ec8343f85df803e44f6a8f48a070bf489eeffbe`.
+The reviewer reproduced the paired reductions and 222 diagnostic output/count
+results, inspected all affected ownership/consumer paths and authenticated
+258 source/artifact/subject objects in its final unchanged-identity pass.
+`review-result.json` preserves the complete envelope, findings/dispositions,
+repair evidence and final file identities. Consolidated repair commit and
+publication/integration preflight are `N/A`: this is uncommitted local work.

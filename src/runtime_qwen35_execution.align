@@ -17,6 +17,9 @@ pub Config {
   native_conv_copy: bool,
   native_prefill_state_copy: bool,
   native_copy_greedy: bool,
+  batch_decode_inputs: bool,
+  retain_workspace: bool,
+  prefill_graph_cache: bool,
 }
 
 pub fn read() -> Result<Config, Error> {
@@ -33,6 +36,30 @@ pub fn read() -> Result<Config, Error> {
   mut native_conv_copy := false
   mut native_prefill_state_copy := false
   mut native_copy_greedy := false
+  mut batch_decode_inputs := false
+  mut retain_workspace := false
+  mut prefill_graph_cache := false
+  match env.get("ALIGN_LLM_PREFILL_GRAPH_CACHE") {
+    Some(value) => {
+      if value == "1" { prefill_graph_cache = true
+      } else if value != "0" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
+  match env.get("ALIGN_LLM_RETAIN_WORKSPACE") {
+    Some(value) => {
+      if value == "1" { retain_workspace = true
+      } else if value != "0" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
+  match env.get("ALIGN_LLM_BATCH_DECODE_INPUTS") {
+    Some(value) => {
+      if value == "1" { batch_decode_inputs = true
+      } else if value != "0" { return Err(Error.Invalid) }
+    },
+    None => {},
+  }
   match env.get("ALIGN_LLM_SYNC_WEIGHT_UPLOAD") {
     Some(value) => {
       if value == "1" { synchronous = true
@@ -133,6 +160,20 @@ pub fn read() -> Result<Config, Error> {
       || shared_logits || neon_greedy || graph_greedy) { return Err(Error.Invalid) }
   if (shared_logits && neon_greedy) || (shared_logits && graph_greedy)
     || (neon_greedy && graph_greedy) { return Err(Error.Invalid) }
+  if prefill_graph_cache {
+    if !retain_workspace || chunk != 128 || !final_logits || last_ffn_row
+      || native_conv_copy || native_prefill_state_copy || native_copy_greedy {
+      return Err(Error.Invalid)
+    }
+    match env.get("GGML_CUDA_DISABLE_GRAPHS") {
+      Some(_) => { return Err(Error.Invalid) },
+      None => {},
+    }
+    match env.get("GGML_CUDA_GRAPH_OPT") {
+      Some(value) => { if value != "0" { return Err(Error.Invalid) } },
+      None => {},
+    }
+  }
   return Ok(Config { synchronous_weights: synchronous, prefill_chunk: chunk,
       final_prefill_logits: final_logits, last_ffn_row: last_ffn_row,
       mapped_weights: mapped_weights, shared_logits: shared_logits,
@@ -140,5 +181,7 @@ pub fn read() -> Result<Config, Error> {
       native_state_copy: native_state_copy, native_conv_copy: native_conv_copy,
       native_q6_head: native_q6_head,
       native_prefill_state_copy: native_prefill_state_copy,
-      native_copy_greedy: native_copy_greedy })
+      native_copy_greedy: native_copy_greedy,
+      batch_decode_inputs: batch_decode_inputs, retain_workspace: retain_workspace,
+      prefill_graph_cache: prefill_graph_cache })
 }

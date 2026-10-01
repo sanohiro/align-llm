@@ -53,6 +53,18 @@ pub fn update(
   return Ok(())
 }
 
+// Complete the entire borrowed batch before returning to the caller.
+pub fn update_many(
+  borrow owner: ggml_ffi.GpuDevice,
+  borrow descriptors: slice<u8>,
+  borrow payload: slice<u8>,
+) -> Result<(), Error> {
+  ggml_ffi.gpu_inputs_update_batch(owner, descriptors, payload) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(())
+}
+
 pub fn mask_prefix_slot(
   borrow owner: ggml_ffi.GpuDevice,
   index: i64,

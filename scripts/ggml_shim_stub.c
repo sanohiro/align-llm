@@ -2166,6 +2166,28 @@ int64_t align_gpu_host_reserved(void *owner) {
     return state == NULL ? -1 : state->application_host_reserved_bytes;
 }
 
+int32_t align_gpu_workspace_retain_mode(void *owner, int32_t mode) {
+    (void) owner;
+    (void) mode;
+    return ALIGN_GPU_UNSUPPORTED;
+}
+
+int32_t align_gpu_prefill_graph_cache_mode(void *owner, int32_t mode) {
+    (void) owner; (void) mode;
+    return ALIGN_GPU_UNSUPPORTED;
+}
+
+int32_t align_gpu_prefill_graph_cache_activate(void *owner, int32_t entry,
+        const void *key, int64_t key_length) {
+    (void) owner; (void) entry; (void) key; (void) key_length;
+    return ALIGN_GPU_UNSUPPORTED;
+}
+
+int32_t align_gpu_prefill_graph_cache_release(void *owner, int32_t clear) {
+    (void) owner; (void) clear;
+    return ALIGN_GPU_UNSUPPORTED;
+}
+
 int32_t align_gpu_memory_admit(
         void *owner, int64_t weights_bytes, int64_t kv_bytes, int64_t workspace_bytes,
         int64_t metadata_bytes, int64_t staging_bytes, int64_t legacy_cache_bytes) {
@@ -3269,6 +3291,13 @@ int32_t align_gpu_input_update(
     align_gpu_row_input_accept(state, index, data);
     state->input_updated_bytes += length;
     return ALIGN_GPU_OK;
+}
+
+int32_t align_gpu_inputs_update_batch(void *owner, const void *descriptors,
+        int64_t descriptor_bytes, const void *payload, int64_t payload_bytes) {
+    (void) owner; (void) descriptors; (void) descriptor_bytes;
+    (void) payload; (void) payload_bytes;
+    return ALIGN_GPU_UNSUPPORTED;
 }
 
 int64_t align_gpu_input_state(void *owner, int32_t field) {

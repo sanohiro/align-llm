@@ -143,6 +143,20 @@ pub fn invalidate(borrow owner: ggml_ffi.GpuDevice, kind: i64) -> Result<(), Err
   return Ok(())
 }
 
+pub fn prefill_activate(borrow owner: ggml_ffi.GpuDevice, entry: i64,
+  key: str,
+) -> Result<bool, Error> {
+  hit := ggml_ffi.gpu_prefill_graph_cache_activate(owner, entry, key) else {
+    return Err(Error.Invalid)
+  }
+  return Ok(hit)
+}
+
+pub fn prefill_release(borrow owner: ggml_ffi.GpuDevice, clear: bool) -> Result<(), Error> {
+  ggml_ffi.gpu_prefill_graph_cache_release(owner, clear) else { return Err(Error.Invalid) }
+  return Ok(())
+}
+
 pub fn compute(
   borrow owner: ggml_ffi.GpuDevice,
   kind: i64,

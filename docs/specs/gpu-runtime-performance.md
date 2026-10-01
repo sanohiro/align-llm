@@ -61,6 +61,8 @@ contains source inspection and compiler evidence. The
 records the local owners, paired timings and retained-trace D0 analysis.
 Runtime connection is not selected: cached savings did not establish a stable
 pressure benefit, and pressure kernel intervals did not improve.
+The later **CUDA request-bottleneck plan** below supersedes this section's
+next-experiment ordering, while preserving the completed R1 contract.
 
 #### Evidence and experiment order
 
@@ -220,6 +222,323 @@ reference clock boundaries. Full logits, valid recurrent/KV state, retained
 reset, malformed/conflicting/budget refusals and forced failure must close
 before routing adoption. Startup/load and TTFT remain separate measurements;
 this work does not claim coding time-to-passing-patch improvement.
+
+### CUDA request-bottleneck plan (2026-10-01)
+
+Status: **B1 implemented and owner-qualified; opt-in assessment**. The user resumed implementation
+after the investigation and additional traces. B0's chunk-512 qualification fails
+the existing 0.01 full-logit bound at 200 tokens (logit 0: 11.182712 at chunk 128
+versus 11.236683 at chunk 512); matching text does not qualify it. Keep chunk 128
+as B1's control and leave the default unchanged. Further B0 adoption owners and
+its performance campaign are deferred because this numeric gate already rejects
+the setting. The preceding uncommitted R1 implementation is separate.
+The [receipt](../cuda-native-optimization-log.md#2026-10-01-warm-request-bottleneck-investigation)
+owns identities, raw-sample references, reproduction and uncertainty.
+
+#### Measured priority and limits
+
+New NVTX-bounded retained requests distinguish cold setup from recurring work.
+The initial chunk-128 trace has zero warm graph instantiations/updates, 31 decode
+graph launches, and 1,955 individual prefill-phase `cudaLaunchKernel` calls.
+A later trace after disk cleanup finds two decode recaptures/updates in its
+third chunk-128 request; graph reuse is not guaranteed stable across requests.
+Chunk 512 captures prefill once in its third request and replays it in the next
+two, with 31 decode graph launches in each measured request. The earlier D0 trace was a cold one-shot request;
+its approximately 12.4 ms of graph instantiation is not a per-request saving.
+GPU active time below is the interval union of kernels, copies and memsets;
+uncovered time is not automatically removable CPU work.
+
+| Priority | Evidence | Next bounded action |
+| --- | --- | --- |
+| B0: prefill granularity, first | The existing `ALIGN_LLM_PREFILL_CHUNK=512` reduces 200/32 from 163.618 to 142.395 ms and 330/64 from 303.672 to 276.845 ms in one uninstrumented five-pair screen; both win 5/5. Each arm/pair averages five retained requests. All text/counts match. The additional 200/32 trace finds 992 prefill GPU kernels in one captured graph versus 1,951 individually launched at chunk 128, and two rather than four malloc/free pairs per warm request. | Qualify the existing setting before writing a new kernel or changing the default. Repeat with full numeric/state owners and the pinned llama reference. Mechanisms now observed: fewer chunks, less allocation churn, fewer GPU kernels and prefill graph replay. Retain the 8.086 ms first-instantiation cost and the short-case uncertainty; do not report only the fastest post-capture samples. |
+| B1: batch decode input completion, first new-code candidate | On the additional chunk-512 trace, completed choice to next backbone kernel totals 9.200–11.636 ms across 31 steps. CUDA memcpy and synchronization API intersections occupy 4.552–5.127 ms of those windows; the rest includes dispatch and host work. Four synchronous input updates remain per step. | Queue the same four updates on the existing backend stream and complete them with one barrier. Start with the synchronous batch contract below; no ggml-to-native stream bridge is needed for this boundary. Compare against the best qualified B0 control. |
+| B2: retain prefill preparation/workspace, conditional | After chunk-512 capture, pre-head wall time is 16.156/16.724 ms versus 12.580/12.582 ms of GPU activity, leaving only 3.577/4.142 ms uncovered in those samples. Two malloc/free pairs remain per request. A fresh chunk-128 request also recaptures both decode graphs, consistent with—but not proving—shared-workspace rebinding as the cause. | Follow B1 unless broader shape/first-use evidence changes the order. First retain workspace capacity rather than free/reallocate when the existing reservation suffices. Rebinding, generation identity and native borrowed pointers must remain valid. A new prefill cache is not the first choice when existing CUDA graph replay already occurs; measure varied-shape misses before designing one. |
+| R2: output-head stream bridge, later | Warm producer-to-head intervals sum to 1.804–2.171 ms per 200/32 request, with medians 52.644–58.628 us. | Lower priority than B0/B1. An explicit backend bridge and lifetime contract remain necessary. This entire interval is only an opportunity envelope, not guaranteed savings. |
+| Defer | Recurrent copies, kernel repacking, speculative/batched execution and precision changes. | State-copy GPU intervals are small and earlier copy/tail/repacking trials lack stable request gains. Reopen only when the changed workload or a new trace supports them. Speculation needs accepted-token economics; throughput is a different metric from serial request latency. |
+
+The current diagnosis supports remaining application-level headroom, not an
+unbounded kernel speedup. The Q6 bandwidth estimate above remains analytical.
+The new setting screen is neither a shipping claim nor a new paired llama.cpp
+comparison. The separate instrumented llama run reports 18.660 ms prefill and
+158.126 ms decode in its final warm iteration; different instrumentation and
+clock boundaries prevent subtracting it from the uninstrumented candidate.
+
+#### B0 qualification and adoption design
+
+Keep model/execution selection in Align. Initially use only the existing
+explicit chunk override on the authenticated Qwen3.5-2B/CUDA owner; leave the
+default 128 and other backends/models unchanged. Inputs, result schema, errors,
+allocation ownership and persisted identity retain their existing contracts;
+no new CLI, ABI, file format, process or network boundary is proposed.
+
+The useful consumer boundary is an owner-qualified retained session using the
+larger existing prefill chunk. Validate 56/16, 200/32 and 330/64 plus prompt
+boundaries 127/128/129, 255/256/257, 511/512/513 and the existing maximum.
+Cover final partial chunks, both recurrent parities, early EOG, short/wide/short
+reuse, input refusal, reset, tight budget refusal and orderly close. Compare
+full final logits and valid KV/recurrent state under the existing owner's
+numeric bounds; matching text alone is insufficient. Changed chunk arithmetic
+does not justify widening a failed tolerance.
+
+Existing starting owners are `scripts/run-qwen35-native-q6-head-smoke`,
+`scripts/run-qwen35-generation-smoke` and `scripts/run-gpu-prefill-chunks-smoke`.
+The first hardcodes chunk 512 for its one-shot full-vector checks; it does
+**not** already prove 128-versus-512 state parity or all boundary cases.
+Extend its explicit measurement/validation cases when implementation resumes,
+updating the Python classification before any checked-in Python change.
+Run `QWEN35_CUDA_MEASURE_MODE=q6-head QWEN35_CUDA_PAIR_REQUESTS=20
+scripts/measure-qwen35-native-cuda` with the authenticated inputs/reference and
+explicit chunk setting, plus an alternating 128/512 control comparison.
+Preserve individual samples, startup, first-use/TTFT and retained request
+latency separately. No fixed improvement floor replaces the current policy.
+
+Cost ceiling before any adoption work: preparation <=3,600 s, each paired
+campaign <=900 s, each request <=180 s. Keep the existing host/device budget
+admission (4 GiB/8,000,000,000 bytes for this receipt), including input buffers
+and measured workspace high water; no new duplicate weights or model-sized
+cache. A failed budget or numeric owner rejects the setting for that workload.
+Record actual input/workspace growth instead of assuming larger chunks are
+free. The disk-capacity blocker is resolved: the user authorized cleanup,
+approximately 5.41 GB of rebuildable incremental cache was freed, and both
+additional traces completed. The previous partial `ENOSPC` trace stays excluded.
+Two caller warmups did not exclude first prefill capture in the successful
+chunk-512 trace. Record capture separately and retain that request in the
+current evidence; any future steady-state warmup rule must be declared before
+the campaign and accompanied by first-use/TTFT results.
+
+#### B1 synchronous input-batch contract
+
+This is an application-owned API, not a new Align language capability.
+It deliberately ends the borrowed host-buffer lifetime at call return.
+
+| Surface | Contract |
+| --- | --- |
+| Consumer / selection | Qwen3.5 scalar decode submits token, four text positions, mask and KV index together. `ALIGN_LLM_BATCH_DECODE_INPUTS=0\|1`, absent = `0`; empty/unknown refuses during execution-config parsing before device admission. Mode `1` initially requires CUDA; mode `0` preserves the existing path. No default change or interaction with prefill chunk semantics. |
+| Align / C boundary | Add `runtime_inputs.update_many(owner, descriptors, payload) -> Result<(), Error>`, both byte slices borrowed, through `ggml_ffi` to `int32_t align_gpu_inputs_update_batch(void *owner, const void *descriptors, int64_t descriptor_bytes, const void *payload, int64_t payload_bytes)`. A descriptor is four little-endian nonnegative I64 values: tensor index, tensor offset, payload offset, byte length (32 bytes). Accept 1–8 descriptors, distinct tensor indices, positive lengths and payload <= existing staging-byte ceiling. This is in-process encoding only; no persisted schema/cache (`N/A`). |
+| Validation / publication | Validate owner readiness, descriptor/payload framing, all extents/overflow, duplicates, accounting and registered row-index constraints before the first GPU submission, in that order and descriptor order. Simulate row-validation transitions in local metadata so dependent descriptors cannot use stale positions. Admission errors return existing `ALIGN_GPU_CONFIG` with no transfer or accepted-row/accounting change. Commit row-valid metadata and byte accounting only after completion. |
+| Ordering / lifetime | Enqueue `ggml_backend_tensor_set_async` calls on the existing backend, then synchronize once before returning success. Caller owns immutable descriptors/payload through return; no pointer is retained and graph execution follows completion. No custom stream/event, deferred work at a successful return, global queue, concurrent use of one owner, or new process protocol. Independent processes remain possible; timed arms are serial. |
+| Failure / cleanup | On any recoverable post-submit failure, drain queued work before releasing the borrow and poison the owner/session; never publish a partial batch or attempt generation. Pinned ggml's void transfer API and fatal CUDA-error behavior remain limitations; do not claim a recoverable CUDA status it cannot supply. Injected owner failures must test drain/poison behavior. Partial construction, early return, invalidation and close must not leave queued transfers reading freed memory. |
+| Allocation / cost | Reuse session-owned descriptor/payload buffers: <=10 KiB additional host bytes for this scalar consumer (the 2,175-token limit pads to a 2,304-wide mask), <=512 bytes native stack descriptors, zero extra explicit device bytes or timed allocation. No pinned-memory extension in this first trial. Preparation <=3,600 s; campaign <=900 s; request <=180 s. Pageable async copies can still block: removing explicit waits is a hypothesis to measure, not a promise of full overlap. |
+| Evidence / metric | Preserve exact input bytes, greedy tie/nonfinite behavior, full logits and valid state. Node trace target: 124 scalar-input completion waits become 31 at 200/32, with identical graph/kernel work and four input transfers per step. Compare complete retained requests against the qualified control in five alternating pairs of twenty requests, then repeat an encouraging result; include pinned llama.cpp under its established timing contract. |
+| Focused qualification / build | `scripts/run-gpu-input-batch-smoke GGML_SOURCE GGML_LIB GPU_PLUGIN` requires three existing explicit inputs, uses `${CC:-cc}` with C11/O2/warnings-as-errors, runs ordinary/submit/completion owners on a real GPU backend, and removes its temporary binaries on exit. Missing/malformed inputs or failed assertions exit nonzero; this owner creates no persisted format or cache. Existing real-shim build inputs apply. `ALIGN_LLM_GGML_FORCE=input-batch-submit` and `input-batch-complete` force recoverable failures after the first submission and after the completion barrier, respectively; they require the real shim. |
+
+| Closure case | Implementation owner / focused evidence |
+| --- | --- |
+| Config and formation | `runtime_qwen35_execution.align`, `runtime_qwen35_generation.align`: `QWEN35_INPUT_BATCH_OWNER=1 scripts/run-qwen35-native-q6-head-smoke` covers legal/default/empty/unknown modes, both decode parities and maximum mask width. The CUDA-only admission comparison is registered in backend parity; native Metal qualification is deferred until its host is available. |
+| ABI and validation | `runtime_inputs.align`, `ggml_ffi.align`, `scripts/ggml_shim.c`: `scripts/run-gpu-input-batch-smoke` covers descriptor golden bytes, negative/overflow/out-of-range/duplicate/partial records, bad last descriptor after valid first records, row dependency and unchanged counters/device inputs on refusal. |
+| Success and reuse | Same focused batch owner checks 1/4/8 updates, byte equality and one completion boundary; real-model head owner checks full logits/state, short/wide/short reset, EOG and retained requests. No aggregate addition is implied. |
+| Failure and cleanup | Batch owner forces failure after the first queued transfer and at completion, tests drain/poison/rejected reuse and close; `QWEN35_INPUT_BATCH_FAILURE=submit\|complete` selects the real session fault owner and checks no partial successful result. Compute Sanitizer's focused submit-failure owner reports zero errors/leaks. `scripts/run-openai-serving-smoke` with batch mode 1 covers SSE, disconnect, recovery, shutdown and restart. Pinned backend fatal failures remain process failures. |
+| Final performance | `QWEN35_CUDA_MEASURE_MODE=input-batch QWEN35_CUDA_PAIR_REQUESTS=20 scripts/measure-qwen35-native-cuda` with the authenticated existing model/binary/reference inputs; before/after NVTX-bounded traces. Adoption requires qualified correctness and repeatable complete-request benefit; if gains vanish, close the trial without a parameter sweep. |
+
+B2/R2 need separate ownership ledgers if selected after these measurements;
+the post-B1 section below now selects B2 for an implementation-ready design only.
+R2 remains conditional. No new Align
+compiler/runtime/standard-library gap was identified: the batch primitive and
+prefill/workspace policy belong to this application and its backend boundary.
+The implementation encounters the already-recorded non-blocking Request 121
+for independent mutable scratch beside a borrowed resource; it writes the batch
+first and forms fresh immutable submission views without consuming a proposed API.
+Two complete request campaigns retain 1,800 timed Align requests. Same-binary
+batch savings are 1.198/2.269/6.390 ms, then 2.087/5.996/1.969 ms at
+56/16, 200/32 and 330/64. Against the preserved native route, the 200/32 paired
+median is -0.056 ms then +2.550 ms, so that incremental result remains uncertain.
+Keep the selector default off and assess this CUDA/2B trial under the existing
+policy; no fleet-wide/default adoption or B2/R2 implementation is implied.
+The implementation receipt in `docs/cuda-native-optimization-log.md` owns exact
+commands, identities, all paired samples and timing-contract limits.
+[NVIDIA graph reuse](https://docs.nvidia.com/cuda/cuda-programming-guide/04-special-topics/cuda-graphs.html)
+supports the launch-cost mechanism;
+[CUDA synchronization behavior](https://docs.nvidia.com/cuda/cuda-runtime-api/api-sync-behavior.html)
+explains why an `Async` name alone does not establish nonblocking host behavior.
+
+#### Post-B1 profile and retained-workspace design (2026-10-01)
+
+Status: **B2 implemented and CUDA/2B-qualified as a default-off trial**. The user
+authorized implementation after the reviewed profile/design checkpoint. This
+section supersedes B2's conditional nomination above. The
+[post-B1 receipt](../cuda-native-optimization-log.md#2026-10-01-post-b1-profile-and-next-design)
+owns the original diagnosis; the
+[B2 implementation receipt](../cuda-native-optimization-log.md#2026-10-01-b2-retained-workspace-implementation)
+owns implementation qualification, source/artifact identities and both campaigns.
+Short and 330-token same-binary gains repeat; the 200-token gain does not.
+No uniform speedup or default change is selected.
+
+Two new 26-request Nsight Systems traces, one separate 26-request host-call
+diagnostic and two uninstrumented 26-request baselines use the authenticated B1
+binary, head/batch modes 1 and chunk 128. They cover repeated 56/16, 200/32,
+330/64, short and chunked returns, 127/128/129, 255/256/257, 511/512/513,
+2048/3 and short-after-maximum. All 130 outputs/counts agree. This is diagnosis
+of unchanged code, not a candidate speedup or a fresh llama.cpp comparison.
+
+| Remaining opportunity | Evidence and decision |
+| --- | --- |
+| B2: retain the existing workspace allocator/capacity, selected next | Repeated short/chunked/wide requests still perform 2/4/6 CUDA malloc/free pairs. Their combined API durations across both traces are 1.282–1.432 / 2.355–2.734 / 3.648–3.925 ms; 2048/3 has 36 pairs and 20.774/21.886 ms. A separate host diagnostic attributes 2.416–3.026 / 4.556–4.830 / 6.945–7.432 ms to prepare plus invalidate. These overlapping, separately instrumented intervals are not additive or guaranteed savings. Retaining capacity targets a measured recurring operation without changing model arithmetic. |
+| Prefill topology retention, conditional after B2 | The 200/330-token cases continue launching prefill individually (1,951/2,880 pre-head GPU kernels), even on repeated requests. Pinned ggml keys CUDA graphs by the first node pointer; the one prefill context reuses that identity for alternating chunk count/offset/parity/output topologies. Its warmup requires consecutive unchanged properties. Host pointer fingerprints and source inspection support this explanation. Capacity retention alone does not supply separate identities or prefill capture. Reprofile after B2; select a bounded, per-topology metadata owner/cache only if the residual launch/build cost still warrants its additional memory and invalidation contract. |
+| R2: ggml-to-head dependency bridge, still later | Repeated 200/32 decode producer-to-head gaps sum to 1.666–2.222 ms, versus 3.521–4.620 ms at 330/64. These whole gaps bound the opportunity; event submission has a cost. Requires a versioned backend stream/event bridge absent from the pinned public API. It is a backend integration concern, not an Align language gap. |
+| Further input/dispatch fusion, conditional | Batch mode still has one input completion per scalar step. The 200/32 choice-to-next-backbone window is 7.004–8.860 ms in repeated requests, including graph-launch submission and host work as well as copies/waits. A future combined input-plus-compute call could extend the host borrow through synchronous compute. Removing one wait cannot claim this entire interval; no new asynchronous borrow/API is selected here. |
+| Kernels and request plumbing | Representative warm 200/32 decode kernels spend 60.970 ms in quantized matvec and 29.172 ms in the native projection. This is GPU work, not CPU overhead. Sparse/broken CPU samples do not establish a tokenizer/IPC hotspot. Keep earlier unsuccessful tail/repacking variants closed. Hardware counters remain unavailable without the external Windows-host permission change; no global kernel ceiling or multi-model ceiling is established. |
+
+The selected consumer is a retained Qwen3.5 CUDA session, including ordinary
+generation and HTTP/SSE, which reuses already admitted workspace capacity
+across graph preparation, chunk invalidation and request boundaries. It remains
+a single shared allocator for the three serial graph kinds. A multi-entry
+prefill cache, separate prefill/decode device arenas and a backend graph-policy
+patch are distinct later choices, not prerequisites for this bounded B2 trial.
+
+| B2 contract surface | Settled implementation boundary |
+| --- | --- |
+| Selection and admission | Add `Config.retain_workspace: bool` in `runtime_qwen35_execution.align` and `ALIGN_LLM_RETAIN_WORKSPACE=0\|1`; absent = `0`, empty/unknown = `Error.Invalid` before device admission. Mode 1 initially requires CUDA in `runtime_qwen35_generation.prepare`; standard and streaming sessions use the same preparation. Head and batch modes remain independently selectable. CPU/Metal product mode 1 refuses; no other model/backend performance qualification is implied. |
+| Native boundary | Add `ggml_ffi.gpu_workspace_retain_select(borrow owner: GpuDevice, enabled: bool) -> Result<(), Fault>`, forwarding to `int32_t align_gpu_workspace_retain_mode(void *owner, int32_t mode)`. The real shim accepts 0/1 only with a valid backend and before memory admission or shape planning. Repeated pre-admission selection replaces the value; any later selection returns `ALIGN_GPU_CONFIG` without changing it. The unavailable stub returns `ALIGN_GPU_UNSUPPORTED`. The primitive is backend-neutral; Align owns the CUDA trial gate. |
+| Ownership and construction | `align_gpu_device_state` owns the policy and its one `workspace_allocator`; initialize policy to 0 and set it before `runtime_memory.admit`. Mode 0 retains current allocation behavior. Mode 1 keeps the allocator after successful invalidation, including when no graph remains prepared; that empty state is not compute-ready. Supported dry planning has zero device payload and no real workspace allocator under the combination rule below. `plan_finish`/`plan_cancel` preserve the selected retention policy and release all planning resources. Owner close releases the retained allocator once. |
+| Dry planning and native helpers | In retain mode 1, dry planning and native-helper selection are mutually exclusive on one owner. `align_gpu_plan_begin` returns CONFIG before setting planning state if any native-copy/head flag or context is present. While planning, each positive `align_gpu_native_{state_copy,q6_head,conv_copy,prefill_state_copy,copy_greedy}_mode` returns CONFIG after ordinary owner/mode validation and before backend probing, flag mutation or helper construction. This covers both selection orders, including a helper selected before retain mode 1. `memory_admit` defensively refuses the combination before budget processing/helper allocation; finish/cancel also refuse any inconsistent helper-bearing planning state before resetting the owner, leaving cleanup ownership intact. Valid helper-free finish/cancel preserves only the selected retention policy and the existing preserved owner fields. Normal Qwen3.5 execution does not use dry planning and still admits independent head/batch selections. Legacy mode 0 helper/planning combinations are unqualified and deferred outside this trial; helper-free mode 0 planning remains the control. |
+| Rebuild transaction | In mode 1 preserve the existing backend/native drain, then make workspace results unavailable, clear workspace-only tensor bindings for every live graph, and measure all live graph requirements without device allocation. Check the largest requirement plus input reservation against the admitted ceiling before a device reserve. Reuse `ggml_gallocr_reserve` on the retained allocator and rebind every live graph with `ggml_gallocr_alloc_graph`, in the existing deterministic kind order. Publish workspace readiness only after all bindings and actual-size checks pass. Do not skip graph-layout recomputation merely because aggregate capacity is sufficient: allocator chunk layout and tensor offsets also matter. |
+| Capacity and accounting | Replace mode 1's current `actual <= current largest graph` postcondition with `actual + input_offset <= admitted workspace_bytes`, with checked arithmetic. Keeping a previous larger capacity after a smaller graph is intentional and remains counted by `align_gpu_memory_allocated_bytes`/observation. An actual size exceeding admission is an error, never hidden slack. Pinned ggml frees its old physical buffer before a required replacement; do not create a second retained allocator or duplicate weights. No allocation of the entire ceiling. |
+| Identity and output lifetime | Owner, kind and existing topology key still identify graphs; no wire/cache schema changes or persistent cache (`N/A`). Retaining capacity does not make old output bytes valid. For mode 1 add a bounded workspace-content generation and per-kind successful-result generation (with checked exhaustion), clear the cached slot-read identity and native-head readiness before rebind or compute, and stamp only the successfully completed graph's result. `align_gpu_slot_ready` in this mode must reject failed/unprepared owners and results from an earlier content generation, including its cached fast path. Graph execution/reuse counters keep their existing meaning. Do not synthesize a nonzero ggml graph UID to bypass its pointer/property checks. Native helpers borrow current tensor storage only through their existing completion boundary; all helpers drain before rebinding/free. |
+| Errors and cleanup | Bad selector/owner/construction state returns CONFIG before side effects. Unsupported graph and existing malformed graph/key checks retain their current status/precedence. Once prepare/invalidate begins its rebuild transaction, budget failure returns MEMORY_BUDGET, reserve/bind failure returns ALLOCATION, and native-drain failure returns COMPUTE; the enclosing operation poisons workspace/session, leaves no readable partial result and permits only orderly cleanup. There is no rollback into a partially rebound graph. Close drains before releasing retained buffers on success, partial construction, EOG, cancellation, request error and stream disconnect. Fatal ggml/CUDA errors retain the backend's process-failure limitation. |
+| Resource/cost ceiling | <=64 extra bytes of scalar shim bookkeeping; no new model-sized host cache or device arena. Existing allocator metadata is retained and its footprint must be measured. Host/device allocations remain within the existing 4 GiB host / 8,000,000,000-byte device admission used here. In this measured shape sequence, inputs plus workspace plus native-head storage reach 16,613,592 bytes versus 3,310,040 bytes between requests; 13,303,552 additional retained bytes is an observation, not a universal bound. Require unchanged peak explicit device bytes over each complete same-workload retained sequence, while recording increased between-request residency and per-request peaks after a larger request. Preparation <=3,600 s, each campaign <=900 s, request <=180 s. |
+| Failure instrumentation | Extend the real-shim builder with `ALIGN_LLM_GGML_FORCE=workspace-retain-reserve` and `workspace-retain-bind`, active only in retain mode 1. Inject immediately before the real reserve and after the first successful live-graph bind, respectively. Both return ALLOCATION through the poison/cleanup path; mode 0 remains usable as the fixture control. These are developer qualification inputs, not product recovery from a fatal CUDA API. |
+| Numerical and performance acceptance | Exact complete logits and valid recurrent/KV state versus same-binary mode 0 with chunk 128, both decode parities, reset, partial chunks and maximum input. Equal text alone is insufficient. In unchanged-capacity repeats the workspace must retain its buffer and lose its recurring malloc/free calls; do not require zero CUDA graph recaptures across shape changes. Adopt only with repeated complete-request benefit under the existing uncertainty policy; a failed accuracy/budget owner or reproducible whole-request loss rejects adoption. Default remains 0 for this trial. |
+
+Generation exhaustion returns CONFIG, poisons the workspace, clears read/native
+readiness and performs no compute or rebind; it never wraps. The
+generation/readiness fields close a retained-storage lifetime risk without
+changing generation algorithms, row layout, graph-node counters or model values.
+They are application/backend state; no unshipped Align feature is required.
+The pinned source already supplies allocator reuse. Its reuse predicate compares
+chunk capacities, while `alloc_graph` may recompute a reservation when topology
+changes. Preserve those checks; total byte equality alone is not a binding proof.
+
+| Closure / implementation owner | Qualification commands and obligations; completed evidence is in the B2 receipt |
+| --- | --- |
+| Config, FFI and all constructors: `runtime_qwen35_execution.align`, `runtime_qwen35_generation.align`, `ggml_ffi.align`, real/stub shims | `make check`; `scripts/alignc check-per-unit src/runtime_qwen35_generation.align`; extend `QWEN35_WORKSPACE_RETAIN_OWNER=1 scripts/run-qwen35-native-q6-head-smoke` for absent/0/1/empty/unknown, CUDA admission and non-CUDA refusal. Ordinary and stream preparation both consume the parsed flag. |
+| Allocation, layout, generation and no-graph state: `align_gpu_workspace_rebuild`, `align_gpu_slot_ready`, prepare/invalidate/compute, observation and memory release in `scripts/ggml_shim.c` | New `scripts/run-gpu-workspace-retention-smoke GGML_SOURCE GGML_LIB GPU_PLUGIN`, compiling `scripts/gpu_workspace_retention_smoke.c` with C11/O2/warnings-as-errors. Use three serial graphs with distinct layouts, compute known values after every rebind; test same/smaller/larger shapes, alternating parity, exact/below budget, invalid key/state, generation exhaustion, stale ordinary/native-head output refusal, and capacity retained with zero prepared graphs. Check allocation identity/size, counters, and exactly-once free. No aggregate addition. |
+| Dry planning and partial construction: retention/native selectors, plan begin/finish/cancel, memory admission and release | The same model-free owner exercises helper-free mode 0/1 planning, zero payload, finish and cancel policy preservation, first-allocation failure and repeated cleanup. In mode 1 test helper selection before planning, including before retention selection, and attempted positive selections after planning begins: CONFIG preserves owner state, selections and allocation/helper-open counters. For both finish and cancel, a refused helper selection leaves a usable planning owner; finish a complete graph or cancel before/after partial metadata construction, then verify zero device payload, policy preservation and subsequent ordinary native-head/copy selection and exactly-once cleanup. The CUDA owner covers supported Q6/copy helpers plus early refusal for all five positive selectors; CPU/Metal behavior is unmeasured until its backend qualification. Construct fixture budgets using backend allocation size/alignment; the old workspace owner currently fails its 64-byte F32 KV fixture against CUDA's 128-byte alignment before the changed path. It is not passing evidence and must not be copied as a valid fixture. |
+| Recoverable failure: reserve/bind transaction, native drain and close | Runner builds ordinary plus both forced variants; assert ALLOCATION, poison, refused reuse/read, preserved first failure and full release after failure at the first bind with later graphs still pending. `QWEN35_WORKSPACE_RETAIN_FAILURE=reserve\|bind scripts/run-qwen35-native-q6-head-smoke` checks failed worker envelopes with no partial successful output. Run focused Compute Sanitizer memcheck/leak-check on growth and partial-bind cleanup; existing native-head/copy failure owners cover producer drain. |
+| Real model and both public consumers: generation, stream-next/cancel and owner Drop | Extend the real head owner with full-vector/valid-state comparisons at 31, 127/128/129, 200, 255/256/257, 330, 511/512/513 and 2048 input tokens; retained short/wide/short/max/short, early EOG, one output token, both head and input-batch selections, invalid-request recovery and tight-budget refusal. `ALIGN_LLM_RETAIN_WORKSPACE=1 scripts/run-openai-serving-smoke` with the authenticated model/head/batch/chunk inputs covers HTTP/SSE disconnect, recovery, shutdown and restart. |
+| Final measurement: existing CUDA measurement owner | Add `QWEN35_CUDA_MEASURE_MODE=workspace-retain QWEN35_CUDA_PAIR_REQUESTS=20 scripts/measure-qwen35-native-cuda`, preserving B1/head/chunk controls. Five alternating pairs of twenty requests at 56/16, 200/32, 330/64; exactly two warmup requests per arm/case, retained in the receipt, plus a repeat campaign if encouraging. Compare same-binary off/on and the preserved B1 artifact; include pinned llama under its existing asymmetric timing contract. Record load/first-use, changing-shape sequence, explicit memory peak/residency, CPU prepare time, CUDA allocation counts and graph capture/replay separately. Keep late captures and adverse samples. |
+
+The model-free lifecycle owner, retained-capacity transaction, immutable Align
+selector and both consumers are implemented. The registered Python roles remain
+independent validation/measurement. The authenticated B1 binary is preserved as
+the control. Continue to treat the ledger and closure obligations above as the
+contract; the receipt identifies actual commands and limits, including the
+unsettled 200/32 gain. Prefill caching and stream bridging remain separate,
+conditional capabilities; do not enlarge B2 into them during repair.
+
+#### B3 bounded prefill graph-cache design (2026-10-01)
+
+Status: **qualified default-off implementation; comprehensive review findings resolved**.
+The user authorized implementation after the reviewed design. This
+section selects the previously conditional prefill-topology work as B3 and is
+its sole contract. The completed B2 source/artifacts remain the
+baseline; R2 stream bridging remains deferred. The
+[B3 diagnosis receipt](../cuda-native-optimization-log.md#2026-10-01-b3-prefill-graph-cache-diagnosis-and-design)
+owns diagnosis evidence. The implementation receipt records exact qualification,
+final artifact identities and two repeated whole-request campaigns. This changes
+graph metadata lifetime, not model arithmetic,
+token selection, chunk size, KV contents or request/HTTP formats.
+
+The unchanged B2 trace still has 1,951/2,880 pre-head kernels with no prefill
+graph launch on repeated 200/32 and 330/64 requests. A separate forwarding-only
+26-request diagnostic sees 68 prefill constructions, 28 exact keys and a stable
+82,640-byte first-node offset before/after optimization. Maximum observed context
+use is 509,488 bytes, but this is not a general construction bound. Exact-key
+simulation gives 33 hits/35 misses with four slots, versus 34/34 with sixteen,
+over that particular changing-shape sequence. Hits, capture and time savings
+remain distinct hypotheses until implemented and measured.
+
+Choose **four fixed slots**, selected in Align by `(offset / 128) % 4`, with one
+exact topology per slot. Prompts through 512 fit their complete chunk sequence;
+513 collides at slot 0, and repeated 1024/2048 can miss on every chunk. This
+bounded policy avoids an LRU/history owner and preserves 24 MiB per context.
+All 16 chunks of a 2048-token prompt still execute correctly. The cache stores
+no prompt/token content and does not skip any model work.
+
+Pinned ggml `bb4caa7540188872173c44d161602d9271386413` keys CUDA graphs by
+the first node pointer (`ggml-cuda.cu:2577`); it compares complete tensor/source
+properties unless a nonzero UID bypasses comparison (`2587–2617`). A changed
+observation executes directly; a subsequent unchanged observation can capture
+(`4263–4280`). Its five-second sweep can evict an entry unused for ten seconds
+(`common.cuh:1434–1454`). There is no public per-key deletion API. Fixed metadata
+slots and checked first-node identity bound the cache without a backend patch.
+
+| B3 contract surface | Settled implementation boundary |
+| --- | --- |
+| Product selection and validation | Add `runtime_qwen35_execution.Config.prefill_graph_cache: bool` and `ALIGN_LLM_PREFILL_GRAPH_CACHE=0\|1`, absent `0`; empty/unknown returns `Error.Invalid`. Mode 1 requires CUDA, `retain_workspace=1`, chunk 128, final-prefill-logits 1 and last-FFN-row 0. Validate these together before native selection/admission. Head 0/1, decode-input batch 0/1 and CUDA decode-state-copy 0/1 remain independent. Existing CUDA exclusions for mapped/shared/neon/graph-greedy and native conv/prefill-copy/copy-greedy remain. Lookup speculation already rejects CUDA before session mutation; no new speculative path is admitted. |
+| Backend environment | With cache 1, require `GGML_CUDA_DISABLE_GRAPHS` absent and `GGML_CUDA_GRAPH_OPT` absent or exactly `0`, before native admission; every other value refuses. The disable flag is presence-based in the pin, even for value `0`; graph-opt owns backend-global raw-node concurrency metadata. Environment is fixed for the process after backend use, matching ordinary worker configuration. Repeat the checks defensively in the native mode selector; do not rewrite the caller's environment. Cache 0 preserves existing behavior. |
+| Mode ABI and prerequisites | Add `int32_t align_gpu_prefill_graph_cache_mode(void *owner, int32_t mode)` and `ggml_ffi.gpu_prefill_graph_cache_select(borrow owner: GpuDevice, enabled: bool) -> Result<(), Fault>`. Valid owner/backend, exact 0/1 and pre-admission/non-planning state are required. Mode 1 additionally requires retained workspace and the environment above; unsupported prefill native-copy/conv/copy-greedy selections refuse in either selection order. Repeated pre-admission replacement is allowed. Retain-mode disable while cache 1 is selected refuses without mutation; admission defensively checks the combination. Cache 1 and dry shape planning are mutually exclusive in either order. Stub symbols return `ALIGN_GPU_UNSUPPORTED`. The native metadata primitive is backend-neutral; the product trial is CUDA-only. |
+| Activation ABI | Add `int32_t align_gpu_prefill_graph_cache_activate(void *owner, int32_t entry, const void *key, int64_t key_length)` and Align wrapper `gpu_prefill_graph_cache_activate(borrow owner: GpuDevice, entry: i64, key: str) -> Result<bool, Fault>`: `1`/`true` is hit, `0`/`false` is miss, negative existing GPU status is failure. Check owner/cache/admitted-input readiness and poison state, entry 0..3, exact 64 lowercase ASCII hex bytes, and no unfinished selected build, in that order, before any drain or mutation. Align validates the I64 range before narrowing. Key bytes are borrowed through return and copied into a fixed pending/committed field; no pointer to caller key storage survives. |
+| Identity and handles | Use the existing Qwen key with full chunk offset, count, rounded KV width, recurrent parity, emitted-logit/output form and native selections. Owner-scoped backend/bundle, geometry, immutable weights, KV/input buffers and attention policy complete the identity; no reuse across owners, reload or memory-release. Slot index is storage placement only: equal index or rounded width never implies a hit. Schema/persisted identity is `N/A`: internal session cache, no serialized artifact or protocol. Graphs are built through the existing zero-UID `ggml_new_graph` wrapper; never assign a UID to bypass comparison. Raw context/graph/slot handles are borrowed from the owning entry and expire on replacement/clear/owner close. |
+| Construction and bounds | Mode 1 makes the existing PREFILL context-open call reserve four disjoint 24-MiB slices in the admitted metadata arena; precheck the full span/overflow before constructing any context. Both decode contexts retain 24 MiB each. Partial context construction remains owned for close. An entry owns its context/graph, pending and committed key, prepared state, native Q6 weight/input/output pointers, prefill row registration, model-work counts, current execution count and permanent first-node anchor. Active kind-0 fields are aliases, not additional owners. CUDA-prefill copy/conv/greedy registrations must be empty before publication. Session owns one 4,160-byte slot buffer (four existing 1,040-byte tables); local token/position/mask scratch remains local. Use shipped borrowed-buffer slices, without arrays of handle-owning records or Request 121's unsupported sibling-mutable borrow. |
+| Hit and miss transaction | After validation, drain backend/native work and advance B2 content generation, clearing cached slot reads, native-head readiness and all old result credit. Save/restore topology metadata only, set prefill row-valid false, and require fresh input 0/1/2/7 updates on every hit. A hit performs no build, optimize, reset, measure, reserve or rebind. A miss marks the shared workspace unprepared, unpublishes and resets only its selected slot, records the pending key and clears the Align slot table before construction. Prepare must match that pending key and the selected context/graph; lookup/compute refuse a pending entry and no graph executes through a partially rebuilt workspace. Publish only after support checks, optimization and all required workspace binding succeed. There is no fallback to old output or old topology after a failed replacement. |
+| Bounded backend identity | At the first successful build record the selected slot's first node pointer. On every replacement require the same pointer **before** backend optimization, which itself creates cache entries, and again afterward; a mismatch poisons/refuses. In cache mode apply the same guard to each of the two decode contexts. Keep all six anchors across clear/invalidation; free them only with the owner. The pinned disabled graph-opt path preserves them. Maximum backend keys is four prefill plus two decode. Backend property snapshots contain copied values rather than owning retired host metadata; a drained reset is safe, but changed properties must still trigger the normal warmup/update path. Backend TTL may discard captures; cache hits do not promise immediate CUDA replay. |
+| Shared workspace and output validity | Extend B2 reset/measure/largest-reserve/rebind to all prepared parked entries plus both decode graphs and the one pending candidate, once each in fixed slot-index then decode order. No second device arena, copied weights or input buffers. Rebuild on miss/replacement/clear and any existing decode-layout change; preserve full admission and actual-size checks. Hits require a fully prepared workspace. Every activation invalidates PREFILL result credit; only successful compute of the active entry grants the current B2 generation. Ordinary reads require active-entry membership and a current result stamp, including cached-read fast paths. Native-head readiness is never restored from an entry. Increment checked per-kind total prepare/compute/reuse/invalidation counters for actual events; retain each entry's execution count across hits for reuse accounting. |
+| Request completion, reset and clear | Add `int32_t align_gpu_prefill_graph_cache_release(void *owner, int32_t clear)` / `gpu_prefill_graph_cache_release(borrow owner: GpuDevice, clear: bool) -> Result<(), Fault>`. Validate owner/cache/healthy state and exact clear 0/1 before mutation. Clear 0 additionally refuses an unfinished build; it drains, advances content generation, removes the active aliases and clears result/row/head readiness while retaining entries/bindings, with no workspace rebuild. Both successful execute and stream-finish use clear 0, so post-request reads refuse without destroying the cache. Clear 1 also unpublishes/resets all four entries including pending/empty ones and rebinds surviving decode graphs once; it is idempotent on a healthy empty cache. Both modes retain fixed contexts/anchors and B2 capacity and leave no selected entry. Clear does not immediately delete ggml's opaque CUDA cache. Every new request still zeroes resident KV/recurrent contents and begins recurrent parity 0. Recovery uses clear 1 before resetting state; a poisoned owner cannot be made healthy by release. Owner close always drains and releases each context exactly once, skips its active alias, frees the single allocator/arena, and destroys the backend cache. |
+| Failures and exhaustion | Invalid selectors/index/key/pending-state refuse with CONFIG before side effects. Span/host/workspace bounds use MEMORY_BUDGET; recoverable construction/bind/publication failures use ALLOCATION; helper drain uses COMPUTE. Once replacement/rebinding has begun, failure poisons the workspace and refuses reads/reuse; close handles partial state without rollback. B2 generation or new counter exhaustion never wraps: poison and require teardown. Pinned ggml metadata exhaustion and CUDA capture/instantiate/update failures can remain process-fatal; do not advertise recoverable statuses for them. Maintain existing 24-MiB context capacity rather than introducing a smaller unproved allocation bound. |
+| Explicit cost ceiling | Metadata admission becomes **176,160,768 bytes (168 MiB)**, +72 MiB from B2. Reserve **33,619,968 bytes** for the existing 32-MiB application allowance plus at most 64 KiB of added cache bookkeeping, including the 4,160-byte table and private entry state; verify actual struct/buffer bytes. With 1,048,576-byte staging and zero legacy cache, the minimum admitted host budget is **210,829,312 bytes**. Derive the mode-1 early host check from this sum. This is reserved/allocated capacity, not measured RSS. Application workspace/input/head peak must stay within the existing admission and the B2 peak for the same workload; added model/input device payload is zero. |
+| Backend cost and bounded qualification | Node-property vectors and CUDA graph/exec/driver storage are outside explicit tensor accounting. On this LP64 pin each property payload is 1,056 bytes; vector capacity and driver overhead are not inferred from it. Measure these and process RSS/device-used memory separately, including full four-slot occupancy, replacement, maximum shape, idle return and close. Trial ceilings relative to authenticated B2 on the same sequence are +128 MiB peak process RSS and +64 MiB backend/driver device-used memory; attribution requires an isolated/controlled GPU interval. If that measurement is unavailable or the ceiling fails, retain the implementation as unadopted and re-scope rather than asserting a memory bound. Preparation <=3,600 s, each campaign <=900 s, each request/capture <=180 s; trace storage <=1 GiB. |
+
+`runtime_execution.align` supplies checked activation/release wrappers;
+`runtime_qwen35_generation.align` owns the same hit/miss behavior in ordinary
+`execute` and `stream_begin`, successful cleanup in execute/stream-finish and
+all-entry recovery. No HTTP protocol or serving-module implementation change is
+needed: existing error/disconnect paths already converge on those APIs. The
+checked-in Align borrowed-buffer/FFI surface is sufficient; no new language gap
+or compiler pin adoption is required. Existing Request 121 remains non-blocking.
+
+The following commands and cases define the acceptance contract. The implementation
+receipt maps them to passing evidence or explicit limits. The native owner is
+`scripts/run-gpu-prefill-graph-cache-smoke GGML_SOURCE GGML_LIB GPU_PLUGIN`, backed
+by `scripts/gpu_prefill_graph_cache_smoke.c`, using the existing real-backend
+C11/O2/warnings-as-errors runner pattern. New real-shim force modes
+`ALIGN_LLM_GGML_FORCE=prefill-cache-open|prefill-cache-publish` apply only to cache 1:
+fail after the second context is constructed, or after candidate binding but
+before publication. Existing B2 reserve/partial-bind and native completion
+faults also qualify the cache path; cache-off controls must remain usable.
+
+| Closure case / affected owner | Exact focused acceptance obligation |
+| --- | --- |
+| Config, native selector, stub: execution config, generation preparation, FFI, real/stub shim | `QWEN35_PREFILL_GRAPH_CACHE_OWNER=1 scripts/run-qwen35-native-q6-head-smoke`: absent/0/1/empty/unknown; missing retention, chunk 256/512, final-logits 0, last-row 1, non-CUDA; disabled graphs including value `0`, graph-opt empty/1/other; both native selection orders and post-admission refusal with unchanged state. Build unavailable stub and verify all three exports. Cache/planning and cache/retain-disable refusal are tested in both orders. |
+| ABI construction and malformed input: FFI/runtime-execution/shim | New native owner: indices -1/4/overflow, null/short/long/nonhex keys, key/graph from another slot, repeated activation during pending build, invalid release mode and clear-0 during pending build, out-of-arena graph, unsupported helper registration, partial 0/1/2/3-context construction and close. Exact host budget and one byte below must accept/refuse before allocation. Borrowed key mutation after return cannot change recorded identity. |
+| Cache hit, collision and ordering: generation and native entry owner | Four distinct layouts and known outputs; first miss, repeated hit, same slot with different offset/count/width/final form, ordinal 0->4->0, all four occupied, repeated 513 and 1024/2048. Hit must preserve graph/first-node pointers and produce zero prepare/optimize/rebind events. Forced first-node mismatch in prefill or either decode context refuses before backend optimize; pending-key mismatch never publishes. Verify aggregate counts and per-entry reuse counts. |
+| Input/content freshness and stale reads: inputs, generation, shim | Different prompts/token IDs with equal topology; fresh token/position/mask/index bytes on hit; wrong/missing/stale row-index update refuses. Inactive slot, old cached fast-path slot, nonfinal native-head, read-after-release for both clear values, and generation exhaustion refuse. No cached KV/recurrent value survives request reset. |
+| Shared allocation and result generations: B2 workspace owner plus cache owner | Grow/shrink while all four prefill entries and both decode graphs exist; execute/read every parked entry after rebind. Test exact/below workspace budgets, failure after first binding with another parked entry pending, poisoned reads/activation, one allocator, and exactly-once release including partial construction. Run focused Compute Sanitizer on growth, collision and partial bind with zero errors/leaks. |
+| Construction/publication/completion failures: builder, native owner, real-model owner | `QWEN35_PREFILL_GRAPH_CACHE_FAILURE=open\|publish scripts/run-qwen35-native-q6-head-smoke` against freshly built cache fault shims; disabled controls pass, selected worker fails without partial success. Qualify existing workspace-retain reserve/bind and native Q6/copy completion faults with cache 1, successful repeated clear and failed-owner teardown. |
+| Full real-model arithmetic/state: independent Q6 owner | Exact complete logits and valid state off/on at 31, 127/128/129, 200, 255/256/257, 330, 511/512/513, 1024 and 2048; compare first construction and captured/replayed requests. Both head and batch selections (four combinations), plus decode-state-copy interoperability. Retained short/wide/short/max/short, equal-length different-content requests, one output, early EOG, invalid-request recovery and budget refusal. Do not relax tolerance after observing a difference. |
+| Both consumers and cleanup: generation execute/stream-begin/finish/recovery and GpuDevice Drop | `ALIGN_LLM_PREFILL_GRAPH_CACHE=1 ALIGN_LLM_RETAIN_WORKSPACE=1 ALIGN_LLM_PREFILL_CHUNK=128 scripts/run-openai-serving-smoke` with authenticated model/head/batch inputs: oracle parity, disconnect before/after first token, early finish, invalid-request recovery, partial-build recovery, shutdown/restart. Confirm no subsequent request reads prior content. Lookup CUDA refusal remains before session mutation. |
+| Capture and memory: node trace plus separate host diagnostic | Preserve first-use/TTFT, both warmups, repeats, changed shapes, 513/1024/2048 collisions, short-after-max, idle >10 seconds and close. Verify all model/kernel work remains and keys <=4 prefill+2 decode; count build/prepare/optimize/capture/update/graph launches and pointer changes. No extra execution of state-mutating graphs to warm a capture. Record metadata reservation, actual use, entry state, ggml vector capacity, RSS and backend/driver device cost against the ceilings above. |
+| Adoption: existing CUDA measurement owner | Add `QWEN35_CUDA_MEASURE_MODE=prefill-cache QWEN35_CUDA_PAIR_REQUESTS=20 scripts/measure-qwen35-native-cuda`. Same-binary off/on both use head 1, batch 1, retain 1, chunk 128; preserved B2 uses the identical existing settings with the new selector absent. Exactly two caller warmups per arm/case, five alternating pairs of twenty requests at 56/16, 200/32, 330/64, and a repeat if encouraging; keep all samples and late captures. Include pinned llama under its existing asymmetric timing contract. Separate first use, complete request, prefill/decode, shape churn and memory. No fixed percentage floor; qualified repeatable request benefit within costs determines adoption. Stop this trial if it fails rather than beginning a slot-count sweep. |
+
+Selected implementation order: bind selector/admission and the native
+four-entry owner with its lifecycle fixture; connect both Align consumers;
+complete exact model, failure and streaming qualification; then profile the
+mechanism and run complete-request campaigns. These are checkpoints of one
+consumer-complete capability, not separate dormant APIs or publications. Record
+Python owner/measurement classification before extending those scripts. Review
+the stable implemented capability once under the normal repository workflow.
+
+The implementation receipt closes construction, hit/miss, both consumers,
+failure/poison, cleanup, full model/state, capture, budget and measurement owners.
+Mode 1 remains an opt-in on the measured CUDA host; 1024/2048 can thrash and no
+uniform/default or other-host benefit is claimed. Oversized Align I64 indices are
+checked before narrowing in the compiled safe wrapper; the native runtime owner
+exercises its I32 boundary. A separate safe-wrapper execution fixture for the
+unreachable oversized product index is explicitly deferred. Product indices are
+derived as `(offset / 128) % 4`; CPU/Metal native execution remains deferred under
+the parity register. No proposed Align API is consumed.
+
+The comprehensive review's two acceptance-evidence findings are resolved by
+focused owners without changing product behavior or performance artifacts.
+The native fixture executes reverse cache/planning and retention selection,
+state-preserving helper refusals in both orders, and missing/wrong/consumed
+prefill indices on a cache hit followed by fresh successful computation. CUDA
+refuses the excluded Metal-only helpers before selection; already-selected
+policy guard cases inject those flags without helper allocation. Their actual
+CPU/Metal native execution remains under the existing explicit deferral.
+An independent forwarding-only cancellation trace proves a socket reset after
+activation but before final prefill/first-token availability, successful clear-0
+cleanup, and matching subsequent ordinary and streaming output. The receipt
+maps these repairs to passing evidence and preserves the original review envelope.
 
 ### Native CUDA Q4_0 FFN screen (2026-09-29)
 

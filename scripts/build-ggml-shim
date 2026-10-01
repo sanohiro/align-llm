@@ -18,8 +18,12 @@ set -euo pipefail
 #   ALIGN_LLM_GGML_FORCE    the section 4.6 forced-failure builds. `init`, `compute`, and
 #                           `reference` need the real shim; `native-copy-submit` and
 #                           `native-copy-complete` need the real Darwin shim and inject
-#                           one native command failure; `engine`, `engine+init`,
-#                           `engine+alloc`, `engine+compute`, `engine+reference`,
+#                           one native command failure; `input-batch-submit` and
+#                           `input-batch-complete` inject recoverable post-submit failures
+#                           in the real synchronous input-batch boundary;
+#                           `workspace-retain-reserve` and `workspace-retain-bind` inject
+#                           recoverable reservation/partial-binding faults in retain mode 1;
+#                           `engine`, `engine+init`, `engine+alloc`, `engine+compute`, `engine+reference`,
 #                           `engine+slot-range`, `engine+slot-empty`,
 #                           `engine+no-mark-output`, `engine+pad-negative`, and
 #                           `engine+pad-oversize`; the `engine+gpu+alloc-*` variants select one
@@ -191,6 +195,24 @@ PY_HASH
                  native_flags+=("-DALIGN_NATIVE_CUDA_FORCE_COMPLETION_FAILURE=1")
                fi
                flavour="real+force-native-copy-complete" ;;
+    input-batch-submit)
+               include_flags+=("-DALIGN_GPU_FORCE_INPUT_BATCH_SUBMIT_FAILURE=1")
+               flavour="real+force-input-batch-submit" ;;
+    workspace-retain-reserve)
+               include_flags+=("-DALIGN_GPU_FORCE_WORKSPACE_RETAIN_RESERVE=1")
+               flavour="real+force-workspace-retain-reserve" ;;
+    workspace-retain-bind)
+               include_flags+=("-DALIGN_GPU_FORCE_WORKSPACE_RETAIN_BIND=1")
+               flavour="real+force-workspace-retain-bind" ;;
+    prefill-cache-open)
+               include_flags+=("-DALIGN_GPU_FORCE_PREFILL_CACHE_OPEN=1")
+               flavour="real+force-prefill-cache-open" ;;
+    prefill-cache-publish)
+               include_flags+=("-DALIGN_GPU_FORCE_PREFILL_CACHE_PUBLISH=1")
+               flavour="real+force-prefill-cache-publish" ;;
+    input-batch-complete)
+               include_flags+=("-DALIGN_GPU_FORCE_INPUT_BATCH_COMPLETION_FAILURE=1")
+               flavour="real+force-input-batch-complete" ;;
     native-q6-submit)
                [ "${native_cuda}" = 1 ] || {
                  printf '%s\n' 'native Q6 head failure requires native CUDA' >&2; exit 1; }

@@ -1031,6 +1031,30 @@ int32_t align_gpu_failure_stage(void) {
 #define ALIGN_GPU_FORCE_COMPUTE_KIND (-1)
 #endif
 
+#define ALIGN_GPU_PREFILL_ENTRIES 4
+#ifndef ALIGN_GPU_FORCE_PREFILL_CACHE_OPEN
+#define ALIGN_GPU_FORCE_PREFILL_CACHE_OPEN 0
+#endif
+#ifndef ALIGN_GPU_FORCE_PREFILL_CACHE_PUBLISH
+#define ALIGN_GPU_FORCE_PREFILL_CACHE_PUBLISH 0
+#endif
+
+struct align_gpu_prefill_entry {
+    struct ggml_context *ctx;
+    struct ggml_cgraph *graph;
+    struct ggml_tensor *anchor;
+    char key[65];
+    char pending_key[65];
+    int prepared;
+    int pending;
+    struct ggml_tensor *head_weights;
+    struct ggml_tensor *head_input;
+    struct ggml_tensor *head_output;
+    int rows_registered;
+    int64_t rows_input, rows_start, rows_count, rows_capacity;
+    int64_t nodes, ops, layers, experts, executions;
+};
+
 struct align_gpu_device_state {
     ggml_backend_dev_t device;
     ggml_backend_t backend;
@@ -1054,6 +1078,13 @@ struct align_gpu_device_state {
     struct ggml_tallocr input_allocator;
     struct ggml_tensor *pending_weight;
     ggml_gallocr_t workspace_allocator;
+    int retain_workspace;
+    int prefill_graph_cache;
+    int prefill_active; /* One-based; zero means no active alias. */
+    struct align_gpu_prefill_entry prefill_entries[ALIGN_GPU_PREFILL_ENTRIES];
+    struct ggml_tensor *decode_anchors[2];
+    uint64_t workspace_content_generation;
+    uint64_t graph_result_generation[ALIGN_GPU_GRAPH_KINDS];
     int64_t host_budget_bytes;
     int64_t application_host_reserved_bytes;
     int64_t device_budget_bytes;
@@ -1153,6 +1184,8 @@ struct align_gpu_device_state {
 
 };
 
+static int align_gpu_prefill_cache_healthy(const struct align_gpu_device_state *state);
+
 static int align_gpu_row_inputs_register(struct align_gpu_device_state *state,
         int layout, int64_t index, int64_t capacity, int64_t lanes) {
     int other = 1 - layout;
@@ -1168,8 +1201,9 @@ static int align_gpu_row_inputs_register(struct align_gpu_device_state *state,
     return 1;
 }
 
-static int align_gpu_row_input_check(struct align_gpu_device_state *state,
-        int64_t index, int64_t offset, const void *data, int64_t length) {
+static int align_gpu_row_input_check_at(struct align_gpu_device_state *state,
+        int64_t index, int64_t offset, const void *data, int64_t length,
+        int64_t position, int position_valid) {
     int32_t value;
     if (state->prefill_rows_registered && index == state->prefill_rows_input) {
         if (offset != 0 || length != state->prefill_rows_count * 4) { return 0; }
@@ -1185,13 +1219,19 @@ static int align_gpu_row_input_check(struct align_gpu_device_state *state,
     }
     if (state->row_registered[1] && index == state->row_input[1]) {
         int64_t lane;
-        if (offset != 0 || length != state->row_lanes * 4 || !state->row_position_valid) { return 0; }
+        if (offset != 0 || length != state->row_lanes * 4 || !position_valid) { return 0; }
         for (lane = 0; lane < state->row_lanes; ++lane) {
             memcpy(&value, (const unsigned char *) data + lane * 4, 4);
-            if (value != lane * state->row_capacity + state->row_position) { return 0; }
+            if (value != lane * state->row_capacity + position) { return 0; }
         }
     }
     return 1;
+}
+
+static int align_gpu_row_input_check(struct align_gpu_device_state *state,
+        int64_t index, int64_t offset, const void *data, int64_t length) {
+    return align_gpu_row_input_check_at(state, index, offset, data, length,
+                                      state->row_position, state->row_position_valid);
 }
 
 static void align_gpu_row_input_accept(struct align_gpu_device_state *state,
@@ -1544,6 +1584,42 @@ int64_t align_gpu_host_reserved(void *owner) {
     return state == NULL ? -1 : state->application_host_reserved_bytes;
 }
 
+int32_t align_gpu_workspace_retain_mode(void *owner, int32_t mode) {
+    struct align_gpu_device_state *state = owner;
+    if (state == NULL || state->device == NULL || state->backend == NULL
+        || (mode != 0 && mode != 1) || state->memory_planned || state->shape_planning
+        || (mode == 0 && state->prefill_graph_cache)) {
+        return ALIGN_GPU_CONFIG;
+    }
+    state->retain_workspace = mode;
+    return ALIGN_GPU_OK;
+}
+
+static int align_gpu_prefill_cache_environment_ok(void) {
+    const char *opt = getenv("GGML_CUDA_GRAPH_OPT");
+    return getenv("GGML_CUDA_DISABLE_GRAPHS") == NULL
+        && (opt == NULL || strcmp(opt, "0") == 0);
+}
+
+int32_t align_gpu_prefill_graph_cache_mode(void *owner, int32_t mode) {
+    struct align_gpu_device_state *state = owner;
+    if (state == NULL || state->device == NULL || state->backend == NULL
+        || (mode != 0 && mode != 1) || state->memory_planned || state->shape_planning
+        || (mode == 1 && (!state->retain_workspace
+            || !align_gpu_prefill_cache_environment_ok() || state->native_conv_copy
+            || state->native_prefill_state_copy || state->native_copy_greedy))) {
+        return ALIGN_GPU_CONFIG;
+    }
+    state->prefill_graph_cache = mode;
+    return ALIGN_GPU_OK;
+}
+
+static int align_gpu_native_helpers_selected(const struct align_gpu_device_state *state) {
+    return state->native_state_copy || state->native_q6_head || state->native_conv_copy
+        || state->native_prefill_state_copy || state->native_copy_greedy
+        || state->native_state_copy_context != NULL || state->native_q6_head_context != NULL;
+}
+
 int32_t align_gpu_memory_admit(
         void *owner, int64_t weights_bytes, int64_t kv_bytes, int64_t workspace_bytes,
         int64_t metadata_bytes, int64_t staging_bytes, int64_t legacy_cache_bytes) {
@@ -1553,6 +1629,11 @@ int32_t align_gpu_memory_admit(
     if (state == NULL || state->memory_planned || weights_bytes <= 0 || kv_bytes <= 0
         || workspace_bytes <= 0 || metadata_bytes <= 0 || staging_bytes <= 0
         || legacy_cache_bytes < 0) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if (state->retain_workspace && state->shape_planning
+        && align_gpu_native_helpers_selected(state)) { return ALIGN_GPU_CONFIG; }
+    if (state->prefill_graph_cache && (!state->retain_workspace || state->shape_planning)) {
         return ALIGN_GPU_CONFIG;
     }
     if (!align_gpu_add_bytes(weights_bytes, kv_bytes, &device_total)
@@ -1637,11 +1718,19 @@ static void align_gpu_memory_release(struct align_gpu_device_state *state) {
     free(state->staging);
     state->staging = NULL;
     for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; ++kind) {
+        if (kind == ALIGN_GPU_GRAPH_PREFILL && state->prefill_graph_cache) continue;
         if (state->graph_contexts[kind] != NULL) {
             ggml_free(state->graph_contexts[kind]);
             state->graph_contexts[kind] = NULL;
         }
     }
+    for (kind = 0; kind < ALIGN_GPU_PREFILL_ENTRIES; ++kind) {
+        if (state->prefill_entries[kind].ctx != NULL) {
+            ggml_free(state->prefill_entries[kind].ctx);
+            state->prefill_entries[kind].ctx = NULL;
+        }
+    }
+    state->graph_contexts[0] = NULL;
     if (state->metadata_ctx != NULL) {
         ggml_free(state->metadata_ctx);
         state->metadata_ctx = NULL;
@@ -1656,7 +1745,10 @@ static void align_gpu_memory_release(struct align_gpu_device_state *state) {
 
 int32_t align_gpu_plan_begin(void *owner) {
     struct align_gpu_device_state *state = owner;
-    if (state == NULL || state->shape_planning || state->memory_planned) { return ALIGN_GPU_CONFIG; }
+    if (state == NULL || state->shape_planning || state->memory_planned || state->prefill_graph_cache
+        || (state->retain_workspace && align_gpu_native_helpers_selected(state))) {
+        return ALIGN_GPU_CONFIG;
+    }
     state->shape_planning = 1;
     return ALIGN_GPU_OK;
 }
@@ -1665,12 +1757,14 @@ int32_t align_gpu_plan_finish(void *owner) {
     struct align_gpu_device_state *state = owner;
     struct align_gpu_device_state initial = {0};
     if (state == NULL || !state->shape_planning || !state->graph_prepared[0]
+        || (state->retain_workspace && align_gpu_native_helpers_selected(state))
         || state->workspace_failed || state->weights_failed || state->kv_failed || state->inputs_failed
         || state->observation_failed || state->weights_uploaded != 0
         || state->graph_execution_count[0] != 0 || state->graph_execution_count[1] != 0) {
         return ALIGN_GPU_CONFIG;
     }
     initial.attention_policy = state->attention_policy;
+    initial.retain_workspace = state->retain_workspace;
     initial.device = state->device;
     initial.backend = state->backend;
     memcpy(initial.bundle_id, state->bundle_id, sizeof(initial.bundle_id));
@@ -1688,10 +1782,12 @@ int32_t align_gpu_plan_cancel(void *owner) {
     struct align_gpu_device_state *state = owner;
     struct align_gpu_device_state initial = {0};
     if (state == NULL || !state->shape_planning || state->weights_uploaded != 0
+        || (state->retain_workspace && align_gpu_native_helpers_selected(state))
         || state->graph_execution_count[0] != 0 || state->graph_execution_count[1] != 0) {
         return ALIGN_GPU_CONFIG;
     }
     initial.attention_policy = state->attention_policy;
+    initial.retain_workspace = state->retain_workspace;
     initial.device = state->device;
     initial.backend = state->backend;
     memcpy(initial.bundle_id, state->bundle_id, sizeof(initial.bundle_id));
@@ -2475,8 +2571,10 @@ void *align_gpu_graph_context_open(void *owner, int32_t kind, int64_t metadata_b
     size_t offset = 0;
     size_t span = 0;
     if (state == NULL || !state->inputs_finished || state->workspace_failed
+        || (state->prefill_graph_cache && !align_gpu_prefill_cache_healthy(state))
         || !align_gpu_graph_kind_ok(kind) || metadata_bytes <= 0
-        || (uint64_t) metadata_bytes > SIZE_MAX || state->graph_contexts[kind] != NULL) {
+        || (uint64_t) metadata_bytes > SIZE_MAX || state->graph_contexts[kind] != NULL
+        || (kind == 0 && state->prefill_entries[0].ctx != NULL)) {
         return NULL;
     }
     if (state->graph_metadata_offset == 0) {
@@ -2493,6 +2591,36 @@ void *align_gpu_graph_context_open(void *owner, int32_t kind, int64_t metadata_b
     }
     span = ((size_t) metadata_bytes + GGML_MEM_ALIGN - 1)
         & ~(size_t) (GGML_MEM_ALIGN - 1);
+    if (state->prefill_graph_cache && kind == ALIGN_GPU_GRAPH_PREFILL) {
+        if (span > SIZE_MAX / ALIGN_GPU_PREFILL_ENTRIES
+            || offset > state->metadata_capacity
+            || span * ALIGN_GPU_PREFILL_ENTRIES > state->metadata_capacity - offset) {
+            align_gpu_failure_record(ALIGN_GPU_MEMORY_BUDGET, 0);
+            return NULL;
+        }
+        for (int entry = 0; entry < ALIGN_GPU_PREFILL_ENTRIES; ++entry) {
+            params.mem_size = (size_t) metadata_bytes;
+            params.mem_buffer = state->metadata_base + offset + entry * span;
+            params.no_alloc = true;
+            ctx = ggml_init(params);
+            if (ctx == NULL) {
+                state->workspace_failed = 1;
+                align_gpu_failure_record(ALIGN_GPU_ALLOCATION, 0);
+                return NULL;
+            }
+            state->prefill_entries[entry].ctx = ctx;
+            if (entry == 1 && ALIGN_GPU_FORCE_PREFILL_CACHE_OPEN) {
+                fprintf(stderr, "prefill_cache forced context-open failure\n");
+                state->workspace_failed = 1;
+                align_gpu_failure_record(ALIGN_GPU_ALLOCATION, 0);
+                return NULL;
+            }
+        }
+        state->graph_metadata_offset += span * ALIGN_GPU_PREFILL_ENTRIES;
+        state->graph_context_bytes[kind] = span;
+        /* Construction returns a borrowed context; activation establishes aliases. */
+        return state->prefill_entries[0].ctx;
+    }
     if (offset > state->metadata_capacity || span > state->metadata_capacity - offset) {
         return NULL;
     }
@@ -2594,6 +2722,7 @@ int32_t align_gpu_native_state_copy_mode(void *owner, int32_t mode) {
     if (state == NULL || (mode != 0 && mode != 1) || state->weights_finished
         || state->workspace_prepared) return ALIGN_GPU_CONFIG;
     if (mode == 0) return state->native_state_copy ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+    if (state->retain_workspace && state->shape_planning) return ALIGN_GPU_CONFIG;
 #if defined(__APPLE__)
     ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(state->backend);
     const char *name = buft == NULL ? NULL : ggml_backend_buft_name(buft);
@@ -2638,6 +2767,7 @@ int32_t align_gpu_native_q6_head_mode(void *owner, int32_t mode) {
         || state->weights_finished
         || state->workspace_prepared) return ALIGN_GPU_CONFIG;
     if (mode == 0) return state->native_q6_head ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+    if (state->retain_workspace && state->shape_planning) return ALIGN_GPU_CONFIG;
 #if defined(ALIGN_LLM_NATIVE_CUDA)
     ggml_backend_buffer_type_t buft = ggml_backend_get_default_buffer_type(state->backend);
     const char *name = buft == NULL ? NULL : ggml_backend_buft_name(buft);
@@ -2703,6 +2833,7 @@ int32_t align_gpu_native_conv_copy_mode(void *owner, int32_t mode) {
     if (state == NULL || (mode != 0 && mode != 1) || state->weights_finished
         || state->workspace_prepared) return ALIGN_GPU_CONFIG;
     if (mode == 0) return state->native_conv_copy ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+    if (state->prefill_graph_cache || (state->retain_workspace && state->shape_planning)) return ALIGN_GPU_CONFIG;
 #if defined(__APPLE__)
     if (!state->native_state_copy || state->native_state_copy_context == NULL) return ALIGN_GPU_CONFIG;
     if (!align_native_metal_copy_enable_strided(state->native_state_copy_context)) {
@@ -2725,6 +2856,7 @@ int32_t align_gpu_native_prefill_state_copy_mode(void *owner, int32_t mode) {
     if (state == NULL || (mode != 0 && mode != 1) || state->weights_finished
         || state->workspace_prepared) return ALIGN_GPU_CONFIG;
     if (mode == 0) return state->native_prefill_state_copy ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+    if (state->prefill_graph_cache || (state->retain_workspace && state->shape_planning)) return ALIGN_GPU_CONFIG;
 #if defined(__APPLE__)
     if (!state->native_state_copy || !state->native_conv_copy
         || state->native_state_copy_context == NULL) return ALIGN_GPU_CONFIG;
@@ -2745,6 +2877,7 @@ int32_t align_gpu_native_copy_greedy_mode(void *owner, int32_t mode) {
     if (state == NULL || (mode != 0 && mode != 1) || state->weights_finished
         || state->workspace_prepared) return ALIGN_GPU_CONFIG;
     if (mode == 0) return state->native_copy_greedy ? ALIGN_GPU_CONFIG : ALIGN_GPU_OK;
+    if (state->prefill_graph_cache || (state->retain_workspace && state->shape_planning)) return ALIGN_GPU_CONFIG;
 #if defined(__APPLE__)
     if (!state->native_state_copy || !state->native_conv_copy
         || state->native_state_copy_context == NULL) return ALIGN_GPU_CONFIG;
@@ -3268,6 +3401,108 @@ int32_t align_gpu_input_update(
     return ALIGN_GPU_OK;
 }
 
+/* Faults exercise borrow draining without inventing status from ggml's void API. */
+#ifndef ALIGN_GPU_FORCE_INPUT_BATCH_SUBMIT_FAILURE
+#define ALIGN_GPU_FORCE_INPUT_BATCH_SUBMIT_FAILURE 0
+#endif
+#ifndef ALIGN_GPU_FORCE_INPUT_BATCH_COMPLETION_FAILURE
+#define ALIGN_GPU_FORCE_INPUT_BATCH_COMPLETION_FAILURE 0
+#endif
+
+static int align_gpu_input_descriptor(const unsigned char *bytes, int64_t *value) {
+    uint64_t bits = 0;
+    for (unsigned int i = 0; i < 8; ++i) { bits |= (uint64_t) bytes[i] << (8 * i); }
+    if (bits > INT64_MAX) { return 0; }
+    *value = (int64_t) bits;
+    return 1;
+}
+
+int32_t align_gpu_inputs_update_batch(void *owner, const void *descriptors,
+        int64_t descriptor_bytes, const void *payload, int64_t payload_bytes) {
+    struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
+    /* Eight tensor pointers and four I64 fields per descriptor: 320 stack bytes. */
+    struct {
+        struct ggml_tensor *tensor;
+        int64_t index, offset, source, length;
+    } batch[8];
+    const unsigned char *encoded = (const unsigned char *) descriptors;
+    const unsigned char *data = (const unsigned char *) payload;
+    int64_t count, total = 0, position;
+    int position_valid;
+    if (state == NULL || state->backend == NULL || state->shape_planning
+        || !state->inputs_finished || state->inputs_failed || !state->workspace_prepared
+        || state->workspace_failed || state->observation_failed || state->staging_bytes <= 0) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if (encoded == NULL || data == NULL || descriptor_bytes < 32 || descriptor_bytes > 256
+        || descriptor_bytes % 32 != 0 || payload_bytes <= 0
+        || payload_bytes > state->staging_bytes) { return ALIGN_GPU_CONFIG; }
+    count = descriptor_bytes / 32;
+    /* Finish extent validation for every descriptor before duplicate/accounting/row checks. */
+    for (int64_t i = 0; i < count; ++i) {
+        if (!align_gpu_input_descriptor(encoded + i * 32, &batch[i].index)
+            || !align_gpu_input_descriptor(encoded + i * 32 + 8, &batch[i].offset)
+            || !align_gpu_input_descriptor(encoded + i * 32 + 16, &batch[i].source)
+            || !align_gpu_input_descriptor(encoded + i * 32 + 24, &batch[i].length)
+            || batch[i].length <= 0 || batch[i].source > payload_bytes
+            || batch[i].length > payload_bytes - batch[i].source) { return ALIGN_GPU_CONFIG; }
+        batch[i].tensor = align_gpu_input_at(state, batch[i].index);
+        if (batch[i].tensor == NULL || batch[i].tensor->data == NULL) { return ALIGN_GPU_CONFIG; }
+        size_t capacity = ggml_nbytes(batch[i].tensor);
+        if ((uint64_t) batch[i].offset > capacity
+            || (uint64_t) batch[i].length > capacity - (size_t) batch[i].offset) {
+            return ALIGN_GPU_CONFIG;
+        }
+    }
+    for (int64_t i = 0; i < count; ++i) {
+        for (int64_t j = 0; j < i; ++j) {
+            if (batch[i].index == batch[j].index) { return ALIGN_GPU_CONFIG; }
+        }
+    }
+    for (int64_t i = 0; i < count; ++i) {
+        if (total > INT64_MAX - batch[i].length) { return ALIGN_GPU_CONFIG; }
+        total += batch[i].length;
+    }
+    if (state->input_updated_bytes < 0 || state->input_updated_bytes > INT64_MAX - total
+        || state->observation_sync_calls == INT64_MAX) { return ALIGN_GPU_CONFIG; }
+    position = state->row_position;
+    position_valid = state->row_position_valid;
+    for (int64_t i = 0; i < count; ++i) {
+        const void *source = data + batch[i].source;
+        if (!align_gpu_row_input_check_at(state, batch[i].index, batch[i].offset,
+                source, batch[i].length, position, position_valid)) { return ALIGN_GPU_CONFIG; }
+        if (state->row_registered[0] && batch[i].index == state->row_input[0]) {
+            int32_t value;
+            memcpy(&value, source, 4);
+            position = value;
+            position_valid = 1;
+        }
+    }
+    for (int64_t i = 0; i < count; ++i) {
+        ggml_backend_tensor_set_async(state->backend, batch[i].tensor,
+            data + batch[i].source, (size_t) batch[i].offset, (size_t) batch[i].length);
+        if (ALIGN_GPU_FORCE_INPUT_BATCH_SUBMIT_FAILURE && i == 0) {
+            align_gpu_synchronize(state);
+            state->inputs_failed = state->workspace_failed = 1;
+            fprintf(stderr, "input_batch forced submit failure after drain\n");
+            return ALIGN_GPU_COMPUTE;
+        }
+    }
+    align_gpu_synchronize(state);
+    if (ALIGN_GPU_FORCE_INPUT_BATCH_COMPLETION_FAILURE || state->observation_failed) {
+        state->inputs_failed = state->workspace_failed = 1;
+        if (ALIGN_GPU_FORCE_INPUT_BATCH_COMPLETION_FAILURE) {
+            fprintf(stderr, "input_batch forced completion failure after drain\n");
+        }
+        return ALIGN_GPU_COMPUTE;
+    }
+    for (int64_t i = 0; i < count; ++i) {
+        align_gpu_row_input_accept(state, batch[i].index, data + batch[i].source);
+    }
+    state->input_updated_bytes += total;
+    return ALIGN_GPU_OK;
+}
+
 int64_t align_gpu_input_state(void *owner, int32_t field) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || state->inputs_expected <= 0) {
@@ -3399,14 +3634,185 @@ static void align_gpu_graph_optimize(ggml_backend_t backend, struct ggml_cgraph 
     }
 }
 
-/* The two graphs execute serially and share one reservation sized for the larger live topology.
- * Rebuilding either slot first drains and discards the previous allocator, then assigns both live
- * graphs again so no tensor retains a pointer into released workspace. */
+#ifndef ALIGN_GPU_FORCE_WORKSPACE_RETAIN_RESERVE
+#define ALIGN_GPU_FORCE_WORKSPACE_RETAIN_RESERVE 0
+#endif
+#ifndef ALIGN_GPU_FORCE_WORKSPACE_RETAIN_BIND
+#define ALIGN_GPU_FORCE_WORKSPACE_RETAIN_BIND 0
+#endif
+
+/* Shared storage can overwrite another graph's result even without freeing its buffer. */
+static int32_t align_gpu_workspace_content_advance(struct align_gpu_device_state *state) {
+    if (!state->retain_workspace) return ALIGN_GPU_OK;
+    state->last_slot_get_tensor = NULL;
+    state->native_q6_head_ready = 0;
+    if (state->workspace_content_generation == UINT64_MAX) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_CONFIG;
+    }
+    state->workspace_content_generation += 1;
+    return ALIGN_GPU_OK;
+}
+
+static int32_t align_gpu_workspace_drain(struct align_gpu_device_state *state) {
+    align_gpu_synchronize(state);
+#if defined(__APPLE__)
+    if (state->native_state_copy_context != NULL
+        && !align_native_metal_copy_wait(state->native_state_copy_context)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
+#elif defined(ALIGN_LLM_NATIVE_CUDA)
+    if ((state->native_state_copy_context != NULL
+            && !align_native_cuda_copy_wait(state->native_state_copy_context))
+        || (state->native_q6_head_context != NULL
+            && !align_native_cuda_q6_head_wait(state->native_q6_head_context))) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_COMPUTE;
+    }
+#endif
+    return ALIGN_GPU_OK;
+}
+
+static void align_gpu_prefill_save(struct align_gpu_device_state *state) {
+    if (!state->prefill_active || !state->graph_prepared[0]) return;
+    struct align_gpu_prefill_entry *entry = &state->prefill_entries[state->prefill_active - 1];
+    entry->graph = state->workspace_graphs[0];
+    memcpy(entry->key, state->graph_keys[0], sizeof(entry->key));
+    entry->head_weights = state->native_q6_head_weights[0];
+    entry->head_input = state->native_q6_head_inputs[0];
+    entry->head_output = state->native_q6_head_outputs[0];
+    entry->rows_registered = state->prefill_rows_registered;
+    entry->rows_input = state->prefill_rows_input;
+    entry->rows_start = state->prefill_rows_start;
+    entry->rows_count = state->prefill_rows_count;
+    entry->rows_capacity = state->prefill_rows_capacity;
+    entry->nodes = state->graph_cached_nodes[0];
+    entry->ops = state->graph_cached_ops[0];
+    entry->layers = state->graph_cached_layers[0];
+    entry->experts = state->graph_cached_experts[0];
+    entry->executions = state->graph_current_execution_count[0];
+}
+
+static void align_gpu_prefill_detach(struct align_gpu_device_state *state) {
+    state->prefill_active = 0;
+    state->graph_contexts[0] = NULL;
+    state->workspace_graphs[0] = NULL;
+    state->graph_prepared[0] = 0;
+    state->graph_keys[0][0] = '\0';
+    state->graph_current_execution_count[0] = 0;
+    state->graph_result_generation[0] = 0;
+    state->native_q6_head_weights[0] = NULL;
+    state->native_q6_head_inputs[0] = NULL;
+    state->native_q6_head_outputs[0] = NULL;
+    state->native_q6_head_ready = 0;
+    state->prefill_rows_registered = 0;
+    state->prefill_rows_valid = 0;
+    state->last_slot_get_tensor = NULL;
+}
+
+static void align_gpu_prefill_reset(struct align_gpu_prefill_entry *entry) {
+    struct ggml_context *ctx = entry->ctx;
+    struct ggml_tensor *anchor = entry->anchor;
+    memset(entry, 0, sizeof(*entry));
+    entry->ctx = ctx;
+    entry->anchor = anchor;
+    if (ctx != NULL) ggml_reset(ctx);
+}
+
+static int align_gpu_prefill_cache_healthy(const struct align_gpu_device_state *state) {
+    return !state->workspace_failed && !state->weights_failed && !state->kv_failed
+        && !state->inputs_failed && !state->observation_failed;
+}
+
+int32_t align_gpu_prefill_graph_cache_activate(void *owner, int32_t index,
+        const void *key, int64_t key_length) {
+    struct align_gpu_device_state *state = owner;
+    if (state == NULL || !state->prefill_graph_cache || !state->inputs_finished
+        || state->input_buffer == NULL || !align_gpu_prefill_cache_healthy(state)
+        || index < 0 || index >= ALIGN_GPU_PREFILL_ENTRIES
+        || !align_gpu_topology_key_ok(key, key_length)
+        || (state->prefill_active && state->prefill_entries[state->prefill_active - 1].pending)) {
+        return ALIGN_GPU_CONFIG;
+    }
+    struct align_gpu_prefill_entry *entry = &state->prefill_entries[index];
+    if (entry->ctx == NULL) return ALIGN_GPU_CONFIG;
+    int hit = entry->prepared && memcmp(entry->key, key, 64) == 0;
+    if (hit && !state->workspace_prepared) return ALIGN_GPU_CONFIG;
+    if (!hit && entry->prepared && state->graph_invalidation_count[0] == INT64_MAX) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_CONFIG;
+    }
+    int32_t status = align_gpu_workspace_drain(state);
+    if (status != ALIGN_GPU_OK) return status;
+    if (align_gpu_workspace_content_advance(state) != ALIGN_GPU_OK) return ALIGN_GPU_CONFIG;
+    align_gpu_prefill_save(state);
+    align_gpu_prefill_detach(state);
+    if (!hit) {
+        state->workspace_prepared = 0;
+        if (entry->prepared) state->graph_invalidation_count[0] += 1;
+        align_gpu_prefill_reset(entry);
+        memcpy(entry->pending_key, key, 64);
+        entry->pending_key[64] = '\0';
+        entry->pending = 1;
+    }
+    state->prefill_active = index + 1;
+    state->graph_contexts[0] = entry->ctx;
+    if (hit) {
+        state->workspace_graphs[0] = entry->graph;
+        memcpy(state->graph_keys[0], entry->key, sizeof(entry->key));
+        state->graph_prepared[0] = 1;
+        state->graph_current_execution_count[0] = entry->executions;
+        state->native_q6_head_weights[0] = entry->head_weights;
+        state->native_q6_head_inputs[0] = entry->head_input;
+        state->native_q6_head_outputs[0] = entry->head_output;
+        state->prefill_rows_registered = entry->rows_registered;
+        state->prefill_rows_input = entry->rows_input;
+        state->prefill_rows_start = entry->rows_start;
+        state->prefill_rows_count = entry->rows_count;
+        state->prefill_rows_capacity = entry->rows_capacity;
+        state->graph_cached_nodes[0] = entry->nodes;
+        state->graph_cached_ops[0] = entry->ops;
+        state->graph_cached_layers[0] = entry->layers;
+        state->graph_cached_experts[0] = entry->experts;
+    }
+    return hit;
+}
+
+/* The selected candidate replaces its parked entry; it appears only once. */
+static int align_gpu_workspace_graphs(struct align_gpu_device_state *state,
+        struct ggml_context **contexts, struct ggml_cgraph **graphs) {
+    int count = 0;
+    if (state->prefill_graph_cache) {
+        for (int i = 0; i < ALIGN_GPU_PREFILL_ENTRIES; ++i) {
+            if (state->prefill_active == i + 1) {
+                if (!state->graph_prepared[0]) continue;
+                contexts[count] = state->graph_contexts[0];
+                graphs[count++] = state->workspace_graphs[0];
+            } else if (state->prefill_entries[i].prepared) {
+                contexts[count] = state->prefill_entries[i].ctx;
+                graphs[count++] = state->prefill_entries[i].graph;
+            }
+        }
+    }
+    for (int kind = state->prefill_graph_cache ? 1 : 0; kind < ALIGN_GPU_GRAPH_KINDS; ++kind) {
+        if (state->graph_prepared[kind]) {
+            contexts[count] = state->graph_contexts[kind];
+            graphs[count++] = state->workspace_graphs[kind];
+        }
+    }
+    return count;
+}
+
+/* Serial graphs share one allocator. Every layout change drains and rebinds all live
+ * graphs; opt-in retention preserves physical capacity, never old output validity. */
 static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state) {
     ggml_backend_buffer_type_t buft = NULL;
     struct ggml_cgraph *largest = NULL;
     size_t largest_bytes = 0;
-    int kind = 0;
+    struct ggml_context *contexts[6];
+    struct ggml_cgraph *graphs[6];
+    int count = 0;
     if (state == NULL || state->input_buffer == NULL) {
         return ALIGN_GPU_CONFIG;
     }
@@ -3429,34 +3835,30 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
         return ALIGN_GPU_COMPUTE;
     }
 #endif
-    for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; ++kind) {
-        if (state->graph_prepared[kind]) {
-            align_gpu_workspace_context_reset(state, state->graph_contexts[kind]);
-        }
-    }
-    if (state->workspace_allocator != NULL) {
+    if (align_gpu_workspace_content_advance(state) != ALIGN_GPU_OK) return ALIGN_GPU_CONFIG;
+    state->workspace_prepared = 0;
+    count = align_gpu_workspace_graphs(state, contexts, graphs);
+    for (int i = 0; i < count; ++i) align_gpu_workspace_context_reset(state, contexts[i]);
+    if (state->workspace_allocator != NULL && !state->retain_workspace) {
         ggml_gallocr_free(state->workspace_allocator);
         state->workspace_allocator = NULL;
     }
-    state->workspace_prepared = 0;
     buft = ggml_backend_get_default_buffer_type(state->backend);
     if (buft == NULL) {
         return ALIGN_GPU_ALLOCATION;
     }
-    for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; ++kind) {
+    for (int i = 0; i < count; ++i) {
         size_t required = 0;
-        if (!state->graph_prepared[kind]) {
-            continue;
-        }
-        if (!align_gpu_graph_required(buft, state->workspace_graphs[kind], &required)) {
+        if (!align_gpu_graph_required(buft, graphs[i], &required)) {
             return ALIGN_GPU_ALLOCATION;
         }
         if (largest == NULL || required > largest_bytes) {
-            largest = state->workspace_graphs[kind];
+            largest = graphs[i];
             largest_bytes = required;
         }
     }
     if (largest == NULL) {
+        if (state->prefill_graph_cache) state->workspace_prepared = 1;
         return ALIGN_GPU_OK;
     }
     if (state->input_offset >= (size_t) state->workspace_bytes
@@ -3470,20 +3872,29 @@ static int32_t align_gpu_workspace_rebuild(struct align_gpu_device_state *state)
         return ALIGN_GPU_OK;
     }
     if (ALIGN_GPU_FORCE_ALLOCATION_PREFIX == 5) { return ALIGN_GPU_ALLOCATION; }
-    state->workspace_allocator = ggml_gallocr_new(buft);
+    if (state->retain_workspace && ALIGN_GPU_FORCE_WORKSPACE_RETAIN_RESERVE) {
+        fprintf(stderr, "workspace_retain forced reserve failure before reserve\n");
+        return ALIGN_GPU_ALLOCATION;
+    }
+    if (state->workspace_allocator == NULL) {
+        state->workspace_allocator = ggml_gallocr_new(buft);
+    }
     if (state->workspace_allocator == NULL
         || !ggml_gallocr_reserve(state->workspace_allocator, largest)) {
         return ALIGN_GPU_ALLOCATION;
     }
-    for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; ++kind) {
-        if (state->graph_prepared[kind]
-            && !ggml_gallocr_alloc_graph(
-                state->workspace_allocator, state->workspace_graphs[kind])) {
+    for (int i = 0; i < count; ++i) {
+        if (!ggml_gallocr_alloc_graph(state->workspace_allocator, graphs[i])) {
+            return ALIGN_GPU_ALLOCATION;
+        }
+        if (state->retain_workspace && ALIGN_GPU_FORCE_WORKSPACE_RETAIN_BIND) {
+            fprintf(stderr, "workspace_retain forced bind failure after first bind\n");
             return ALIGN_GPU_ALLOCATION;
         }
     }
-    if (ggml_gallocr_get_buffer_size(state->workspace_allocator, 0) > largest_bytes
-        || largest_bytes > (size_t) state->workspace_bytes - state->input_offset) {
+    size_t actual_bytes = ggml_gallocr_get_buffer_size(state->workspace_allocator, 0);
+    if ((!state->retain_workspace && actual_bytes > largest_bytes)
+        || actual_bytes > (size_t) state->workspace_bytes - state->input_offset) {
         return ALIGN_GPU_MEMORY_BUDGET;
     }
     state->workspace_prepared = 1;
@@ -3511,6 +3922,29 @@ static int align_gpu_graph_supported(struct align_gpu_device_state *state, struc
     return 1;
 }
 
+static int align_gpu_context_contains(struct ggml_context *ctx, const void *pointer) {
+    uintptr_t start = (uintptr_t) ggml_get_mem_buffer(ctx);
+    uintptr_t value = (uintptr_t) pointer;
+    size_t used = ggml_used_mem(ctx);
+    return pointer != NULL && value >= start && value - start < used;
+}
+
+static int align_gpu_graph_anchor_check(struct align_gpu_device_state *state,
+        int kind, struct ggml_cgraph *graph) {
+    if (!state->prefill_graph_cache) return 1;
+    struct ggml_context *ctx = state->graph_contexts[kind];
+    if (ctx == NULL || !align_gpu_context_contains(ctx, graph)
+        || ggml_graph_n_nodes(graph) < 1) return 0;
+    struct ggml_tensor *node = ggml_graph_node(graph, 0);
+    if (!align_gpu_context_contains(ctx, node)) return 0;
+    struct ggml_tensor **anchor = kind == 0
+        ? &state->prefill_entries[state->prefill_active - 1].anchor
+        : &state->decode_anchors[kind - 1];
+    if (*anchor != NULL && *anchor != node) return 0;
+    *anchor = node;
+    return 1;
+}
+
 int32_t align_gpu_graph_prepare(
         void *owner, int32_t kind, const void *key, int64_t key_length, void *graph) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
@@ -3522,10 +3956,25 @@ int32_t align_gpu_graph_prepare(
     int node = 0;
     if (state == NULL || graph == NULL || !state->weights_finished || !state->kv_finished
         || !state->inputs_finished || state->workspace_failed
+        || (state->prefill_graph_cache && !align_gpu_prefill_cache_healthy(state))
         || state->input_buffer == NULL || !align_gpu_graph_kind_ok(kind)
         || state->graph_contexts[kind] == NULL || state->graph_prepared[kind]
         || !align_gpu_topology_key_ok(key, key_length)
         || state->graph_prepare_count[kind] == INT64_MAX) {
+        if (state != NULL && align_gpu_graph_kind_ok(kind) && state->prefill_graph_cache
+            && state->graph_prepare_count[kind] == INT64_MAX) state->workspace_failed = 1;
+        return ALIGN_GPU_CONFIG;
+    }
+    if (state->prefill_graph_cache && kind == 0
+        && (!state->prefill_active
+            || !state->prefill_entries[state->prefill_active - 1].pending
+            || memcmp(state->prefill_entries[state->prefill_active - 1].pending_key, key, 64) != 0
+            || state->native_state_copy_count[0] || state->native_conv_copy_count[0]
+            || state->native_copy_greedy_source[0] != NULL)) {
+        return ALIGN_GPU_CONFIG;
+    }
+    if (!align_gpu_graph_anchor_check(state, kind, graph)) {
+        state->workspace_failed = 1;
         return ALIGN_GPU_CONFIG;
     }
     if (!align_gpu_graph_supported(state, (struct ggml_cgraph *) graph)) {
@@ -3534,6 +3983,10 @@ int32_t align_gpu_graph_prepare(
     }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     align_gpu_graph_optimize(state->backend, (struct ggml_cgraph *) graph);
+    if (!align_gpu_graph_anchor_check(state, kind, graph)) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_CONFIG;
+    }
     for (node = 0; node < ggml_graph_n_nodes((struct ggml_cgraph *) graph); node++) {
         if (ggml_graph_node((struct ggml_cgraph *) graph, node)->op != GGML_OP_NONE) {
             observed_nodes += 1;
@@ -3564,16 +4017,67 @@ int32_t align_gpu_graph_prepare(
         state->workspace_failed = 1;
         return status;
     }
+    if (state->prefill_graph_cache && kind == 0) {
+        if (ALIGN_GPU_FORCE_PREFILL_CACHE_PUBLISH) {
+            fprintf(stderr, "prefill_cache forced publication failure\n");
+            state->workspace_failed = 1;
+            return ALIGN_GPU_ALLOCATION;
+        }
+        struct align_gpu_prefill_entry *entry = &state->prefill_entries[state->prefill_active - 1];
+        state->graph_current_execution_count[0] = 0;
+        align_gpu_prefill_save(state);
+        entry->prepared = 1;
+        entry->pending = 0;
+        entry->pending_key[0] = '\0';
+    }
     state->graph_prepare_count[kind] += 1;
     state->graph_current_execution_count[kind] = 0;
     return ALIGN_GPU_OK;
 }
 
+int32_t align_gpu_prefill_graph_cache_release(void *owner, int32_t clear) {
+    struct align_gpu_device_state *state = owner;
+    if (state == NULL || !state->prefill_graph_cache || !align_gpu_prefill_cache_healthy(state)
+        || (clear != 0 && clear != 1)
+        || (!clear && state->prefill_active
+            && state->prefill_entries[state->prefill_active - 1].pending)) {
+        return ALIGN_GPU_CONFIG;
+    }
+    int resets = 0;
+    for (int i = 0; i < ALIGN_GPU_PREFILL_ENTRIES; ++i) {
+        if (state->prefill_entries[i].prepared || state->prefill_entries[i].pending) resets++;
+    }
+    if (clear && state->graph_invalidation_count[0] > INT64_MAX - resets) {
+        state->workspace_failed = 1;
+        return ALIGN_GPU_CONFIG;
+    }
+    int32_t status = align_gpu_workspace_drain(state);
+    if (status != ALIGN_GPU_OK) return status;
+    if (align_gpu_workspace_content_advance(state) != ALIGN_GPU_OK) return ALIGN_GPU_CONFIG;
+    align_gpu_prefill_save(state);
+    align_gpu_prefill_detach(state);
+    if (clear) {
+        for (int i = 0; i < ALIGN_GPU_PREFILL_ENTRIES; ++i) {
+            align_gpu_prefill_reset(&state->prefill_entries[i]);
+        }
+        state->graph_invalidation_count[0] += resets;
+        if (state->input_buffer != NULL) status = align_gpu_workspace_rebuild(state);
+        if (status != ALIGN_GPU_OK) state->workspace_failed = 1;
+    }
+    return status;
+}
+
 int32_t align_gpu_graph_invalidate(void *owner, int32_t kind) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     int32_t status = ALIGN_GPU_OK;
+    if (state != NULL && state->prefill_graph_cache && kind == 0) {
+        return align_gpu_prefill_graph_cache_release(owner, 1);
+    }
     if (state == NULL || !align_gpu_graph_kind_ok(kind) || !state->graph_prepared[kind]
+        || (state->prefill_graph_cache && !align_gpu_prefill_cache_healthy(state))
         || state->workspace_failed || state->graph_invalidation_count[kind] == INT64_MAX) {
+        if (state != NULL && align_gpu_graph_kind_ok(kind) && state->prefill_graph_cache
+            && state->graph_invalidation_count[kind] == INT64_MAX) state->workspace_failed = 1;
         return ALIGN_GPU_CONFIG;
     }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
@@ -3914,6 +4418,7 @@ int32_t align_gpu_graph_compute(
     int64_t observed_experts = 0;
     if (state == NULL || graph == NULL || !align_gpu_graph_kind_ok(kind)
         || !state->workspace_prepared || state->workspace_failed || !state->graph_prepared[kind]
+        || (state->prefill_graph_cache && !align_gpu_prefill_cache_healthy(state))
         || state->workspace_graphs[kind] != (struct ggml_cgraph *) graph
         || !align_gpu_topology_key_ok(key, key_length)
         || memcmp(state->graph_keys[kind], key, 64) != 0) {
@@ -3927,11 +4432,14 @@ int32_t align_gpu_graph_compute(
         if ((state->row_registered[0] && !state->row_position_valid)
             || (state->row_registered[1] && !state->row_values_valid)) { return ALIGN_GPU_CONFIG; }
     }
+    if (align_gpu_workspace_content_advance(state) != ALIGN_GPU_OK) return ALIGN_GPU_CONFIG;
     if (kind == ALIGN_GPU_FORCE_COMPUTE_KIND) { state->workspace_failed = 1; return ALIGN_GPU_COMPUTE; }
     if (!align_gpu_observe_payload(state)) { return ALIGN_GPU_CONFIG; }
     if (state->graph_execution_count[kind] == INT64_MAX
+        || state->graph_current_execution_count[kind] == INT64_MAX
         || (state->graph_current_execution_count[kind] > 0
             && state->graph_reuse_count[kind] == INT64_MAX)) {
+        if (state->prefill_graph_cache) state->workspace_failed = 1;
         return ALIGN_GPU_CONFIG;
     }
     observed_nodes = state->graph_cached_nodes[kind];
@@ -3985,6 +4493,10 @@ int32_t align_gpu_graph_compute(
     state->observation_experts += observed_experts;
     state->graph_current_execution_count[kind] += 1;
     state->graph_execution_count[kind] += 1;
+    if (state->prefill_graph_cache && kind == 0) align_gpu_prefill_save(state);
+    if (state->retain_workspace) {
+        state->graph_result_generation[kind] = state->workspace_content_generation;
+    }
     return ALIGN_GPU_OK;
 }
 
@@ -4011,7 +4523,8 @@ int64_t align_gpu_observation_state(void *owner, int32_t field) {
 void *align_gpu_graph_context_lookup(void *owner, int32_t kind) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || !align_gpu_graph_kind_ok(kind) || state->shape_planning
-        || state->workspace_failed) { return NULL; }
+        || state->workspace_failed
+        || (state->prefill_graph_cache && !align_gpu_prefill_cache_healthy(state))) { return NULL; }
     return state->graph_contexts[kind];
 }
 
@@ -4019,6 +4532,7 @@ void *align_gpu_graph_lookup(void *owner, int32_t kind, const void *key, int64_t
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
     if (state == NULL || !align_gpu_graph_kind_ok(kind) || state->shape_planning
         || !state->workspace_prepared || state->workspace_failed || !state->graph_prepared[kind]
+        || (state->prefill_graph_cache && !align_gpu_prefill_cache_healthy(state))
         || !align_gpu_topology_key_ok(key, key_length)
         || memcmp(state->graph_keys[kind], key, 64) != 0) {
         return NULL;
@@ -4028,7 +4542,8 @@ void *align_gpu_graph_lookup(void *owner, int32_t kind, const void *key, int64_t
 
 int64_t align_gpu_graph_state(void *owner, int32_t kind, int32_t field) {
     struct align_gpu_device_state *state = (struct align_gpu_device_state *) owner;
-    if (state == NULL || !align_gpu_graph_kind_ok(kind) || state->graph_contexts[kind] == NULL) {
+    if (state == NULL || !align_gpu_graph_kind_ok(kind)
+        || (state->graph_contexts[kind] == NULL && !(state->prefill_graph_cache && kind == 0))) {
         return -1;
     }
     switch (field) {
@@ -4904,11 +5419,18 @@ static int align_gpu_slot_ready(struct align_gpu_device_state *state, struct ggm
     int kind = 0;
     int node = 0;
     if (state == NULL || tensor == NULL || state->observation_failed) { return 0; }
+    if (state->retain_workspace && (!state->workspace_prepared || state->workspace_failed
+        || state->weights_failed || state->kv_failed || state->inputs_failed
+        || state->workspace_content_generation == 0)) { return 0; }
     if (state->last_slot_get_tensor != NULL && state->last_slot_get_tensor == tensor) {
         return 1;
     }
     for (kind = 0; kind < ALIGN_GPU_GRAPH_KINDS; kind++) {
         if (!state->graph_prepared[kind] || state->graph_current_execution_count[kind] < 1) {
+            continue;
+        }
+        if (state->retain_workspace
+            && state->graph_result_generation[kind] != state->workspace_content_generation) {
             continue;
         }
         struct ggml_cgraph *graph = state->workspace_graphs[kind];

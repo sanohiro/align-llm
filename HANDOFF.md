@@ -4,14 +4,163 @@ Read `CLAUDE.md` first. Architecture and ordering live in `docs/specs/`.
 
 ## Requested CUDA publication boundary (2026-10-01)
 
-Branch `agent/cuda-q4-split-screen`, base `687acd3`. The user now authorizes
+Branch `agent/cuda-request-reuse`, prior base `687acd3`. The user now authorizes
 publication and integration of the completed CUDA work, followed by a stop.
-This independently usable diagnostic is the first publication capability;
-the completed B1/B2/B3 request-input, workspace and prefill-cache capability
-is published separately. No new optimization or roadmap work is authorized.
-Next: qualify and review this exact candidate, publish and merge it, then
-publish the completed runtime capability and stop after its merge.
-Historical no-publication instructions below are superseded by this request.
+The independent R1 Q4 diagnostic is published first. B1/B2/B3 are one completed
+runtime consumer capability: batched decode inputs, retained workspace and
+four-entry prefill topology reuse. Their qualified product source and measured
+artifacts are preserved; selectors remain opt-in with default zero.
+Next: qualify and comprehensively review the exact publication candidate, merge
+after its required checks pass, then stop. No next optimization or roadmap
+capability is selected. Historical no-publication instructions below are
+superseded by this request. GitHub owns publication/review/check metadata.
+
+## CUDA B3 prefill graph cache (2026-10-01)
+
+Branch `agent/cuda-q4-repack-plan`, HEAD/base `687acd3`. The user authorized
+implementation after the CLEAN design review. Four fixed prefill entries and
+both Align consumers are implemented and qualified. One fresh comprehensive
+implementation review is complete; its two P2 acceptance-evidence findings are
+resolved by focused fixture additions. No active work remains at this checkpoint.
+No commit/publication or compiler-pin change is requested. Prior B1/R1/B2 dirty
+work remains intentional and its unrelated source is preserved.
+
+Complete: exact full logits/state through 2048 and all named boundaries; four
+head/batch combinations; retained shape churn, equal-length changed content,
+single output/EOG/reset/refusals and exact host budget; native-copy and six forced
+fault owners; HTTP/SSE/disconnect/recovery; growth/collision/partial construction
+and bind memcheck with zero errors/leaks. `make check` (169 units), generation
+owner check (38 units), native build, formatter, stub and Python boundary pass.
+Final healthy-state guards and the expanded lifecycle owner pass against the
+final source/artifact; all six forced faults have fresh passing evidence.
+Review repair: reverse selector/planning refusals preserve state; missing/wrong/
+consumed row indices refuse on cached graphs before a fresh successful compute.
+A traced pre-first-token reset executes clear-0 cleanup and the following ordinary
+and streaming requests match. The expanded ordinary memcheck also has zero
+errors/leaks. Product source and final performance artifacts remain unchanged.
+
+Four 37-request diagnostics agree on all 148 outputs/counts; off/on request,
+prefill and decode kernel multisets match. Prefill builds fall 140->90 with 50
+hits; warm 200/330 inputs use two/three CUDA graph launches. Backend keys stay
+<=6. Metadata reservation adds 72 MiB; exact host minimum is 210,829,312 bytes.
+Final host-screen RSS delta is 29,147,136 bytes; device-used peak difference is 23,068,672
+bytes and same-process close-normalized difference is zero. Long inputs can
+thrash; first capture/idle return remain measured costs, not omitted warmups.
+
+Two final authenticated 900-request campaigns repeat B2-relative paired savings
+of 1.888/1.787 ms (56/16), 12.690/13.320 ms (200/32), and 16.905/19.513 ms
+(330/64); every comparison wins 5/5 pairs. Earlier exploratory campaigns remain
+retained and excluded from this final-artifact claim.
+
+Next: no further implementation is selected; retain the qualified opt-in and
+select a new capability only on fresh evidence and user authorization. The B3 ledger
+in `docs/specs/gpu-runtime-performance.md` is authoritative; the optimization log
+owns commands/results/limits. External `prefill-cache-20261001` retains the start
+tree, artifacts, samples and traces. No new Align gap; Request 121 remains
+non-blocking. CPU/Metal/other models/GPUs and hardware counters are deferred.
+The Align-only oversized-index execution fixture is explicitly deferred;
+the checked I64 wrapper compiles and the product index is bounded to 0..3.
+R2 remains unselected. Default remains off.
+The original reviewed candidate/manifest remain frozen; `review-result.json`
+records the complete review envelope, accepted findings, consolidated local
+repair and final identities. Only the named owner/validation additions and
+completion records changed afterward. Publication preflight remains N/A.
+
+## CUDA B2 workspace retention (2026-10-01)
+
+Branch `agent/cuda-q4-repack-plan`, HEAD/base `687acd3`. The user authorized
+implementation after the reviewed post-B1 profile/design. B2 implementation,
+owner qualification and one fresh independent comprehensive review are complete.
+Review verdict: CLEAN, no findings. No active work remains at this local
+checkpoint; no commit or publication is requested. A future capability requires
+selection of its own contract and owner evidence.
+Prior B1/R1 work is preserved; B2 extends its shim/consumer, while the R1 kernels
+and authenticated B1 baseline artifact remain unchanged.
+
+Complete:
+- Default-off `ALIGN_LLM_RETAIN_WORKSPACE=0|1`, CUDA product selection, one retained
+  allocator, full rebind/drain/budget checks and checked result generations.
+- Real-backend layout/output/budget/planning/partial-construction/cleanup owners;
+  exact logits/state at 31 through 2048 and all named chunk boundaries, all four
+  head/batch combinations, retained short/wide/short/max/short, reset/EOG/refusals;
+  HTTP/SSE and native-copy interoperability; reserve/bind/helper completion faults.
+- Growth and partial-bind Compute Sanitizer: zero errors and zero leaked
+  allocations. `make check` (169 units), narrow owner (38), native build, formatter,
+  unavailable stub build, syntax, Python boundary and diff checks pass.
+- Two 26-request node traces plus two separate 26-request host diagnostics agree
+  on all 104 outputs/counts and off/on kernel work. Repeated CUDA allocation calls
+  drop 4/8/12 to zero; first 2048/3 growth drops 72 to 6. Whole-sequence explicit
+  workspace/input/head peak stays 16,613,592 bytes; final residency rises by
+  13,303,552 bytes. Shim state adds 40 bytes; allocator-owned host extent peaks
+  at 524,432 bytes in both arms. Graph topology/recapture policy is unchanged.
+- Two 900-request campaigns give same-binary savings at 56/16, 200/32, 330/64 of
+  2.292/2.922/1.737 ms, then 2.277/-1.632/1.777 ms. Short/wider repeat; 200/32
+  remains unsettled. Keep the qualified opt-in with default 0; no uniform adoption.
+
+The post-B1 ledger in `docs/specs/gpu-runtime-performance.md` is authoritative;
+the B2 receipt in `docs/cuda-native-optimization-log.md` owns commands and limits.
+External `workspace-retain-20261001` retains the exact prior working-tree snapshot,
+B2 sources, binary/shim identities, profiles, failures and every sample. Intentional
+uncommitted files include prior B1/R1 work plus this B2 capability. No new Align gap
+or pin adoption is required. CPU/Metal, other GPUs/models and hardware counters
+remain explicitly deferred. Prefill topology caching and R2 stream bridging are
+conditional follow-ons, neither selected nor started by this capability.
+The reviewed candidate and evidence manifest remain frozen; `review-result.json`
+binds the CLEAN review to final file identities. Only this completion record and
+the receipt's review/lesson paragraphs changed after review; implementation and
+measurement bytes are unchanged. Final documentation consistency and diff checks
+pass.
+
+## CUDA request-bottleneck implementation (2026-10-01)
+
+Completed B1 checkpoint; the post-B1 design above owns the current next action.
+Branch `agent/cuda-q4-repack-plan`, source/base `687acd3`. The user authorized
+implementation after the investigation and disk cleanup/additional traces.
+B1 implementation, qualification and independent review are complete.
+No commit, publication or merge is requested. The preceding eight-file R1
+checkpoint remains intact; its reviewed kernel/screen hashes are unchanged.
+
+Complete:
+- B0 chunk 512 is rejected for adoption: at 200 tokens, logit 0 differs by
+  0.053971, exceeding the existing 0.01 bound. The 31-token case is identical,
+  but text parity does not qualify larger prompts. Default/control stays 128.
+- B1 queues the four scalar decode input updates on the existing backend stream
+  and returns after one completion barrier. Reused session buffers add <=9,368
+  host bytes and no explicit device allocation. Default-off
+  `ALIGN_LLM_BATCH_DECODE_INPUTS=0|1` initially admits mode 1 only on CUDA.
+- Real GPU ABI/row/byte/refusal/drain/poison/cleanup owners, complete real-model
+  logits/state at 31/200/330/2048 tokens, retained reset/EOG/budget owners, both
+  injected worker faults and HTTP/SSE disconnect/recovery owners pass.
+  Focused submit-failure memcheck has zero errors/leaks. `make check` (169 units),
+  narrow generation check (38 units), `make fmt`, Python boundary/syntax, shell
+  syntax and diff checks pass.
+- Two five-pair/twenty-request campaigns retain 1,800 timed Align requests.
+  Same-binary paired savings at 56/16, 200/32, 330/64 are 1.198/2.269/6.390 ms,
+  then 2.087/5.996/1.969 ms. All six llama comparisons win 5/5 pairs; the
+  preserved-native 200/32 saving is -0.056 then +2.550 ms and remains uncertain.
+  Keep the opt-in trial/default 0; no uniform/default adoption is claimed.
+- Three retained 200/32 node traces per arm have identical kernel/count work
+  and 31 graph launches; scalar input waits drop 124 to 31 (total decode-tail
+  synchronizations 192 to 99), with the same 124 transfers. Warmups/first-use
+  remain retained. The earlier graph-recapture uncertainty is not generalized away.
+
+No active implementation remains. One fresh comprehensive B1 review found only
+two P3 receipt corrections (exact warmup counts and original summary precision).
+Both are accepted and repaired together; code/measurement are unchanged and no
+finding remains open. The next conditional bottleneck candidate is B2 workspace
+retention, requiring its own selected contract and varied-shape evidence. R2 stream
+bridging is later. Neither is started or selected by this capability; do not resume
+unchanged Q4/tail tuning. Publication remains unrequested.
+
+The authoritative contract is the CUDA request-bottleneck ledger in
+`docs/specs/gpu-runtime-performance.md`; the implementation receipt in
+`docs/cuda-native-optimization-log.md` owns commands/results/uncertainty.
+External bundle `input-batch-20261001` retains sources, hashes, mapping receipts,
+raw samples and traces. The pre-existing legacy workspace C owner fails its
+F32 KV fixture before the changed path on both HEAD and candidate; it is excluded
+and deferred separately. The existing non-blocking Align Request 121 is reproduced
+and recorded; no new language API/pin is consumed. Hardware counters still need
+Windows-host permission. Disk capacity is sufficient after the authorized cache cleanup.
 
 ## CUDA Q4 split-layout implementation (2026-10-01)
 
@@ -53,13 +202,13 @@ and both wrong-library directions still refuse. The two rounded receipt cells
 were corrected to the original printed medians. The repair did not change the
 kernel, layout, timing envelope or adoption decision; no finding remains open.
 
-No active work remains in this local diagnostic checkpoint. D0 inspected the retained greedy-head
-200/32 trace: decode ggml producer-to-head quantization median 52.803 us.
-R2 remains useful but requires a separate explicit ggml/CUDA ordering bridge.
+No active implementation remains in this local diagnostic checkpoint. D0 inspected the preserved
+greedy-head cold 200/32 trace: decode ggml producer-to-head quantization median 52.803 us.
+R2 requires a separate explicit ggml/CUDA ordering bridge.
 Whole-request connection and its exact product contract remain deferred.
 The eight source/documentation files in this branch are intentional uncommitted
-work; no publication is requested. The next useful design target is R2's
-explicit ggml/CUDA dependency bridge, not another unchanged FFN-tail attempt.
+work; no publication is requested. The later warm-request plan above supersedes
+the original next-target nomination of R2's ggml/CUDA dependency bridge.
 
 ## Completed larger CUDA FFN/residual/norm/head trial (2026-09-30)
 

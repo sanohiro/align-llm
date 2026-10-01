@@ -1,5 +1,44 @@
 # Python execution-boundary audit
 
+The prefill-cache extension of `scripts/run-qwen35-native-q6-head-smoke` is
+`INDEPENDENT_ORACLE`: fixed off/on requests compare complete logits/state,
+replacement and failure envelopes. The `prefill-cache` mode of
+`scripts/measure-qwen35-native-cuda` and external `prefill-cache-20261001`
+profile callers/reducers are `BENCHMARK_OR_MEASUREMENT`. They call the native
+product, authenticate artifacts and record timings/memory; no product graph
+selection, construction, model arithmetic or normal execution is delegated.
+Its external failure/copy/cancellation validators are `INDEPENDENT_ORACLE`,
+reusing explicit native workers, the existing complete-vector/state tracer and
+the HTTP/SSE oracle. Cancellation observation only forwards native activation,
+compute and release calls and records completion timestamps; it never changes
+product execution or waits inside a product call.
+
+External `prefill-reuse-plan-20261001` fixed-request callers and trace/host
+reducers are `BENCHMARK_OR_MEASUREMENT`: they inspect the authenticated B2
+binary, existing Nsight reports, topology identities and metadata extents.
+Diagnostic C interposition forwards original calls and reads graph metadata;
+it does not choose, retain, rewrite or execute an alternative product graph.
+Normal inference never invokes these developer diagnostics.
+
+The workspace-retention modes of `scripts/run-qwen35-native-q6-head-smoke`
+remain `INDEPENDENT_ORACLE`: they compare complete logits, valid state,
+retained requests and failure envelopes for the explicit off/on selector.
+The `workspace-retain` mode of `scripts/measure-qwen35-native-cuda` remains
+`BENCHMARK_OR_MEASUREMENT`, measuring authenticated product binaries on fixed
+requests. Both reuse the existing independent callers and perform no product
+allocation, graph construction or inference arithmetic.
+External `workspace-retain-20261001` profile callers/reducers are also
+`BENCHMARK_OR_MEASUREMENT`. Their C interposer reads allocator metadata using
+the exact pinned ggml layout and records host allocation sizes; it neither
+changes allocator state nor participates in normal execution.
+
+The external `post-b1-profile-20261001` diagnostic callers and SQLite reducers are
+`BENCHMARK_OR_MEASUREMENT`: they replay fixed requests against the already built
+B1 binary, retain raw timings and Nsight events, and attribute graph preparation,
+allocation, transfers and kernel intervals. They do not build or select product
+graphs, compute model values, or enter normal inference. Diagnostic interposition
+only brackets existing calls and records their allocation identities.
+
 `scripts/measure-metal-q4-final-ffn-request` is `BENCHMARK_OR_MEASUREMENT`:
 it starts explicit real-model Align workers with a developer-only Metal
 interposer, verifies token IDs, generated text and actual work, and records
@@ -68,7 +107,10 @@ Align product; its tracing and decisions never enter product inference.
 the recorded real 2B CUDA product in default and explicit native-head modes,
 compares every diagnostic F32 logit, chosen token and resident-state digest,
 compares model-work counts and device-budget observations, and checks
-refusal/failure envelopes, including CUDA greedy-read failure. It never computes a model value or
+refusal/failure envelopes, including CUDA greedy-read failure. Its explicit input-batch
+owner compares batch off/on with chunk 128 and the native head fixed, including full
+logits/state, retained reset, maximum mask width and injected batch failures.
+It never computes a model value or
 selects an inference operation for production.
 `scripts/measure-native-swiglu` remains `BENCHMARK_OR_MEASUREMENT`; its explicit
 copy and native-greedy arms are independent workload selectors and cannot choose a model
@@ -134,6 +176,9 @@ bounded request repetitions report every sample to assess timing uncertainty. It
 computes logits nor chooses product tokens. Its explicit
 `QWEN35_CUDA_MEASURE_MODE=q6-head` arm compares the default graph with the
 opt-in independent CUDA head while keeping native state copy disabled in both.
+Its `input-batch` mode fixes that qualified head/chunk-128 control, varies only
+the synchronous decode-input batch selector, and retains the same optional pinned
+llama and previous-binary identity checks.
 
 `scripts/measure-native-swiglu` is `BENCHMARK_OR_MEASUREMENT`: it launches
 native products/reference executables, captures timing and checks output/counts.
