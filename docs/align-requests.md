@@ -592,7 +592,7 @@ unmeasured in `docs/backend-parity.md`.
 
 ### Request 94: fixed-size inline arrays in structs ([T; N]) to eliminate decode-step heap allocations (2026-09-17)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: high
 Blocking: no
 Blocked gate or slice: none
@@ -960,7 +960,7 @@ partition is formed.
 
 ### Request 99: derive a complete memory-effects model for every runtime ABI symbol (2026-09-18)
 
-Status: ALIGN_MERGED
+Status: ALIGN_MERGED; ALIGN_LLM_VERIFIED pending
 Priority: high
 Blocking: no
 Blocked gate or slice: none
