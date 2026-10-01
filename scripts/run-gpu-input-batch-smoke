@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "$#" != 3 ]; then
+  printf '%s\n' 'usage: run-gpu-input-batch-smoke GGML_SOURCE GGML_LIB GPU_PLUGIN' >&2
+  exit 2
+fi
+root_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd -P)
+source_dir=$(realpath -- "$1")
+library_dir=$(realpath -- "$2")
+plugin=$(realpath -- "$3")
+test -f "$source_dir/ggml/include/ggml.h"
+test -f "$library_dir/libggml.so" || test -f "$library_dir/libggml.dylib"
+test -f "$plugin"
+work_dir=$(mktemp -d)
+trap 'rm -r -- "$work_dir"' EXIT
+for mode in ordinary submit completion; do
+  flags=()
+  if [ "$mode" = submit ]; then flags+=(-DALIGN_GPU_FORCE_INPUT_BATCH_SUBMIT_FAILURE=1); fi
+  if [ "$mode" = completion ]; then flags+=(-DALIGN_GPU_FORCE_INPUT_BATCH_COMPLETION_FAILURE=1); fi
+  "${CC:-cc}" -std=c11 -O2 -Wall -Wextra -Werror -ffp-contract=off \
+    -DALIGN_GGML_FP_CONTRACT_OFF=1 "${flags[@]}" \
+    -I"$source_dir/ggml/include" "$root_dir/scripts/gpu_input_batch_smoke.c" \
+    -L"$library_dir" -Wl,-rpath,"$library_dir" -lggml -lggml-base -lm -ldl \
+    -o "$work_dir/$mode"
+  "$work_dir/$mode" "$plugin"
+done

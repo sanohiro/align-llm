@@ -301,6 +301,10 @@ extern "C" link("align_ggml_shim") {
   fn align_gpu_device_synchronize(owner: raw) -> i32
   fn align_gpu_host_reserve(owner: raw, bytes: i64) -> i32
   fn align_gpu_host_reserved(owner: raw) -> i64
+  fn align_gpu_workspace_retain_mode(owner: raw, mode: i32) -> i32
+  fn align_gpu_prefill_graph_cache_mode(owner: raw, mode: i32) -> i32
+  fn align_gpu_prefill_graph_cache_activate(owner: raw, entry: i32, key: str, key_length: i64) -> i32
+  fn align_gpu_prefill_graph_cache_release(owner: raw, clear: i32) -> i32
   fn align_gpu_memory_admit(
     owner: raw,
     weights_bytes: i64,
@@ -425,6 +429,10 @@ extern "C" link("align_ggml_shim") {
   ) -> i32
   fn align_gpu_input_update(
     owner: raw, index: i64, offset: i64, data: slice<u8>, length: i64,
+  ) -> i32
+  fn align_gpu_inputs_update_batch(
+    owner: raw, descriptors: slice<u8>, descriptor_bytes: i64,
+    payload: slice<u8>, payload_bytes: i64,
   ) -> i32
   fn align_gpu_input_state(owner: raw, field: i32) -> i64
   fn align_gpu_weight_slot(owner: raw, index: i64, slots: slice<u8>, out: i64) -> i32
@@ -770,6 +778,50 @@ pub fn gpu_attention_select(borrow owner: GpuDevice, policy: i64) -> Result<(), 
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
   }
+}
+
+pub fn gpu_workspace_retain_select(borrow owner: GpuDevice, enabled: bool) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_workspace_retain_mode(resource.raw(resource.borrow(owner)),
+      if enabled { 1 } else { 0 }) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+  }
+  return Ok(())
+}
+
+pub fn gpu_prefill_graph_cache_select(borrow owner: GpuDevice, enabled: bool) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_prefill_graph_cache_mode(resource.raw(resource.borrow(owner)),
+      if enabled { 1 } else { 0 }) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+  }
+  return Ok(())
+}
+
+pub fn gpu_prefill_graph_cache_activate(borrow owner: GpuDevice, entry: i64,
+  key: str,
+) -> Result<bool, Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  if entry < 0 || entry > 3 { return Err(gpu_fault_for(GPU_STATUS_CONFIG)) }
+  unsafe {
+    status := align_gpu_prefill_graph_cache_activate(resource.raw(resource.borrow(owner)),
+      entry as i32, key, key.len()) as i64
+    if status < 0 { return Err(gpu_fault_for(status)) }
+    if status > 1 { return Err(gpu_fault_for(GPU_STATUS_CONFIG)) }
+    return Ok(status == 1)
+  }
+}
+
+pub fn gpu_prefill_graph_cache_release(borrow owner: GpuDevice, clear: bool) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_PLAN)
+  unsafe {
+    status := align_gpu_prefill_graph_cache_release(resource.raw(resource.borrow(owner)),
+      if clear { 1 } else { 0 }) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+  }
+  return Ok(())
 }
 
 pub fn gpu_attention_policy(borrow owner: GpuDevice) -> i64 {
@@ -1497,6 +1549,20 @@ pub fn gpu_input_update(
     status := align_gpu_input_update(
       resource.raw(resource.borrow(owner)), index, offset, data, data.len(),
     ) as i64
+    if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
+    return Ok(())
+  }
+}
+
+pub fn gpu_inputs_update_batch(
+  borrow owner: GpuDevice,
+  borrow descriptors: slice<u8>,
+  borrow payload: slice<u8>,
+) -> Result<(), Fault> {
+  gpu_failure_activity(GPU_STAGE_UPLOAD)
+  unsafe {
+    status := align_gpu_inputs_update_batch(resource.raw(resource.borrow(owner)),
+      descriptors, descriptors.len(), payload, payload.len()) as i64
     if status != GPU_STATUS_OK { return Err(gpu_fault_for(status)) }
     return Ok(())
   }

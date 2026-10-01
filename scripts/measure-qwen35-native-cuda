@@ -116,8 +116,8 @@ def main() -> None:
         raise RuntimeError("QWEN35_CUDA_PAIR_REQUESTS must be an integer from 1 to 20")
     repetitions = int(repeat_text)
     measure_mode = os.environ.get("QWEN35_CUDA_MEASURE_MODE", "state-copy")
-    if measure_mode not in ("state-copy", "q6-head"):
-        raise RuntimeError("QWEN35_CUDA_MEASURE_MODE must be state-copy or q6-head")
+    if measure_mode not in ("state-copy", "q6-head", "input-batch", "workspace-retain", "prefill-cache"):
+        raise RuntimeError("unknown QWEN35_CUDA_MEASURE_MODE")
     model = Path(os.environ["QWEN35_GGUF"]).resolve()
     pack = Path(os.environ["QWEN35_ALIGNPACK"]).resolve()
     geometry = Path(os.environ["QWEN35_MODEL_IR"]).resolve()
@@ -129,8 +129,8 @@ def main() -> None:
     baseline_shim = None
     baseline_shim_digest = None
     if baseline is not None:
-        if measure_mode != "q6-head":
-            raise RuntimeError("previous native binary requires q6-head mode")
+        if measure_mode not in ("q6-head", "input-batch", "workspace-retain", "prefill-cache"):
+            raise RuntimeError("previous native binary requires q6-head or input-batch mode")
         with baseline.open("rb") as stream:
             baseline_digest = hashlib.file_digest(stream, "sha256").hexdigest()
         if baseline_digest != os.environ["QWEN35_CUDA_BASELINE_SHA256"]:
@@ -170,6 +170,8 @@ def main() -> None:
     command = [str(binary), "--runtime-session", str(model), str(pack),
                str(geometry), str(options), "0"]
     environment = os.environ.copy()
+    environment.pop("ALIGN_LLM_RETAIN_WORKSPACE", None)
+    environment.pop("ALIGN_LLM_PREFILL_GRAPH_CACHE", None)
     environment["ALIGN_LLM_NATIVE_CONV_COPY"] = "0"
     environment["ALIGN_LLM_NATIVE_PREFILL_STATE_COPY"] = "0"
     environment["ALIGN_LLM_NATIVE_COPY_GREEDY"] = "0"
@@ -178,11 +180,36 @@ def main() -> None:
     native_selection = dict(environment,
                             ALIGN_LLM_NATIVE_STATE_COPY="1" if measure_mode == "state-copy" else "0",
                             ALIGN_LLM_NATIVE_Q6_HEAD="1" if measure_mode == "q6-head" else "0")
+    previous_selection = native_selection
+    if measure_mode == "input-batch":
+        ordinary_selection.update(ALIGN_LLM_NATIVE_Q6_HEAD="1", ALIGN_LLM_PREFILL_CHUNK="128",
+                                  ALIGN_LLM_BATCH_DECODE_INPUTS="0")
+        native_selection.update(ALIGN_LLM_NATIVE_Q6_HEAD="1", ALIGN_LLM_PREFILL_CHUNK="128",
+                                ALIGN_LLM_BATCH_DECODE_INPUTS="1")
+        previous_selection = dict(ordinary_selection)
+    if measure_mode == "workspace-retain":
+        for arm in (ordinary_selection, native_selection):
+            arm.update(ALIGN_LLM_NATIVE_STATE_COPY="0", ALIGN_LLM_NATIVE_Q6_HEAD="1",
+                       ALIGN_LLM_PREFILL_CHUNK="128", ALIGN_LLM_BATCH_DECODE_INPUTS="1")
+        ordinary_selection["ALIGN_LLM_RETAIN_WORKSPACE"] = "0"
+        native_selection["ALIGN_LLM_RETAIN_WORKSPACE"] = "1"
+        previous_selection = dict(ordinary_selection)
+        previous_selection.pop("ALIGN_LLM_RETAIN_WORKSPACE")
+    if measure_mode == "prefill-cache":
+        for arm in (ordinary_selection, native_selection):
+            arm.update(ALIGN_LLM_NATIVE_STATE_COPY="0", ALIGN_LLM_NATIVE_Q6_HEAD="1",
+                       ALIGN_LLM_PREFILL_CHUNK="128", ALIGN_LLM_BATCH_DECODE_INPUTS="1",
+                       ALIGN_LLM_RETAIN_WORKSPACE="1", ALIGN_LLM_PREFILL_FINAL_LOGITS="1",
+                       ALIGN_LLM_PREFILL_LAST_FFN_ROW="0")
+        ordinary_selection["ALIGN_LLM_PREFILL_GRAPH_CACHE"] = "0"
+        native_selection["ALIGN_LLM_PREFILL_GRAPH_CACHE"] = "1"
+        previous_selection = dict(ordinary_selection)
+        previous_selection.pop("ALIGN_LLM_PREFILL_GRAPH_CACHE")
     with tempfile.TemporaryDirectory(prefix="qwen35-cuda-measure-") as temporary, \
          Session(command, timeout=180, env=ordinary_selection) as ordinary, \
          Session(command, timeout=180, env=native_selection) as native, ExitStack() as stack:
         previous = (stack.enter_context(Session([str(baseline), *command[1:]],
-                                               timeout=180, env=native_selection))
+                                               timeout=180, env=previous_selection))
                     if baseline else None)
         if previous is not None:
             check_loaded_shim(previous, baseline_shim, baseline_shim_digest)
@@ -193,12 +220,16 @@ def main() -> None:
             request = dict(schema_version=1, system=SYSTEM, user=user,
                            max_tokens=completion, temperature=0.0, seed=None)
             for _ in range(2):
-                if timed(ordinary, request, prompt, completion)[1]["output"] != \
-                        timed(native, request, prompt, completion)[1]["output"]:
+                warm_control = timed(ordinary, request, prompt, completion)[1]["output"]
+                warm_native = timed(native, request, prompt, completion)[1]["output"]
+                if warm_control != warm_native:
                     raise RuntimeError(f"{label}: warmup outputs differ")
-                if previous is not None and timed(previous, request, prompt, completion)[1]["output"] \
-                        != timed(native, request, prompt, completion)[1]["output"]:
-                    raise RuntimeError(f"{label}: previous native warmup outputs differ")
+                if previous is not None:
+                    warm_previous = timed(previous, request, prompt, completion)[1]["output"]
+                    expected_warm = warm_native if measure_mode in ("workspace-retain", "prefill-cache") else \
+                        timed(native, request, prompt, completion)[1]["output"]
+                    if warm_previous != expected_warm:
+                        raise RuntimeError(f"{label}: previous native warmup outputs differ")
             pairs = []
             previous_pairs = []
             for at in range(5):

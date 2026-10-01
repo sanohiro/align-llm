@@ -16937,6 +16937,17 @@ stream input helper with unchanged disconnect/recovery behavior. Until then,
 this bounded duplication is the recorded application cost, not a compatibility
 layer or a hypothetical compiler dependency.
 
+The 2026-10-01 CUDA input-batch implementation reproduces this same gap at the
+unchanged consumer pin: an independent three-buffer witness passes, while replacing
+only its owner field with a resource produces the three alias diagnostics. Current
+sibling source `f3ff43d0f62408a8171806667ca4126dd5179b96` still uses
+`is_disjoint_sibling_fields` and the conflicting-root check in
+`crates/align_sema/src/lib.rs:36283–36402`; its existing
+`disjoint_field_borrows.rs` tests cover scalar and buffer siblings, not this resource
+case. The batch writer therefore takes only mutable byte slices; the caller forms
+fresh immutable views and submits them with the resource after writing. No new
+language surface or compiler pin is consumed, and this request remains non-blocking.
+
 ## Request 122 — Imported public constants in constant initializers
 
 Status: PROPOSED
